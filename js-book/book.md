@@ -10,7 +10,7 @@ This book is for a reader who knows programming and is new to this codebase, and
 
 ### What it runs
 
-The subset is real JavaScript: numbers, strings, arrays, objects, closures, `let` and `const`, `try` and `finally`, `switch`, destructuring, optional chains, spread, Maps and Sets, and the timers. Classes run too, as syntax sugar the parser writes as plain functions (`bb9b82a0`). `this` outside a class's code, `new` on a program's own function and prototypes stay outside it, and `js/README.md` says why: each would make every call carry a receiver or every property read walk a prototype chain.
+The subset is real JavaScript: numbers, strings, arrays, objects, closures, `let` and `const`, `try` and `finally`, `switch`, destructuring, optional chains, spread, Maps and Sets, and the timers. Classes run too, as syntax sugar the parser writes as plain functions (`0b6d8deb`). `this` outside a class's code, `new` on a program's own function and prototypes stay outside it, and `js/README.md` says why: each would make every call carry a receiver or every property read walk a prototype chain.
 
 Here is one of the playground's samples, a turtle drawing a spiral:
 
@@ -18,7 +18,7 @@ Here is one of the playground's samples, a turtle drawing a spiral:
 
 ### Who judges it
 
-Every program in the subset is real JavaScript, so node is a free oracle. `js/oracle.shale` runs each program in `js/tests/` through node 22 and through `js-vm`, and the two transcripts, exit codes included, must match byte for byte. A program outside the subset gets an error that names what it used: each program in `js/tests/refused/` names, on its first line, the message `js-vm` must end with. The corpus grew from 32 programs and 25 refusals on the first day (`cfe7c5fc`) to 61 and 76 (`js/README.md`, its status of 2026-11-24). Program 54, `54-big-daddy.js`, is a day in a small city that uses every feature of the subset, and it is also the playground's "all features" sample (`06ab1f8b`, `17977264`).
+Every program in the subset is real JavaScript, so node is a free oracle. `js/oracle.shale` runs each program in `js/tests/` through node 22 and through `js-vm`, and the two transcripts, exit codes included, must match byte for byte. A program outside the subset gets an error that names what it used: each program in `js/tests/refused/` names, on its first line, the message `js-vm` must end with. The corpus grew from 32 programs and 25 refusals on the first day (`278631d8`) to 61 and 76 (`js/README.md`, its status of 2026-11-24). Program 54, `54-big-daddy.js`, is a day in a small city that uses every feature of the subset, and it is also the playground's "all features" sample (`7d6a472f`, `cc904c2a`).
 
 ### Where the numbers come from
 
@@ -46,23 +46,23 @@ This chapter is the history, kept brief. A reader who wants the design can skip 
 
 ### A tree-walker first
 
-The first interpreter walked the tree (`1ad0c76a`). Its whole state was one value threaded through the walk: the heap, the scopes, the output and the step count. The same day it gained the node oracle, a wasm page with an editor and a Run button (`e809c922`), copy probes and exact allocation counts (`7e32c784`, `64a42c08`), variables resolved to slots before the run (`76adf75b`), a canvas library behind a host of effects (`95112668`, `a2ac2fdb`), and timers and clicks on one queue with a virtual clock (`ba5e1bdd`). By the end of the day the walker passed 50 of 50 corpus programs and 44 of 44 refusals.
+The first interpreter walked the tree (`30837f8e`). Its whole state was one value threaded through the walk: the heap, the scopes, the output and the step count. The same day it gained the node oracle, a wasm page with an editor and a Run button (`6a0ea512`), copy probes and exact allocation counts (`4dc98448`, `84263a4b`), variables resolved to slots before the run (`920cda0c`), a canvas library behind a host of effects (`65a8d71a`, `b8272c67`), and timers and clicks on one queue with a virtual clock (`941e9e67`). By the end of the day the walker passed 50 of 50 corpus programs and 44 of 44 refusals.
 
 ### The VM, in three rounds
 
-The bytecode VM was built beside the walker in three rounds on 2026-11-24. The first round (`ba3ed12c`) brought the compiler and the stack machine, and refused what it had yet to cover as `js: unsupported (vm): ...`: 37 of 50 programs matched node, the VM refused the other 13, and every answer it gave was right. The second round (`ff1474f1`, `a43c8f46`) added exceptions, `switch`, labels, destructuring, optional chains, Maps and Sets, and the timers, and brought the VM to 50 of 50 and 44 of 44. The third round (`ab1798ec`, `6665e55a`) added a mark-sweep collector. Before it, the programs in `js/heaps/` peaked at 164, 164, 40 and 64 MB; after it, each holds about 1,024 cells and peaks at 3.8 to 4.1 MB on the dev build (`70271947`).
+The bytecode VM was built beside the walker in three rounds on 2026-11-24. The first round (`fe85d386`) brought the compiler and the stack machine, and refused what it had yet to cover as `js: unsupported (vm): ...`: 37 of 50 programs matched node, the VM refused the other 13, and every answer it gave was right. The second round (`60466bc7`, `b69660c4`) added exceptions, `switch`, labels, destructuring, optional chains, Maps and Sets, and the timers, and brought the VM to 50 of 50 and 44 of 44. The third round (`abb4fc0a`, `226eabfe`) added a mark-sweep collector. Before it, the programs in `js/heaps/` peaked at 164, 164, 40 and 64 MB; after it, each holds about 1,024 cells and peaks at 3.8 to 4.1 MB on the dev build (`62110109`).
 
 ### The page, and the walker's end
 
-The playground moved onto the VM next: the canvas samples (`0b1efafa`), then the page (`a9a06e74`). Then the walker was deleted (`1c1c9e7e`): `Interp.roc`, `js-run` and `js-count` went, and the VM's expected-count files took the walker's names, so the check tier stayed the same.
+The playground moved onto the VM next: the canvas samples (`3d151f80`), then the page (`fd9fb4e4`). Then the walker was deleted (`aef0658b`): `Interp.roc`, `js-run` and `js-count` went, and the VM's expected-count files took the walker's names, so the check tier stayed the same.
 
-The page gained a memory view (`4d891f1f`, `4e5dd15b`): a popup with the last run's heap over time. Then came a speed fix (`c1050677`), the subject of {{chapter What copies}}. Two gaps closed next: calls nest 10,000 deep (`083dd943`), and a Map or a Set drops its deleted entries once they outnumber the rest (`2ac69504`).
+The page gained a memory view (`668c52ca`, `c7a85d90`): a popup with the last run's heap over time. Then came a speed fix (`3aba5cf7`), the subject of {{chapter What copies}}. Two gaps closed next: calls nest 10,000 deep (`f4320451`), and a Map or a Set drops its deleted entries once they outnumber the rest (`865341ff`).
 
-Classes came last, as syntax sugar (`bb9b82a0`, `47348bbd`, `43a519a4`). The parser writes each class as plain functions, one that sets the methods on an instance, one that runs the constructor's body and one that makes the instance and calls both, so `Resolve`, `Compile` and the VM see only functions.
+Classes came last, as syntax sugar (`0b6d8deb`, `be76fa0f`, `a2cd6994`). The parser writes each class as plain functions, one that sets the methods on an instance, one that runs the constructor's body and one that makes the instance and calls both, so `Resolve`, `Compile` and the VM see only functions.
 
 ### Garbage you can watch
 
-Two samples followed for the memory view. `js/tests/55-garbage.js` makes 1,800 short-lived pieces, an object, an array and a closure each, in 12 rounds, so the memory view's sawtooth shows its teeth; node holds it like every corpus program, and the page lists it third (`3ce0f676`). `onCollect(fn)` is a playground extra, like `onClick` and outside JavaScript: its handler hears each collection after the sweep, as an event that runs between instructions, as a timer does. Node keeps its own collector hidden from a program, so the canvas log `9-garbage-heard` holds that sample, in `js-canvas` and on the page (`ad87080c`). The handler sits in the boxed event queue, so a program that ignores `onCollect` pays one match inside each collection and runs every instruction as before.
+Two samples followed for the memory view. `js/tests/55-garbage.js` makes 1,800 short-lived pieces, an object, an array and a closure each, in 12 rounds, so the memory view's sawtooth shows its teeth; node holds it like every corpus program, and the page lists it third (`a57db770`). `onCollect(fn)` is a playground extra, like `onClick` and outside JavaScript: its handler hears each collection after the sweep, as an event that runs between instructions, as a timer does. Node keeps its own collector hidden from a program, so the canvas log `9-garbage-heard` holds that sample, in `js-canvas` and on the page (`aa391df8`). The handler sits in the boxed event queue, so a program that ignores `onCollect` pays one match inside each collection and runs every instruction as before.
 
 ## The pipeline and the machine
 
@@ -157,9 +157,9 @@ Between two instructions every value the program holds is in the machine. The on
 
 Two modules serve everything that runs a program.
 
-**`ValueRules`** holds JavaScript's rules for values: property reads and writes, operators on mixed values, the methods of strings, arrays, Maps and Sets, and the errors they throw, each message in one place. The VM's fast paths settle the common cases (numbers, an object's own property, an array's item) and hand the rest to a rule. A rule takes a small machine of the cells and the run's status, `ValueRules.Machine`: the VM lends it the cells and takes back what the rule gives, so the cells have one owner while the rule writes them. The module was split out of the walker when the VM borrowed it (`f9dd79d0`), and for a while both engines used it.
+**`ValueRules`** holds JavaScript's rules for values: property reads and writes, operators on mixed values, the methods of strings, arrays, Maps and Sets, and the errors they throw, each message in one place. The VM's fast paths settle the common cases (numbers, an object's own property, an array's item) and hand the rest to a rule. A rule takes a small machine of the cells and the run's status, `ValueRules.Machine`: the VM lends it the cells and takes back what the rule gives, so the cells have one owner while the rule writes them. The module was split out of the walker when the VM borrowed it (`d8d6b7fe`), and for a while both engines used it.
 
-**`Events`** holds the queue of callbacks and its virtual clock (`a43c8f46`). A timer's callback, a click, the canvas's next `frame(t)` and a collection `onCollect` hears are each an event, due at a time in milliseconds, run earliest first, and two at one time in the order they were queued. The clock reads 0 while the program runs and moves to each callback's time as it runs, so a program's output is the same on every run and the same as node's.
+**`Events`** holds the queue of callbacks and its virtual clock (`b69660c4`). A timer's callback, a click, the canvas's next `frame(t)` and a collection `onCollect` hears are each an event, due at a time in milliseconds, run earliest first, and two at one time in the order they were queued. The clock reads 0 while the program runs and moves to each callback's time as it runs, so a program's output is the same on every run and the same as node's.
 
 ### The host and its effects
 
@@ -207,11 +207,11 @@ Every VM instruction takes the machine and hands it back, and a handler copies t
 
 ### Box what is rarely written
 
-A part of the machine that most instructions leave alone costs a copy on every instruction if it sits inline. The event queue was the first example: only timers and clicks touch it, yet inline it made the release build's fib(22) take 123 ms; boxed, 82 ms (`3ad69676`). `docs/roc-notes.md` adds the qualification: a `Box` carried untouched is free, but every write re-boxes, one allocation per write, so a box suits a part that is rarely written after it is made.
+A part of the machine that most instructions leave alone costs a copy on every instruction if it sits inline. The event queue was the first example: only timers and clicks touch it, yet inline it made the release build's fib(22) take 123 ms; boxed, 82 ms (`15686d94`). `docs/roc-notes.md` adds the qualification: a `Box` carried untouched is free, but every write re-boxes, one allocation per write, so a box suits a part that is rarely written after it is made.
 
 ### Stay under 256 bytes
 
-LLVM copies a record of up to 256 bytes with eight vector moves, and calls `memcpy` for a bigger one. The collector's fields, the budget and the boxed turtle took the machine from 232 to 312 bytes, so every instruction paid a `memcpy` call. Boxing the collector's schedule alone left it at 288 bytes, still past the line, which is why that change left the times as they were. Boxing the builtins, the collector's schedule and count, and the step and effect budgets brought it to 248 bytes (`c1050677`):
+LLVM copies a record of up to 256 bytes with eight vector moves, and calls `memcpy` for a bigger one. The collector's fields, the budget and the boxed turtle took the machine from 232 to 312 bytes, so every instruction paid a `memcpy` call. Boxing the collector's schedule alone left it at 288 bytes, still past the line, which is why that change left the times as they were. Boxing the builtins, the collector's schedule and count, and the step and effect budgets brought it to 248 bytes (`3aba5cf7`):
 
 | release build, best of five, CPU | 312 bytes | 248 bytes |
 |---|---|---|
@@ -243,14 +243,14 @@ Roc has two backends. The dev backend (`--opt=dev`) compiles in about a second a
 
 Most of the difference is one cause. The dev build lowers closures to boxes, so a `List.update` whose lambda captures a value that holds a reference count (a key, a value, a list) allocates once per write to box the capture. That allocation is a box and the list stays in place, and the release build makes it zero times (the files' own comments say so line by line). One dev allocation remains unexplained: 02-closure-call's 112-byte list per call, which roc-alloc-trace puts down to `Vm.pushed` and which three rewrites left in place (`js/README.md`).
 
-This difference forced a decision. The walker's heap writers were first rewritten as `List.update` calls (`bece7bda`); the release build held every control, and four dev controls rose by one. The change was reverted (`63f8149b`), then brought back (`324756a6`) under the rule that Roc code should read well and play well with tooling, even at the cost of a little noise in dev builds. The dev expected file was rewritten, and every new line in it explains its allocation.
+This difference forced a decision. The walker's heap writers were first rewritten as `List.update` calls (`46c08a1d`); the release build held every control, and four dev controls rose by one. The change was reverted (`53f986a1`), then brought back (`22cd72db`) under the rule that Roc code should read well and play well with tooling, even at the cost of a little noise in dev builds. The dev expected file was rewritten, and every new line in it explains its allocation.
 
 ### Copies that happen only in dev
 
 Some copies are made only by the dev build, at a helper's boundary: there a helper stays a call that owns its arguments, where the release build specializes it first. `docs/roc-notes.md` lists three such shapes. This project met two kinds:
 
-- **A rule generic over the whole machine.** When `ValueRules` was split out, a version that took the engine's whole machine as an open record came first. The dev build copied the cells a rule wrote through it (a probe measured 3 allocations a write against 1), and the walker's dev controls went red, 05-array-push rising from 3 to 12.73 a pass (`f9dd79d0`). The rules now take a small machine of the cells, which the VM lends and takes back.
-- **A planted copy the release build optimized away.** Twice, a `List.drop_last` was planted back into the walker's scope handling. Each time the dev ladder went red on 02-closure-call alone (15 to 16 in `76adf75b`, 3 to 4 in `b7d66601`) and the release ladder stayed green, because the release build makes zero copies there.
+- **A rule generic over the whole machine.** When `ValueRules` was split out, a version that took the engine's whole machine as an open record came first. The dev build copied the cells a rule wrote through it (a probe measured 3 allocations a write against 1), and the walker's dev controls went red, 05-array-push rising from 3 to 12.73 a pass (`d8d6b7fe`). The rules now take a small machine of the cells, which the VM lends and takes back.
+- **A planted copy the release build optimized away.** Twice, a `List.drop_last` was planted back into the walker's scope handling. Each time the dev ladder went red on 02-closure-call alone (15 to 16 in `920cda0c`, 3 to 4 in `2233adc9`) and the release ladder stayed green, because the release build makes zero copies there.
 
 The second case is why the dev ladder is useful: it sees copies the release build optimizes away, and those copies are often a sign of a shape that will copy in release once the code around it changes.
 
@@ -260,16 +260,16 @@ Dev timings fail to predict release timings, even in direction.
 
 | change | dev fib(22) | release fib(22) | source |
 |---|---|---|---|
-| walker: variables read by slot | 674 to 435 ms | 83 to 67 ms | `76adf75b` |
-| walker: loops, same change | 4,387 to 2,105 ms | 486 to 475 ms | `76adf75b` |
-| walker: the Map control's branch against master | 676 to 642 ms | 121 to 169 ms | `54be42fb` |
+| walker: variables read by slot | 674 to 435 ms | 83 to 67 ms | `920cda0c` |
+| walker: loops, same change | 4,387 to 2,105 ms | 486 to 475 ms | `920cda0c` |
+| walker: the Map control's branch against master | 676 to 642 ms | 121 to 169 ms | `3b4f9bd1` |
 | VM today | about 860 ms | 99 ms | `js/README.md` |
 
 The first two rows show a change that halved the dev time of the loops while moving the release time by 11 ms. The third shows a branch that was faster than master on dev and 40% slower in release. Today the release build runs fib(22) about nine times faster than the dev build (860 against 99 ms).
 
 ### Step budgets
 
-The page runs a program on the browser's main thread, so it holds the program to step budgets: 3,000,000 steps before the first frame and 300,000 a frame. The walker counted statements; the VM counts calls and loop passes, so the same budget covers about twice the work. On the dev backend the walker took 1.1 s of CPU to run out a frame's budget and 5.2 s for a program's; the VM takes 2.0 s and 8.8 s (`a9a06e74`, `js/README.md`, "Pitfalls").
+The page runs a program on the browser's main thread, so it holds the program to step budgets: 3,000,000 steps before the first frame and 300,000 a frame. The walker counted statements; the VM counts calls and loop passes, so the same budget covers about twice the work. On the dev backend the walker took 1.1 s of CPU to run out a frame's budget and 5.2 s for a program's; the VM takes 2.0 s and 8.8 s (`fd9fb4e4`, `js/README.md`, "Pitfalls").
 
 ### What each build is for
 
@@ -277,11 +277,11 @@ roc-apps' `CLAUDE.md` (section 9) and `js/README.md` give each build its job. Sc
 
 ## Build times
 
-RC1's release builds were the project's slowest loop. The walker's release build grew with the language: 65 s when the controls first landed (`64a42c08`), 686 s after the language gaps (`a3af13f4`), and 1,052 s for `js-run` at the commit tagged `rc1-slow-release-build`, for about 10,000 lines of Roc, against under a second on dev (the tag's message). Commit `762c7d3a` gives the JavaScript tier's release build as 11 to 17 minutes and puts most of the time in RC1's SpecConstr pass.
+RC1's release builds were the project's slowest loop. The walker's release build grew with the language: 65 s when the controls first landed (`84263a4b`), 686 s after the language gaps (`f0837ff4`), and 1,052 s for `js-run` at roc-apps' commit tagged `rc1-slow-release-build`, for about 10,000 lines of Roc, against under a second on dev (the tag's message). roc-apps' commit [`762c7d3a`](https://github.com/showell/roc-apps/commit/762c7d3a), from before this repository had its own, gives the JavaScript tier's release build as 11 to 17 minutes and puts most of the time in RC1's SpecConstr pass.
 
-The VM's release build was 670 s in its first round (`f4237b8a`), when it still imported the walker's module for the value rules. After the value rules moved into a module of their own and the VM dropped its import of the walker (`f9dd79d0`), it was 84 s (`3ad69676`, `2edd155a`), while `js-run` still took 481 s. The drop came after the split, and the commits leave the cause unstated. Later figures are 110 s after the collector (`de56943f`) and 91 s in `js/README.md`'s status line.
+The VM's release build was 670 s in its first round (`29cb46ec`), when it still imported the walker's module for the value rules. After the value rules moved into a module of their own and the VM dropped its import of the walker (`d8d6b7fe`), it was 84 s (`15686d94`, `d7ce2f2c`), while `js-run` still took 481 s. The drop came after the split, and the commits leave the cause unstated. Later figures are 110 s after the collector (`f9188b2f`) and 91 s in `js/README.md`'s status line.
 
-The interpreter works RC1's release pipeline harder than most Roc projects do. Jack Scully profiled the compiler on this code at `762c7d3a` and opened three pull requests against RC1's SpecConstr pass: [#13408](https://github.com/roc-lang/roc/pull/13408) puts cheap checks ahead of its inlining queries, [#13409](https://github.com/roc-lang/roc/pull/13409) restructures the walk those queries run, and [#13410](https://github.com/roc-lang/roc/pull/13410) stops a recursive function from unrolling into its own body. On his machine, `js-run`'s release build took 271 s before them; each alone brought it to 166 s, 63 s and 83 s, and #13410 also ran `fib.js` 12% and `loops.js` 14% faster (the pull requests' descriptions). He put the three together at about 12 times faster for this repository's code specifically (Zulip, #off topic > LLVM). They are expected to merge after Roc 0.10, so every build time above is RC1's own.
+The interpreter works RC1's release pipeline harder than most Roc projects do. Jack Scully profiled the compiler on this code at roc-apps' [`762c7d3a`](https://github.com/showell/roc-apps/commit/762c7d3a) and opened three pull requests against RC1's SpecConstr pass: [#13408](https://github.com/roc-lang/roc/pull/13408) puts cheap checks ahead of its inlining queries, [#13409](https://github.com/roc-lang/roc/pull/13409) restructures the walk those queries run, and [#13410](https://github.com/roc-lang/roc/pull/13410) stops a recursive function from unrolling into its own body. On his machine, `js-run`'s release build took 271 s before them; each alone brought it to 166 s, 63 s and 83 s, and #13410 also ran `fib.js` 12% and `loops.js` 14% faster (the pull requests' descriptions). He put the three together at about 12 times faster for this repository's code specifically (Zulip, #off topic > LLVM). They are expected to merge after Roc 0.10, so every build time above is RC1's own.
 
 ## How it is tested
 
@@ -293,7 +293,7 @@ A check is trusted once it has been seen to fail. Each check below holds the cod
 
 ### Controls held exactly
 
-`check.shale js=1` runs the nine allocation controls of {{chapter Dev and release builds disagree}}, in both builds. A missing expected file fails the run (`6b13e927`).
+`check.shale js=1` runs the nine allocation controls of {{chapter Dev and release builds disagree}}, in both builds. A missing expected file fails the run (`80b5e681`).
 
 ### Golden logs for the canvas
 
@@ -307,10 +307,10 @@ A check is trusted once it has been seen to fail. Each check below holds the cod
 
 The record lists five plants, each reverted:
 
-- a line width of 72 instead of 80 turned one program red (`cfe7c5fc`);
-- the event queue left out of the roots turned 52 red, and `filter`'s item left off the stack turned 53 red (`2094d365`);
-- a wrong expected count turned 00-loop red by name (`6b13e927`);
-- a memory view with its collection marks taken out turned page_check red (`4d891f1f`).
+- a line width of 72 instead of 80 turned one program red (`278631d8`);
+- the event queue left out of the roots turned 52 red, and `filter`'s item left off the stack turned 53 red (`b623437d`);
+- a wrong expected count turned 00-loop red by name (`80b5e681`);
+- a memory view with its collection marks taken out turned page_check red (`668c52ca`).
 
 ## Limitations
 
@@ -322,7 +322,7 @@ These are the known differences from node, and the limits, from `js/README.md` a
 - A method read off an instance and called alone keeps its instance, where node loses `this` and throws (the same section).
 - Printing or listing a class instance, or printing a class, is refused: node prints an instance by its class's name, and an instance here holds its methods beside its fields (the same section).
 - An exhausted Map iterator still sees entries added after it finished, where node's stays done. No corpus program holds this yet.
-- A builtin's callback (`map`, `sort`, a Map's `forEach`) throws a RangeError once 400 calls wait under it, where a plain call goes 10,000 deep, near node's own limit (`083dd943`).
+- A builtin's callback (`map`, `sort`, a Map's `forEach`) throws a RangeError once 400 calls wait under it, where a plain call goes 10,000 deep, near node's own limit (`f4320451`).
 - An interval never cleared stops after 100,000 callbacks with a message, where node runs it for good (`js/README.md`, "The subset").
 - A string method that counts positions is refused on non-ASCII text: JavaScript counts UTF-16 units, and these strings are UTF-8 (the same section).
 - `js-vm` takes the program as one command-line argument, limited to 128 KiB (`js/README.md`, "Pitfalls").

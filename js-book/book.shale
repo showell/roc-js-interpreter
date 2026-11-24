@@ -9,7 +9,8 @@
 -- name this checkout's files through its mount (HERE): this script runs from
 -- the checkout at HERE alone, and stops elsewhere. The book is the app
 -- app/main.roc on the book platform, which reads this checkout from its root
--- and prints every page. Its pre-step draws each
+-- and prints every page. First every commit the manuscript cites is held to
+-- resolve (check_citations, below). Its pre-step draws each
 -- ```dot fence of the manuscript with Graphviz
 -- (book_builder/tools/draw_diagrams.shale) into build/prepared/, as
 -- diagram-N.dot and diagram-N.svg, where the app reads them. It also writes
@@ -102,6 +103,40 @@ function write_listings()
   print("book: the appendix lists " .. #samples .. " samples, " .. #corpus .. " programs and " .. #refused .. " refused")
 end
 
+-- Every commit the manuscript cites resolves: a short hash in backticks is
+-- a commit of this repository, and one written as a link to roc-apps'
+-- commit (`[`h`](https://github.com/showell/roc-apps/commit/h)`, for work
+-- that was never js/'s or js-book/'s) is a commit of the roc-apps checkout
+-- beside this one. The history came here from roc-apps with new hashes, so
+-- a hash copied from roc-apps' log is caught here, named.
+function check_citations()
+  local text = read(SOURCE)
+  local here = {}
+  local there = {}
+  local wrong = {}
+  local cited = 0
+  for m in re_find_all(text, "\\[`([0-9a-f]{7,12})`\\]\\(https://github\\.com/showell/roc-apps/commit/([0-9a-f]{7,40})\\)") do
+    if not starts_with(m.groups[2], m.groups[1]) then push(wrong, m.groups[1] .. " links to roc-apps' " .. m.groups[2]) end
+    there[m.groups[1]] = true
+  end
+  for m in re_find_all(text, "`([0-9a-f]{7,12})`") do
+    cited = cited + 1
+    if not has_key(there, m.group) then here[m.group] = true end
+  end
+  for pair in {{list = keys(here), dir = real("."), where = "this repository"}, {list = keys(there), dir = real(ROC_APPS), where = "roc-apps"}} do
+    for h in sort(pair.list) do
+      local r = run({"git", "-C", pair.dir, "cat-file", "-e", h .. "^{commit}"}, {timeout_ms = 10000, whole = 2000})
+      if r.code ~= 0 then push(wrong, h .. " is no commit of " .. pair.where) end
+    end
+  end
+  if #wrong > 0 then
+    for w in wrong do print("  " .. w) end
+    fail("book: " .. #wrong .. " of the manuscript's cited commits don't resolve, so /" .. DEST_NAME .. "/ is left as it was")
+  end
+  print("book: " .. cited .. " citations of " .. (#keys(here) + #keys(there)) .. " commits resolve, " .. #keys(there) .. " of them roc-apps'")
+  return nil
+end
+
 -- `to`, a real path, as a path relative to the real folder `from`.
 function relative_path(from, to)
   local a = split(from, "/")
@@ -117,6 +152,7 @@ end
 function main()
   if not exists(HERE) or real(HERE) ~= real(".") then fail("book: run from the checkout at " .. HERE .. " (" .. (exists(HERE) and real(HERE) or "not there") .. "), which roc-apps' tools reach by that mount") end
   if not exists(ROC_APPS .. "/" .. BUILD) then fail("book: no " .. ROC_APPS .. "/" .. BUILD .. ": clone roc-apps beside this checkout") end
+  check_citations()
   if exists(PREPARED) then remove_tree(PREPARED) end
   mkdir(PREPARED)
   write_listings()
