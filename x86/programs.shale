@@ -1,0 +1,96 @@
+-- budget: steps=40000000
+-- x86/programs.shale: the x86-64 backend's programs, each held to node or to
+-- its refusal. From the repository's root:
+--
+--   shale x86/programs.shale
+--
+-- It builds js-x86 on the dev backend, then:
+--   - each program in x86/tests/ is compiled to a static executable under the
+--     build mount and run, and what it printed and its exit code must be
+--     node's for the same program, exactly;
+--   - each program in x86/tests/refused/ names in its first line what it must
+--     come to: `// refused: <text>`, a line js-x86 prints as it exits 1
+--     without writing an executable, or `// stops: <text>`, a line the
+--     executable it writes prints as it exits 1 (a number console.log can't
+--     write yet), where node would print the number.
+-- Nothing is skipped: the run fails unless every program passes, and a
+-- folder with no program in it fails too.
+
+use("./executables.shale")
+
+const WHO = "x86/programs.shale"
+
+function js_files(dir)
+  local out = {}
+  for name in ls(dir) do
+    if ends_with(name, ".js") then push(out, dir .. "/" .. name) end
+  end
+  sort(out)
+  if #out == 0 then fail(WHO .. ": " .. dir .. " holds no program") end
+  return out
+end
+
+-- The program's executable's name under the build mount: its folder's name
+-- and its own, so two folders' programs never share one.
+function executable_path(dir, js_path)
+  return dir .. "/" .. re_replace(re_replace(js_path, "^x86/", ""), "[/.]", "-")
+end
+
+-- Why the program at `js_path` failed, or nil.
+function held_to_node(exe, dir, js_path)
+  local path = executable_path(dir, js_path)
+  local made = driver_run(exe, read(js_path))
+  if made.code ~= 0 then return "js-x86 exited " .. made.code .. ": " .. trim(made.out) end
+  replace(path, bytes_of_hex(WHO, made.out))
+  must(run({"chmod", "755", real(path)}, {timeout_ms = 10000, whole = 4000}))
+  local r = executable_run(path)
+  local n = node_run(js_path)
+  if n.code ~= 0 then return "node exited " .. n.code .. ": " .. trim(n.out) end
+  if r.ended ~= "exit" or r.code ~= 0 then return "the executable ended " .. r.ended .. " " .. r.code .. ": " .. trim(r.out) end
+  if r.out ~= n.out then return "it printed " .. json_write(r.out) .. ", node " .. json_write(n.out) end
+  return nil
+end
+
+-- Why the refused program at `js_path` failed, or nil.
+function held_to_refusal(exe, dir, js_path)
+  local first = lines(read(js_path))[1]
+  local refused = re_find(first, "^// refused: (.+)$")
+  local stops = re_find(first, "^// stops: (.+)$")
+  local made = driver_run(exe, read(js_path))
+  if refused ~= nil then
+    if made.code ~= 1 then return "js-x86 exited " .. made.code .. ", not 1" end
+    local said = trim(made.out)
+    if not starts_with(said, "js-x86: refused: ") or not contains(said, refused.group) then return "js-x86 said " .. json_write(said) .. ", not a refusal holding " .. json_write(refused.group) end
+    return nil
+  end
+  if stops == nil then return "its first line is neither `// refused: <text>` nor `// stops: <text>`" end
+  if made.code ~= 0 then return "js-x86 exited " .. made.code .. ": " .. trim(made.out) end
+  local path = executable_path(dir, js_path)
+  replace(path, bytes_of_hex(WHO, made.out))
+  must(run({"chmod", "755", real(path)}, {timeout_ms = 10000, whole = 4000}))
+  local r = executable_run(path)
+  if r.ended ~= "exit" or r.code ~= 1 then return "the executable ended " .. r.ended .. " " .. r.code .. ", not exit 1" end
+  local said = lines(trim(r.out))
+  if #said == 0 or said[#said] ~= stops.group then return "the executable's last line is " .. json_write(trim(r.out)) .. ", not " .. json_write(stops.group) end
+  return nil
+end
+
+function main()
+  local exe = built_roc(WHO, "x86/roc/JsToX86.roc", "js-x86", "dev")
+  local dir = executables_dir()
+  local wrong = {}
+  local held = js_files("x86/tests")
+  local refused = js_files("x86/tests/refused")
+  for p in held do
+    local why = held_to_node(exe, dir, p)
+    if why ~= nil then push(wrong, p .. ": " .. why) end
+  end
+  for p in refused do
+    local why = held_to_refusal(exe, dir, p)
+    if why ~= nil then push(wrong, p .. ": " .. why) end
+  end
+  if #wrong > 0 then fail(WHO .. ": " .. #wrong .. " of " .. (#held + #refused) .. " programs failed:\n" .. join(wrong, "\n")) end
+  print("x86/programs: " .. #held .. " programs printed what node prints, and " .. #refused .. " came to their refusals")
+end
+
+main()

@@ -25,7 +25,9 @@
 --     program in js/tests/, and js/canvas.shale, which holds each canvas
 --     sample in js/canvas/ to its golden log of effects;
 --   - x86/hello.shale, which runs the x86-64 backend's expects and runs the
---     hello-world executable it writes, its output and exit code held exactly.
+--     hello-world executable it writes, its output and exit code held exactly;
+--   - x86/programs.shale, which holds each program in x86/tests/ to node and
+--     each in x86/tests/refused/ to its refusal.
 --
 -- `js=1` is the allocation tier, kept out of the default run for its time
 -- (about two minutes when js-vm's release build compiles; seconds when
@@ -38,7 +40,7 @@
 -- own gate.
 
 const WANT = "roc-pin: the repository's pinned nightly"
-const ROOTS = {"js-book/app/main.roc", "js/roc/JsApp.roc", "js/roc/JsCanvas.roc", "js/roc/JsDump.roc", "js/roc/JsVm.roc", "x86/roc/Hello.roc"}
+const ROOTS = {"js-book/app/main.roc", "js/roc/JsApp.roc", "js/roc/JsCanvas.roc", "js/roc/JsDump.roc", "js/roc/JsVm.roc", "x86/roc/Hello.roc", "x86/roc/JsToX86.roc"}
 -- The expects `roc test` runs from each of js/'s roots: Canvas.roc's 8 and
 -- NumberText.roc's 11, and NumberText.roc's alone from JsDump.roc, which
 -- imports no Canvas.
@@ -114,8 +116,12 @@ end
 
 -- One tier script's run: its lines other than PASS ones printed, and its
 -- verdict a line here.
-function script_check(script, what)
-  local r = run({"shale", "--root", ".", script}, {timeout_ms = 600000, tail = 80, not_re = "^PASS "})
+function script_check(script, what, args?)
+  local argv = {"shale", "--root", ".", script}
+  if args ~= nil then
+    for a in args do push(argv, a) end
+  end
+  local r = run(argv, {timeout_ms = 600000, tail = 80, not_re = "^PASS "})
   if r.code ~= 0 then print(trim(r.out)) end
   -- The script's last line of its own: Shale's reports come after it, and
   -- a `── time:` line can quote an argument that holds line breaks.
@@ -158,6 +164,7 @@ function all()
   script_check("js/canvas.shale", "the canvas samples against their logs")
   script_check("js/dump.shale", "the bytecode dumper's output for one program")
   script_check("x86/hello.shale", "the x86-64 backend's expects and its hello-world executable")
+  script_check("x86/programs.shale", "the compiled programs held to node, and the refused to their refusals")
   return nil
 end
 

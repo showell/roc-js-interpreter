@@ -34,6 +34,11 @@ X86 :: [].{
 		Xmm15,
 	]
 
+	## The low byte of the first four general registers, as `setcc`, `movzx`
+	## and a byte store name it. These four need no REX prefix, so a byte
+	## operand never reads as `spl` or `sil`.
+	ByteRegister := [Al, Cl, Dl, Bl]
+
 	## A memory operand: a base register plus a scaled index plus a
 	## displacement, or a displacement from the end of the instruction
 	## (`Rip`).
@@ -87,6 +92,15 @@ X86 :: [].{
 			},
 		),
 		Imul({ to : X86.Register, from : X86.Register }),
+		# rdx:rax divided by the register, unsigned: the quotient in rax, the
+		# remainder in rdx.
+		Div(X86.Register),
+		Neg(X86.Register),
+		# The byte register set to 1 when the condition holds, else to 0.
+		Setcc({ condition : X86.Condition, to : X86.ByteRegister }),
+		# The byte register's value, zero-extended to 64 bits.
+		MovzxByte({ to : X86.Register, from : X86.ByteRegister }),
+		MovByteStore({ to : X86.Mem, from : X86.ByteRegister }),
 		Test({ left : X86.Register, right : X86.Register }),
 		Shift(
 			{
@@ -216,6 +230,46 @@ X86 :: [].{
 					opcode: [0x0F, 0xAF],
 					reg: register_number(to),
 					operand: Direct(register_number(from)),
+				}),
+			)
+			Div(reg) => append_encoded(
+				out,
+				integer_layout({
+					opcode: [0xF7],
+					reg: 6,
+					operand: Direct(register_number(reg)),
+				}),
+			)
+			Neg(reg) => append_encoded(
+				out,
+				integer_layout({
+					opcode: [0xF7],
+					reg: 3,
+					operand: Direct(register_number(reg)),
+				}),
+			)
+			Setcc({ condition, to }) => append_encoded(
+				out,
+				byte_layout({
+					opcode: [0x0F, 0x90 + condition_code(condition)],
+					reg: 0,
+					operand: Direct(byte_register_number(to)),
+				}),
+			)
+			MovzxByte({ to, from }) => append_encoded(
+				out,
+				integer_layout({
+					opcode: [0x0F, 0xB6],
+					reg: register_number(to),
+					operand: Direct(byte_register_number(from)),
+				}),
+			)
+			MovByteStore({ to, from }) => append_encoded(
+				out,
+				byte_layout({
+					opcode: [0x88],
+					reg: byte_register_number(from),
+					operand: Memory(to),
 				}),
 			)
 			Test({ left, right }) => append_encoded(
@@ -536,6 +590,22 @@ X86 :: [].{
 	) == "48 83 f3 80"
 	expect hex_of(Imul({ to: Rax, from: Rbx })) == "48 0f af c3"
 	expect hex_of(Imul({ to: R8, from: R15 })) == "4d 0f af c7"
+	expect hex_of(Div(R8)) == "49 f7 f0"
+	expect hex_of(Div(Rcx)) == "48 f7 f1"
+	expect hex_of(Neg(Rax)) == "48 f7 d8"
+	expect hex_of(Neg(R11)) == "49 f7 db"
+	expect hex_of(Setcc({ condition: E, to: Al })) == "0f 94 c0"
+	expect hex_of(Setcc({ condition: A, to: Al })) == "0f 97 c0"
+	expect hex_of(Setcc({ condition: Np, to: Cl })) == "0f 9b c1"
+	expect hex_of(Setcc({ condition: P, to: Dl })) == "0f 9a c2"
+	expect hex_of(Setcc({ condition: Ae, to: Bl })) == "0f 93 c3"
+	expect hex_of(MovzxByte({ to: Rax, from: Al })) == "48 0f b6 c0"
+	expect hex_of(MovzxByte({ to: Rcx, from: Cl })) == "48 0f b6 c9"
+	expect hex_of(MovzxByte({ to: R8, from: Dl })) == "4c 0f b6 c2"
+	expect hex_of(MovByteStore({ to: at_base(Rsi, 0), from: Dl })) == "88 16"
+	expect hex_of(MovByteStore({ to: at_base(Rsp, 8), from: Al })) == "88 44 24 08"
+	expect hex_of(MovByteStore({ to: at_base(R9, 0), from: Bl })) == "41 88 19"
+	expect hex_of(MovByteStore({ to: at_base(Rbp, -1), from: Cl })) == "88 4d ff"
 	expect hex_of(Test({ left: Rax, right: Rax })) == "48 85 c0"
 	expect hex_of(Test({ left: R12, right: Rcx })) == "49 85 cc"
 	expect hex_of(
@@ -634,6 +704,21 @@ integer_layout : {
 integer_layout = |{ opcode, reg, operand }| {
 	prefix: [],
 	wide: Wide,
+	opcode,
+	reg,
+	operand,
+	immediate: NoImmediate,
+}
+
+## An instruction on a byte register: no REX.W.
+byte_layout : {
+	opcode : List(U8),
+	reg : U8,
+	operand : Operand,
+} -> Layout
+byte_layout = |{ opcode, reg, operand }| {
+	prefix: [],
+	wide: Narrow,
 	opcode,
 	reg,
 	operand,
@@ -827,6 +912,15 @@ register_number = |reg|
 		R13 => 13
 		R14 => 14
 		R15 => 15
+	}
+
+byte_register_number : X86.ByteRegister -> U8
+byte_register_number = |reg|
+	match reg {
+		Al => 0
+		Cl => 1
+		Dl => 2
+		Bl => 3
 	}
 
 xmm_number : X86.Xmm -> U8

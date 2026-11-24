@@ -11,73 +11,33 @@
 --
 --   shale x86/hello.shale
 --
--- Roc's default platform writes only text to stdout, so x86-hello prints the
--- executable's bytes as hex (X86.hex_text's, a space between bytes), and this script turns each pair of digits back
--- into its byte, by BYTES, a string holding every byte from 0 to 255 in
--- order. It decides none of them: every byte of the file is the Roc's.
+-- x86-hello prints the executable's bytes as hex, which x86/executables.shale
+-- carries to the file.
 --
 -- The last line is `x86/hello: ...` with the expects' count and the file's
 -- size, or a stop that says what differed.
 
+use("./executables.shale")
+
 const WHO = "x86/hello.shale"
-const WANT_ROC = "roc-pin: the repository's pinned nightly"
-const EXPECTS = 85
-const WANT_DRIVER = "x86-hello: the backend's driver, built here"
-const WANT_BINARY = "x86-hello: the executable the Roc wrote, run to check it"
+const EXPECTS = 101
 const TEXT = "Hello, world!\n"
 const EXPECTED_OUTPUT = "Hello, world!\n"
 const EXPECTED_CODE = 0
-const BYTES = "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x20\x21\x22\x23\x24\x25\x26\x27\x28\x29\x2a\x2b\x2c\x2d\x2e\x2f\x30\x31\x32\x33\x34\x35\x36\x37\x38\x39\x3a\x3b\x3c\x3d\x3e\x3f\x40\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4a\x4b\x4c\x4d\x4e\x4f\x50\x51\x52\x53\x54\x55\x56\x57\x58\x59\x5a\x5b\x5c\x5d\x5e\x5f\x60\x61\x62\x63\x64\x65\x66\x67\x68\x69\x6a\x6b\x6c\x6d\x6e\x6f\x70\x71\x72\x73\x74\x75\x76\x77\x78\x79\x7a\x7b\x7c\x7d\x7e\x7f\x80\x81\x82\x83\x84\x85\x86\x87\x88\x89\x8a\x8b\x8c\x8d\x8e\x8f\x90\x91\x92\x93\x94\x95\x96\x97\x98\x99\x9a\x9b\x9c\x9d\x9e\x9f\xa0\xa1\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa\xab\xac\xad\xae\xaf\xb0\xb1\xb2\xb3\xb4\xb5\xb6\xb7\xb8\xb9\xba\xbb\xbc\xbd\xbe\xbf\xc0\xc1\xc2\xc3\xc4\xc5\xc6\xc7\xc8\xc9\xca\xcb\xcc\xcd\xce\xcf\xd0\xd1\xd2\xd3\xd4\xd5\xd6\xd7\xd8\xd9\xda\xdb\xdc\xdd\xde\xdf\xe0\xe1\xe2\xe3\xe4\xe5\xe6\xe7\xe8\xe9\xea\xeb\xec\xed\xee\xef\xf0\xf1\xf2\xf3\xf4\xf5\xf6\xf7\xf8\xf9\xfa\xfb\xfc\xfd\xfe\xff"
-const HEX_DIGITS = "0123456789abcdef"
-
--- The bytes the hex text `spaced` spells, two lowercase digits a byte and a
--- space between bytes.
-function bytes_of_hex(spaced)
-  if not re_match(spaced, "^([0-9a-f]{2}( [0-9a-f]{2})*)?$") then fail(WHO .. ": x86-hello printed something that is not spaced lowercase hex: " .. sub(spaced, 1, 200)) end
-  local hex = re_replace(spaced, " ", "")
-  if #hex % 2 ~= 0 then fail(WHO .. ": x86-hello printed an odd number of hex digits (" .. #hex .. ")") end
-  local parts = {}
-  local i = 1
-  while i < #hex do
-    local high = find(HEX_DIGITS, sub(hex, i, i)) - 1
-    local low = find(HEX_DIGITS, sub(hex, i + 1, i + 1)) - 1
-    local n = high * 16 + low + 1
-    push(parts, sub(BYTES, n, n))
-    i = i + 2
-  end
-  return join(parts, "")
-end
-
--- The number of expects `roc test` ran and passed, or a stop.
-function expects_passed()
-  local roc = pinned_roc(WHO)
-  local r = run({roc, "test", "Hello.roc"}, {cwd = "x86/roc", timeout_ms = 120000, tail = 40, want = WANT_ROC, nice = 19})
-  local m = re_find(r.out, "All \\(([0-9]+)\\) tests passed")
-  if r.code ~= 0 or m == nil then fail(WHO .. ": roc test x86/roc/Hello.roc failed:\n" .. trim(r.out)) end
-  local n = tonumber(m.group)
-  if n ~= EXPECTS then fail(WHO .. ": roc test x86/roc/Hello.roc ran " .. n .. " expects, held at " .. EXPECTS) end
-  return n
-end
 
 function main()
-  if #BYTES ~= 256 then fail(WHO .. ": BYTES holds " .. #BYTES .. " bytes, not 256") end
-  local expects = expects_passed()
+  local expects = expects_passed(WHO, "Hello.roc")
+  if expects ~= EXPECTS then fail(WHO .. ": roc test x86/roc/Hello.roc ran " .. expects .. " expects, held at " .. EXPECTS) end
   local exe = built_roc(WHO, "x86/roc/Hello.roc", "x86-hello", "dev")
-  local made = run({exe, TEXT}, {timeout_ms = 60000, whole = 1000000, want = WANT_DRIVER})
-  if made.ended ~= "exit" or made.code ~= 0 then fail(WHO .. ": x86-hello ended " .. made.ended .. " " .. get(made, "code", "") .. ": " .. made.out) end
-  local binary = bytes_of_hex(made.out)
-  local dir = "build:roc-js-interpreter/x86/" .. basename(real("."))
-  mkdir(dir)
-  local path = dir .. "/hello"
-  replace(path, binary)
-  must(run({"chmod", "755", real(path)}, {timeout_ms = 10000, whole = 4000}))
-  local r = run({real(path)}, {timeout_ms = 10000, whole = 4096, want = WANT_BINARY})
+  local path = executables_dir() .. "/hello"
+  local size = written_executable(WHO, exe, TEXT, path)
+  local r = executable_run(path)
   local wrong = {}
   if r.ended ~= "exit" then push(wrong, "it ended " .. r.ended) end
-  if get(r, "code", -1) ~= EXPECTED_CODE then push(wrong, "it exited " .. get(r, "code", "none") .. ", not " .. EXPECTED_CODE) end
+  if r.code ~= EXPECTED_CODE then push(wrong, "it exited " .. r.code .. ", not " .. EXPECTED_CODE) end
   if r.out ~= EXPECTED_OUTPUT then push(wrong, "it printed " .. json_write(r.out) .. ", not " .. json_write(EXPECTED_OUTPUT)) end
-  if #wrong > 0 then fail(WHO .. ": the " .. #binary .. "-byte executable at " .. path .. " was wrong: " .. join(wrong, "; ")) end
-  print("x86/hello: " .. expects .. " expects passed; a " .. #binary .. "-byte static executable, every byte the Roc's, printed " .. json_write(EXPECTED_OUTPUT) .. " and exited " .. EXPECTED_CODE)
+  if #wrong > 0 then fail(WHO .. ": the " .. size .. "-byte executable at " .. path .. " was wrong: " .. join(wrong, "; ")) end
+  print("x86/hello: " .. expects .. " expects passed; a " .. size .. "-byte static executable, every byte the Roc's, printed " .. json_write(EXPECTED_OUTPUT) .. " and exited " .. EXPECTED_CODE)
 end
 
 main()

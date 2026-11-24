@@ -41,6 +41,11 @@ shl    -- an instruction's mnemonic
 jmp    -- an instruction's mnemonic
 jcc    -- the manual's name for the conditional jumps
 ret    -- an instruction's mnemonic
+neg    -- an instruction's mnemonic
+al     -- the low byte of rax, by the manual's name
+bl     -- the low byte of rbx, by the manual's name
+cl     -- the low byte of rcx, by the manual's name
+dl     -- the low byte of rdx, by the manual's name
 ae     -- a condition's suffix (jae: above or equal)
 ge     -- a condition's suffix (jge: greater or equal)
 le     -- a condition's suffix (jle: less or equal)
