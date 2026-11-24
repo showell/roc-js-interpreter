@@ -16,6 +16,18 @@ Emit :: [].{
 		displacement: displacement.to_i32_wrap(),
 	})
 
+	## `[base + index + displacement]`.
+	mem_index : {
+		base : X86.Register,
+		index : X86.Register,
+		displacement : I64,
+	} -> X86.Mem
+	mem_index = |{ base, index, displacement }| Based({
+		base,
+		index: Scaled({ reg: index, scale: Times1 }),
+		displacement: displacement.to_i32_wrap(),
+	})
+
 	mov : X86.Register, X86.Register -> Assembly.Statement
 	mov = |to, from| Instruction(MovRegReg({ to, from }))
 
@@ -28,6 +40,10 @@ Emit :: [].{
 
 	store : X86.Mem, X86.Register -> Assembly.Statement
 	store = |to, from| Instruction(MovMemReg({ to, from }))
+
+	## A byte of memory loaded, zero-extended.
+	byte_load : X86.Register, X86.Mem -> Assembly.Statement
+	byte_load = |to, from| Instruction(MovzxByteLoad({ to, from }))
 
 	lea : X86.Register, X86.Mem -> Assembly.Statement
 	lea = |to, from| Instruction(Lea({ to, from }))
@@ -64,6 +80,10 @@ Emit :: [].{
 
 	test : X86.Register, X86.Register -> Assembly.Statement
 	test = |left, right| Instruction(Test({ left, right }))
+
+	## A shift left: with a shift right after, a value's tag cleared.
+	shl : X86.Register, U8 -> Assembly.Statement
+	shl = |reg, count| Instruction(Shift({ operation: Shl, reg, count }))
 
 	## A logical shift right: a value's tag, out of its top bits.
 	shr : X86.Register, U8 -> Assembly.Statement

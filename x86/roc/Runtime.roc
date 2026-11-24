@@ -56,6 +56,42 @@ Runtime :: [].{
 	write_value : Str
 	write_value = "runtime_write_value"
 
+	## The routine that gives `rdi + rsi` as JavaScript's `+` does: a sum of
+	## two numbers, else, when either is a string, the two joined as text.
+	add : Str
+	add = "runtime_add"
+
+	## The routine that stops the program unless the value whose bits are
+	## in `rax` is a number. It changes `rcx` alone.
+	check_number : Str
+	check_number = "runtime_check_number"
+
+	## The routine that gives `rdi === rsi` as a boolean's bits.
+	strict_equal : Str
+	strict_equal = "runtime_strict_equal"
+
+	## The routine that orders `rdi` and `rsi`, two numbers or two strings:
+	## 0 when the first is less, 1 when they are equal, 2 when it is
+	## greater, 3 when either is NaN.
+	compare : Str
+	compare = "runtime_compare"
+
+	## The routine that gives 1 in `rax` when the value `rdi` is truthy,
+	## else 0.
+	truthy : Str
+	truthy = "runtime_truthy"
+
+	## The routine that joins a template's text so far (a string, `rdi`),
+	## a substitution's value made text (`rsi`) and the template's next
+	## piece (a string's address, `rdx`), the string they make in `rax`.
+	template : Str
+	template = "runtime_template"
+
+	## The routine that reads the property named by the string at `rsi` of
+	## the value `rdi`.
+	get_property : Str
+	get_property = "runtime_get_property"
+
 	## The texts the runtime writes, each under its label.
 	Text : [Space, Newline]
 
@@ -69,6 +105,14 @@ Runtime :: [].{
 			Emit.plus_imm(Rsi, 8),
 			Emit.call(Runtime.write),
 		]
+	}
+
+	## A string's bytes as the runtime holds one: its length in 8 bytes,
+	## then its bytes.
+	string_data : Str -> List(U8)
+	string_data = |text| {
+		bytes = text.to_utf8()
+		X86.append_little_endian([], { value: bytes.len().to_i64_wrap(), size: 8 }).concat(bytes)
 	}
 
 	## The program's first statements: the heap mapped, the four registers
@@ -96,7 +140,16 @@ Runtime :: [].{
 
 	## Every routine, then every text under its label.
 	items : List(Assembly.Statement)
-	items = [allocate_items, output_items, stop_items, write_value_items, number_items]
+	items = [
+		allocate_items,
+		output_items,
+		stop_items,
+		write_value_items,
+		number_items,
+		string_items,
+		operator_items,
+		property_items,
+	]
 		.join()
 		.concat(text_statements)
 }
@@ -130,9 +183,7 @@ text_statements : List(Assembly.Statement)
 text_statements = {
 	var $out = []
 	for (label, text) in texts {
-		bytes = text.to_utf8()
-		length = X86.append_little_endian([], { value: bytes.len().to_i64_wrap(), size: 8 })
-		$out = $out.concat([Mark(label), Data(length.concat(bytes))])
+		$out = $out.concat([Mark(label), Data(Runtime.string_data(text))])
 	}
 	$out
 }
@@ -163,6 +214,25 @@ texts = [
 		"x86: out of memory: the heap of 1 GiB is full, and no collector runs yet\n",
 	),
 	("runtime_text_no_heap", "x86: the heap could not be mapped\n"),
+	("runtime_text_length", "length"),
+	("runtime_text_zero", "0"),
+	(
+		"runtime_text_text_of_object",
+		"x86: a string made of an array or an object is not compiled yet\n",
+	),
+	(
+		"runtime_text_add_not_compiled",
+		"x86: `+` of values neither of which is a string, nor both numbers, is not compiled yet\n",
+	),
+	(
+		"runtime_text_arithmetic_not_compiled",
+		"x86: arithmetic on a value that is not a number is not compiled yet\n",
+	),
+	(
+		"runtime_text_compare_not_compiled",
+		"x86: an order of values that are not two numbers or two strings is not compiled yet\n",
+	),
+	("runtime_text_property_not_compiled", "x86: this property read is not compiled yet\n"),
 	(
 		"runtime_text_value_not_written",
 		"x86: console.log of this kind of value is not compiled yet\n",
@@ -312,6 +382,8 @@ write_value_items = {
 		Emit.shr(Rcx, Boxing.tag_shift),
 		Emit.cmp_imm(Rcx, Boxing.first_tag),
 		Emit.jcc(B, Runtime.print_number),
+		Emit.cmp_imm(Rcx, Boxing.string_tag),
+		Emit.jcc(E, "runtime_write_string"),
 	]
 		.concat(constant({ bits: Boxing.undefined_bits, label: "runtime_text_undefined" }))
 		.concat(constant({ bits: Boxing.null_bits, label: "runtime_text_null" }))
@@ -322,7 +394,345 @@ write_value_items = {
 		.concat(written("runtime_text_null"))
 		.concat(written("runtime_text_false"))
 		.concat(written("runtime_text_true"))
+		.concat([Emit.mark("runtime_write_string")])
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.load(Rdx, Emit.mem(Rdi, 0)),
+			Emit.lea(Rsi, Emit.mem(Rdi, 8)),
+			Emit.jmp(Runtime.write),
+		])
 }
+
+## The statements that put the tag of the value in `from` in `rcx`.
+tag_load_items : X86.Register -> List(Assembly.Statement)
+tag_load_items = |from| [Emit.mov(Rcx, from), Emit.shr(Rcx, Boxing.tag_shift)]
+
+## The statements that jump to `label` unless the value in `reg` is a
+## string, with `rcx` its tag after.
+unless_string_items : { reg : X86.Register, label : Str } -> List(Assembly.Statement)
+unless_string_items = |{ reg, label }|
+	tag_load_items(reg).concat([Emit.cmp_imm(Rcx, Boxing.string_tag), Emit.jcc(Ne, label)])
+
+## The statements that jump to `label` unless the value in `reg` is a
+## number.
+unless_number_items : { reg : X86.Register, label : Str } -> List(Assembly.Statement)
+unless_number_items = |{ reg, label }|
+	tag_load_items(reg).concat([Emit.cmp_imm(Rcx, Boxing.first_tag), Emit.jcc(Ae, label)])
+
+## The byte `r8` of the string at `base` loaded into `reg`.
+text_byte_item : { reg : X86.Register, base : X86.Register } -> Assembly.Statement
+text_byte_item = |{ reg, base }| Emit.byte_load(
+	reg,
+	Emit.mem_index({ base, index: R8, displacement: 8 }),
+)
+
+## The pointer a boxed value holds, its tag cleared, in the same register:
+## the top 16 bits shifted out and back as zeros.
+unboxed_items : X86.Register -> List(Assembly.Statement)
+unboxed_items = |reg| [Emit.shl(reg, 16), Emit.shr(reg, 16)]
+
+## The string at the address in `rax` boxed, in `rax`. It changes `rcx`.
+boxed_string_items : List(Assembly.Statement)
+boxed_string_items = [Emit.imm(Rcx, Boxing.tag_bits(Boxing.string_tag)), Emit.plus(Rax, Rcx)]
+
+## `runtime_text_of`, JavaScript's `String(v)` of the value in `rdi`, the
+## string's address in `rax`; `runtime_concat`, the string at `rdi` then
+## the one at `rsi`, a new string's address in `rax`; `runtime_text_equal`,
+## 1 in `rax` when the strings at `rdi` and `rsi` hold the same bytes,
+## else 0, changing `rax`, `rcx`, `rdx` and `r8` alone; and
+## `runtime_template`.
+string_items : List(Assembly.Statement)
+string_items = {
+	constant = |{ bits, label }| [
+		Emit.imm(Rcx, bits),
+		Emit.cmp(Rdi, Rcx),
+		Emit.jcc(E, "${label}_text_case"),
+	]
+	given = |label| [
+		Emit.mark("${label}_text_case"),
+		Emit.address_of(Rax, label),
+		Emit.ret,
+	]
+	text_of = [Emit.mark("runtime_text_of"), Emit.mov(Rax, Rdi)]
+		.concat(tag_load_items(Rdi))
+		.concat([
+			Emit.cmp_imm(Rcx, Boxing.first_tag),
+			Emit.jcc(B, "runtime_text_of_number"),
+			Emit.cmp_imm(Rcx, Boxing.string_tag),
+			Emit.jcc(E, "runtime_text_of_string"),
+		])
+		.concat(constant({ bits: Boxing.undefined_bits, label: "runtime_text_undefined" }))
+		.concat(constant({ bits: Boxing.null_bits, label: "runtime_text_null" }))
+		.concat(constant({ bits: Boxing.false_bits, label: "runtime_text_false" }))
+		.concat(constant({ bits: Boxing.true_bits, label: "runtime_text_true" }))
+		.concat(stopping_items("runtime_text_text_of_object"))
+		.concat(given("runtime_text_undefined"))
+		.concat(given("runtime_text_null"))
+		.concat(given("runtime_text_false"))
+		.concat(given("runtime_text_true"))
+		.append(Emit.mark("runtime_text_of_string"))
+		.concat(unboxed_items(Rax))
+		.append(Emit.ret)
+		# String(-0) is "0", though console.log writes it as -0.
+		.concat([
+			Emit.mark("runtime_text_of_number"),
+			Emit.imm(Rcx, (0x8000000000000000).to_i64_wrap()),
+			Emit.cmp(Rax, Rcx),
+			Emit.jcc(Ne, Runtime.number_text),
+			Emit.address_of(Rax, "runtime_text_zero"),
+			Emit.ret,
+		])
+	concat = [
+		Emit.mark("runtime_concat"),
+		Emit.save(Rdi),
+		Emit.save(Rsi),
+		Emit.load(Rax, Emit.mem(Rdi, 0)),
+		Emit.load(Rcx, Emit.mem(Rsi, 0)),
+		Emit.plus(Rax, Rcx),
+		Emit.lea(Rdi, Emit.mem(Rax, 8)),
+		Emit.call(Runtime.allocate),
+		Emit.restore(Rsi),
+		Emit.restore(Rdx),
+		Emit.load(Rcx, Emit.mem(Rdx, 0)),
+		Emit.load(R8, Emit.mem(Rsi, 0)),
+		Emit.mov(R9, Rcx),
+		Emit.plus(R9, R8),
+		Emit.store(Emit.mem(Rax, 0), R9),
+		Emit.lea(Rdi, Emit.mem(Rax, 8)),
+		Emit.mov(R10, Rsi),
+		Emit.lea(Rsi, Emit.mem(Rdx, 8)),
+		Instruction(RepMovsb),
+		Emit.lea(Rsi, Emit.mem(R10, 8)),
+		Emit.mov(Rcx, R8),
+		Instruction(RepMovsb),
+		Emit.ret,
+	]
+	equal = [
+		Emit.mark("runtime_text_equal"),
+		Emit.cmp(Rdi, Rsi),
+		Emit.jcc(E, "runtime_text_equal_yes"),
+		Emit.load(Rcx, Emit.mem(Rdi, 0)),
+		Emit.load(Rdx, Emit.mem(Rsi, 0)),
+		Emit.cmp(Rcx, Rdx),
+		Emit.jcc(Ne, "runtime_text_equal_no"),
+		Emit.zero(R8),
+		Emit.mark("runtime_text_equal_byte"),
+		Emit.cmp(R8, Rcx),
+		Emit.jcc(E, "runtime_text_equal_yes"),
+		text_byte_item({ reg: Rax, base: Rdi }),
+		text_byte_item({ reg: Rdx, base: Rsi }),
+		Emit.cmp(Rax, Rdx),
+		Emit.jcc(Ne, "runtime_text_equal_no"),
+		Emit.plus_imm(R8, 1),
+		Emit.jmp("runtime_text_equal_byte"),
+		Emit.mark("runtime_text_equal_yes"),
+		Emit.imm(Rax, 1),
+		Emit.ret,
+		Emit.mark("runtime_text_equal_no"),
+		Emit.zero(Rax),
+		Emit.ret,
+	]
+	template = [
+		Emit.mark(Runtime.template),
+		Emit.save(Rdx),
+		Emit.save(Rdi),
+		Emit.mov(Rdi, Rsi),
+		Emit.call("runtime_text_of"),
+		Emit.restore(Rdi),
+	]
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.mov(Rsi, Rax),
+			Emit.call("runtime_concat"),
+			Emit.restore(Rsi),
+			Emit.mov(Rdi, Rax),
+			Emit.call("runtime_concat"),
+		])
+		.concat(boxed_string_items)
+		.append(Emit.ret)
+	[text_of, concat, equal, template].join()
+}
+
+## `runtime_add`, `runtime_check_number`, `runtime_strict_equal`,
+## `runtime_compare` and `runtime_truthy`.
+operator_items : List(Assembly.Statement)
+operator_items = {
+	both_numbers = |other|
+		unless_number_items({ reg: Rdi, label: other })
+			.concat(unless_number_items({ reg: Rsi, label: other }))
+			.concat([Emit.to_xmm(Xmm0, Rdi), Emit.to_xmm(Xmm1, Rsi)])
+	answer = |{ label, value }| [
+		Emit.mark(label),
+		Emit.imm(Rax, value),
+		Emit.ret,
+	]
+	add = [Emit.mark(Runtime.add)]
+		.concat(both_numbers("runtime_add_other"))
+		.concat([
+			Instruction(
+				Sse({
+					operation: Addsd,
+					to: Xmm0,
+					from: Xmm1,
+				}),
+			),
+			Instruction(MovqFromXmm({ to: Rax, from: Xmm0 })),
+			Emit.ret,
+			Emit.mark("runtime_add_other"),
+		])
+		.concat(tag_load_items(Rdi))
+		.concat([Emit.cmp_imm(Rcx, Boxing.string_tag), Emit.jcc(E, "runtime_add_texts")])
+		.concat(tag_load_items(Rsi))
+		.concat([Emit.cmp_imm(Rcx, Boxing.string_tag), Emit.jcc(E, "runtime_add_texts")])
+		.concat(stopping_items("runtime_text_add_not_compiled"))
+		.concat([
+			Emit.mark("runtime_add_texts"),
+			Emit.save(Rsi),
+			Emit.call("runtime_text_of"),
+			Emit.restore(Rsi),
+			Emit.save(Rax),
+			Emit.mov(Rdi, Rsi),
+			Emit.call("runtime_text_of"),
+			Emit.mov(Rsi, Rax),
+			Emit.restore(Rdi),
+			Emit.call("runtime_concat"),
+		])
+		.concat(boxed_string_items)
+		.append(Emit.ret)
+	check = [Emit.mark(Runtime.check_number)]
+		.concat(tag_load_items(Rax))
+		.concat([
+			Emit.cmp_imm(Rcx, Boxing.first_tag),
+			Emit.jcc(Ae, "runtime_not_a_number_stop"),
+			Emit.ret,
+			Emit.mark("runtime_not_a_number_stop"),
+		])
+		.concat(stopping_items("runtime_text_arithmetic_not_compiled"))
+	equal = [Emit.mark(Runtime.strict_equal)]
+		.concat(both_numbers("runtime_strict_equal_other"))
+		.concat([
+			Instruction(Ucomisd({ left: Xmm0, right: Xmm1 })),
+			Emit.jcc(P, "runtime_strict_equal_false"),
+			Emit.jcc(E, "runtime_strict_equal_true"),
+			Emit.jmp("runtime_strict_equal_false"),
+			Emit.mark("runtime_strict_equal_other"),
+			Emit.cmp(Rdi, Rsi),
+			Emit.jcc(E, "runtime_strict_equal_true"),
+		])
+		.concat(unless_string_items({ reg: Rdi, label: "runtime_strict_equal_false" }))
+		.concat(unless_string_items({ reg: Rsi, label: "runtime_strict_equal_false" }))
+		.concat(unboxed_items(Rdi))
+		.concat(unboxed_items(Rsi))
+		.concat([
+			Emit.call("runtime_text_equal"),
+			Emit.imm(Rcx, Boxing.false_bits),
+			Emit.plus(Rax, Rcx),
+			Emit.ret,
+		])
+		.concat(answer({ label: "runtime_strict_equal_true", value: Boxing.true_bits }))
+		.concat(answer({ label: "runtime_strict_equal_false", value: Boxing.false_bits }))
+	compare = [Emit.mark(Runtime.compare)]
+		.concat(both_numbers("runtime_compare_other"))
+		.concat([
+			Instruction(Ucomisd({ left: Xmm0, right: Xmm1 })),
+			Emit.jcc(P, "runtime_compare_unordered"),
+			Emit.jcc(B, "runtime_compare_less"),
+			Emit.jcc(E, "runtime_compare_equal"),
+			Emit.jmp("runtime_compare_greater"),
+			Emit.mark("runtime_compare_other"),
+		])
+		.concat(unless_string_items({ reg: Rdi, label: "runtime_compare_mixed" }))
+		.concat(unless_string_items({ reg: Rsi, label: "runtime_compare_mixed" }))
+		.concat(unboxed_items(Rdi))
+		.concat(unboxed_items(Rsi))
+		.concat([
+			Emit.load(R9, Emit.mem(Rdi, 0)),
+			Emit.load(R10, Emit.mem(Rsi, 0)),
+			Emit.zero(R8),
+			Emit.mark("runtime_compare_byte"),
+			Emit.cmp(R8, R9),
+			Emit.jcc(E, "runtime_compare_first_ended"),
+			Emit.cmp(R8, R10),
+			Emit.jcc(E, "runtime_compare_greater"),
+			text_byte_item({ reg: Rax, base: Rdi }),
+			text_byte_item({ reg: Rdx, base: Rsi }),
+			Emit.cmp(Rax, Rdx),
+			Emit.jcc(B, "runtime_compare_less"),
+			Emit.jcc(A, "runtime_compare_greater"),
+			Emit.plus_imm(R8, 1),
+			Emit.jmp("runtime_compare_byte"),
+			Emit.mark("runtime_compare_first_ended"),
+			Emit.cmp(R8, R10),
+			Emit.jcc(E, "runtime_compare_equal"),
+			Emit.jmp("runtime_compare_less"),
+			Emit.mark("runtime_compare_mixed"),
+		])
+		.concat(stopping_items("runtime_text_compare_not_compiled"))
+		.concat(answer({ label: "runtime_compare_less", value: 0 }))
+		.concat(answer({ label: "runtime_compare_equal", value: 1 }))
+		.concat(answer({ label: "runtime_compare_greater", value: 2 }))
+		.concat(answer({ label: "runtime_compare_unordered", value: 3 }))
+	truthy = [Emit.mark(Runtime.truthy)]
+		.concat(unless_number_items({ reg: Rdi, label: "runtime_truthy_other" }))
+		.concat([
+			Emit.to_xmm(Xmm0, Rdi),
+			Emit.zero(Rcx),
+			Emit.to_xmm(Xmm1, Rcx),
+			Instruction(Ucomisd({ left: Xmm0, right: Xmm1 })),
+			Emit.jcc(P, "runtime_truthy_no"),
+			Emit.jcc(E, "runtime_truthy_no"),
+			Emit.jmp("runtime_truthy_yes"),
+			Emit.mark("runtime_truthy_other"),
+			Emit.imm(Rax, Boxing.true_bits),
+			Emit.cmp(Rdi, Rax),
+			Emit.jcc(E, "runtime_truthy_yes"),
+			Emit.cmp_imm(Rcx, Boxing.first_tag),
+			Emit.jcc(E, "runtime_truthy_no"),
+			Emit.cmp_imm(Rcx, Boxing.string_tag),
+			Emit.jcc(Ne, "runtime_truthy_yes"),
+		])
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.load(Rax, Emit.mem(Rdi, 0)),
+			Emit.test(Rax, Rax),
+			Emit.jcc(E, "runtime_truthy_no"),
+		])
+		.concat(answer({ label: "runtime_truthy_yes", value: 1 }))
+		.concat(answer({ label: "runtime_truthy_no", value: 0 }))
+	[add, check, equal, compare, truthy].join()
+}
+
+## `runtime_get_property`: a string's or an array's `length`.
+property_items : List(Assembly.Statement)
+property_items =
+	[Emit.mark(Runtime.get_property)]
+		.concat(tag_load_items(Rdi))
+		.concat([
+			Emit.cmp_imm(Rcx, Boxing.string_tag),
+			Emit.jcc(E, "runtime_get_length"),
+			Emit.cmp_imm(Rcx, Boxing.array_tag),
+			Emit.jcc(E, "runtime_get_length"),
+		])
+		.concat(stopping_items("runtime_text_property_not_compiled"))
+		.concat([
+			Emit.mark("runtime_get_length"),
+			Emit.save(Rdi),
+			Emit.mov(Rdi, Rsi),
+			Emit.address_of(Rsi, "runtime_text_length"),
+			Emit.call("runtime_text_equal"),
+			Emit.restore(Rdi),
+			Emit.test(Rax, Rax),
+			Emit.jcc(E, "runtime_get_length_other"),
+		])
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.load(Rax, Emit.mem(Rdi, 0)),
+			Instruction(Cvtsi2sd({ to: Xmm0, from: Rax })),
+			Instruction(MovqFromXmm({ to: Rax, from: Xmm0 })),
+			Emit.ret,
+			Emit.mark("runtime_get_length_other"),
+		])
+		.concat(stopping_items("runtime_text_property_not_compiled"))
 
 ## The bits of the number in `rax` compared with `bits`, and a jump to
 ## `label` when they are the same.

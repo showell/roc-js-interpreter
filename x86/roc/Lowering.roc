@@ -43,38 +43,73 @@ Lowering :: [].{
 	program_items : Bytecode.Program -> Try(List(Assembly.Statement), [Refused(Str)])
 	program_items = |program| {
 		makers = makers_of(program)?
+		literals = literals_of(program)?
 		var $returns = Dict.empty()
 		for index in 0..<program.codes.len() {
 			$returns = $returns.insert(index, Number)
 		}
-		for _ in 0..<3 {
+		var $parameters = Dict.empty()
+		for _ in 0..<8 {
 			var $items = Runtime.start_items(code_label(program.main))
 			var $found = $returns
+			var $called = Dict.empty()
+			var $first_refusal = Ok({})
 			for index in 0..<program.codes.len() {
-				lowered = code_items({ program, makers, returns: $returns, index })?
-				$items = $items.concat(lowered.statements)
-				$found = match lowered.result {
-					Gives(kind) => $found.insert(index, kind)
-					GivesNothing => $found
+				context = {
+					program,
+					makers,
+					returns: $returns,
+					parameters: $parameters,
+					literals,
+					index,
+				}
+				match code_items(context) {
+					Ok(lowered) => {
+						$items = $items.concat(lowered.statements)
+						$found = match lowered.result {
+							Gives(kind) => $found.insert(index, kind)
+							GivesNothing => $found
+						}
+						for call in lowered.calls {
+							$called = with_call_kinds($called, call)
+						}
+					}
+					Err(refused) =>
+						if $first_refusal == Ok({}) {
+							$first_refusal = Err(refused)
+						}
 				}
 			}
-			if $found == $returns {
-				return Ok($items.concat(Runtime.items))
+			if $found == $returns and $called == $parameters {
+				return match $first_refusal {
+					Ok({}) => Ok($items.concat(Runtime.items).concat(literal_statements(literals)))
+					Err(refused) => Err(refused)
+				}
 			}
 			$returns = $found
+			$parameters = $called
 		}
-		Err(Refused("the kinds of the functions' results never settle"))
+		Err(Refused("the kinds of the functions' parameters and results never settle"))
 	}
 }
 
 ## What a slot or a place on the stack holds, known before the program runs.
+## A value's kind (`Number` to `Value`, whose bits are a value's boxed bits,
+## `Boxing.roc`), or what takes no bytes: a function by its code, `console`,
+## its `log`, and a method looked up by name on a value.
 Kind : [
 	Number,
 	Boolean,
 	Undefined,
+	Null,
+	String,
+	Array,
+	Object,
+	Value,
 	Function(U64),
 	Console,
 	Log,
+	Method(Str),
 ]
 
 ## A slot holds a value of its kind once its declaration has run.
@@ -96,7 +131,112 @@ Context : {
 	program : Bytecode.Program,
 	makers : Dict(U64, Maker),
 	returns : Dict(U64, Kind),
+	parameters : Dict(U64, List(Kind)),
+	literals : Dict(Str, U64),
 	index : U64,
+}
+
+## A call of a function by its code, with its arguments' kinds.
+CallKinds : { code : U64, kinds : List(Kind) }
+
+## Whether a kind is a value's, with boxed bits.
+is_value_kind : Kind -> Bool
+is_value_kind = |kind|
+	match kind {
+		Number | Boolean | Undefined | Null | String | Array | Object | Value => True
+		Function(_) | Console | Log | Method(_) => False
+	}
+
+## The kind two ways give a place: their own when they agree, `Value` when
+## both are values, and none for anything else.
+met_kind : Kind, Kind -> Try(Kind, [Apart])
+met_kind = |one, other|
+	if one == other {
+		Ok(one)
+	} else if is_value_kind(one) and is_value_kind(other) {
+		Ok(Value)
+	} else {
+		Err(Apart)
+	}
+
+## The parameters' kinds of every call so far, with one more call met in.
+with_call_kinds : Dict(U64, List(Kind)), CallKinds -> Dict(U64, List(Kind))
+with_call_kinds = |called, { code, kinds }|
+	match called.get(code) {
+		Ok(before) => {
+			met = List.map2(
+				before,
+				kinds,
+				|before_kind, call_kind|
+					match met_kind(before_kind, call_kind) {
+						Ok(kind) => kind
+						Err(Apart) => crash "Lowering.with_call_kinds: arguments are values"
+					},
+			)
+			called.insert(code, met)
+		}
+		Err(_) => called.insert(code, kinds)
+	}
+
+## The kind of a parameter of the function being lowered: what its calls
+## pass, or a number for a function no lowered call reaches.
+parameter_kind : Context, U64 -> Kind
+parameter_kind = |lowering, slot|
+	match lowering.parameters.get(lowering.index) {
+		Ok(kinds) => kinds.get(slot) ?? crash "Lowering.parameter_kind: a call passes each"
+		Err(_) => Number
+	}
+
+## Each text the program names (its strings, a template's pieces and the
+## properties it reads and writes), numbered for its label. A text that
+## isn't ASCII is refused: a string's length is its bytes here, and
+## JavaScript's counts UTF-16's units.
+literals_of : Bytecode.Program -> Try(Dict(Str, U64), [Refused(Str)])
+literals_of = |program| {
+	var $found = Dict.empty()
+	for code in program.codes {
+		for instruction in code.ops {
+			named = match instruction {
+				PushText(text) => Named(text)
+				TemplatePart(text) => Named(text)
+				GetProperty(key, _) => Named(key)
+				SetProperty(key, _) => Named(key)
+				SetField(key) => Named(key)
+				_ => Unnamed
+			}
+			match named {
+				Named(text) =>
+					if !$found.contains(text) {
+						if text.to_utf8().any(|byte| byte >= 0x80) {
+							return Err(Refused("a string that is not ASCII is not compiled yet"))
+						}
+						$found = $found.insert(text, $found.len())
+					}
+				Unnamed => {}
+			}
+		}
+	}
+	Ok($found)
+}
+
+## Each text's bytes under its label, as the runtime's strings are laid out.
+literal_statements : Dict(Str, U64) -> List(Assembly.Statement)
+literal_statements = |literals| {
+	var $out = []
+	for (text, number) in literals.to_list() {
+		$out = $out.concat([Mark(literal_label(number)), Data(Runtime.string_data(text))])
+	}
+	$out
+}
+
+literal_label : U64 -> Str
+literal_label = |number| "literal_${number.to_str()}"
+
+## The label of a text the program names.
+text_label : Site, Str -> Str
+text_label = |site, text| {
+	number = site.lowering.literals.get(text) ?? crash "Lowering.text_label: every text is numbered"
+	literal_label(number)
 }
 
 ## One instruction's place, for the code it lowers to and its messages.
@@ -215,7 +355,7 @@ start_state = |lowering, code| {
 	for slot in 0..<parameters {
 		$slots = $slots.set(
 			slot,
-			Ready(Number),
+			Ready(parameter_kind(lowering, slot)),
 		) ?? crash "Lowering.start_state: a parameter has a slot"
 	}
 	for step in code.entry {
@@ -224,7 +364,7 @@ start_state = |lowering, code| {
 			FilledBox(slot) => {
 				$slots = $slots.set(
 					slot,
-					Ready(Number),
+					Ready(parameter_kind(lowering, slot)),
 				) ?? crash "Lowering.start_state: a boxed parameter has a slot"
 			}
 			CapturedBox(captured) => {
@@ -259,8 +399,8 @@ CodeFault : [
 code_refusal : Context, CodeFault -> [Refused(Str)]
 code_refusal = |lowering, fault| {
 	why = match fault {
-		LoopChangesKinds(at) => "a loop changes a kind it holds, at instruction ${at.to_str()}"
-		TwoResultKinds => "it returns values of two kinds"
+		LoopChangesKinds(at) => "a loop's kinds never settle, at instruction ${at.to_str()}"
+		TwoResultKinds => "it returns a value and a function"
 		TwoStacks(at) => "two ways reach instruction ${at.to_str()} with different stacks"
 		TwoSlotKinds(at) => "a variable holds values of two kinds at instruction ${at.to_str()}"
 		FrameTooLarge => "its frame is over a megabyte"
@@ -294,13 +434,39 @@ code_label = |index| "code_${index.to_str()}"
 place_label : Context, U64 -> Str
 place_label = |lowering, at| "code_${lowering.index.to_str()}_${at.to_str()}"
 
+## What a function lowers to: its machine code, the kind of what it
+## returns, and the kinds of the calls it makes.
+CodeItems : {
+	statements : List(Assembly.Statement),
+	result : [Gives(Kind), GivesNothing],
+	calls : List(CallKinds),
+}
+
 ## One function's machine code: its entry, which makes its frame and
-## copies its arguments to their slots, then each instruction's.
-code_items : Context -> Try(
-	{ statements : List(Assembly.Statement), result : [Gives(Kind), GivesNothing] },
+## copies its arguments to their slots, then each instruction's. A loop
+## whose body gives a variable another kind than it had at the loop's head
+## widens the head to `Value` and lowers the function again.
+code_items : Context -> Try(CodeItems, [Refused(Str)])
+code_items = |lowering| {
+	var $heads = Dict.empty()
+	for _ in 0..<16 {
+		match code_walk(lowering, $heads)? {
+			Walked(done) => return Ok(done)
+			Widened({ at, state }) => {
+				$heads = $heads.insert(at, state)
+			}
+		}
+	}
+	Err(code_refusal(lowering, LoopChangesKinds(0)))
+}
+
+## One pass of `code_items` with the loop heads widened so far.
+code_walk : Context,
+Dict(U64, State) -> Try(
+	[Walked(CodeItems), Widened({ at : U64, state : State })],
 	[Refused(Str)],
 )
-code_items = |lowering| {
+code_walk = |lowering, heads| {
 	code = lowering.program.codes.get(lowering.index) ?? crash "Lowering.code_items: a code's index"
 	start = start_state(lowering, code)?
 	functions = declared_functions(code)
@@ -322,6 +488,7 @@ code_items = |lowering| {
 	var $flowing = Flowing(start)
 	var $deepest = 0
 	var $result = GivesNothing
+	var $calls = []
 	for at in 0..<code.ops.len() {
 		$body = $body.append(Mark(place_label(lowering, at)))
 		arriving = match ($flowing, $pending.get(at)) {
@@ -336,9 +503,17 @@ code_items = |lowering| {
 			Unreached => {
 				$flowing = Stopped
 			}
-			Arrives(state) => {
+			Arrives(reached) => {
+				state = match heads.get(at) {
+					Ok(head) => meeting_state(lowering, { at, one: reached, other: head })?
+					Err(_) => reached
+				}
 				$seen = $seen.insert(at, state)
 				instruction = code.ops.get(at) ?? crash "Lowering.code_items: an instruction"
+				$calls = match call_kinds(lowering, { instruction, state }) {
+					Ok(call) => $calls.append(call)
+					Err(NoCall) => $calls
+				}
 				lowered = instruction_items(
 					{ lowering, code, at, functions },
 					{ instruction, state },
@@ -381,7 +556,7 @@ code_items = |lowering| {
 								},
 							)?
 							if again != head {
-								return Err(code_refusal(lowering, LoopChangesKinds(target)))
+								return Ok(Widened({ at: target, state: again }))
 							}
 						}
 				}
@@ -389,10 +564,9 @@ code_items = |lowering| {
 					(GivesNothing, _) => $result
 					(Gives(kind), GivesNothing) => Gives(kind)
 					(Gives(kind), Gives(before)) =>
-						if kind == before {
-							$result
-						} else {
-							return Err(code_refusal(lowering, TwoResultKinds))
+						match met_kind(kind, before) {
+							Ok(met) => Gives(met)
+							Err(Apart) => return Err(code_refusal(lowering, TwoResultKinds))
 						}
 				}
 			}
@@ -403,8 +577,29 @@ code_items = |lowering| {
 		return Err(code_refusal(lowering, FrameTooLarge))
 	}
 	statements = entry_items(lowering, { code, frame_bytes }).concat($body)
-	Ok({ statements, result: $result })
+	Ok(Walked({ statements, result: $result, calls: $calls }))
 }
+
+## The kinds of a call's arguments, when the instruction calls a declared
+## function with as many arguments as it has parameters, each a value.
+call_kinds : Context, { instruction : Bytecode.Op, state : State } -> Try(CallKinds, [NoCall])
+call_kinds = |lowering, { instruction, state }|
+	match instruction {
+		Call({ count, written: _, at: _ }) =>
+			match kind_below(state, count) {
+				Function(made) => {
+					callee = lowering.program.codes.get(made) ?? crash "Lowering.call_kinds: a code"
+					kinds = state.stack_kinds.take_last(count)
+					if callee.arguments == Each(count) and kinds.all(is_value_kind) {
+						Ok({ code: made, kinds })
+					} else {
+						Err(NoCall)
+					}
+				}
+				_ => Err(NoCall)
+			}
+		_ => Err(NoCall)
+	}
 
 ## A function's entry: `rbp` saved and set, its frame made below it, and
 ## each parameter copied from where the caller pushed it to its slot.
@@ -451,8 +646,21 @@ meeting_state : Context,
 	other : State,
 } -> Try(State, [Refused(Str)])
 meeting_state = |lowering, { at, one, other }| {
-	if one.stack_kinds != other.stack_kinds {
+	if one.stack_kinds.len() != other.stack_kinds.len() {
 		return Err(code_refusal(lowering, TwoStacks(at)))
+	}
+	var $stack_kinds = []
+	for (a, b) in List.map2(
+		one.stack_kinds,
+		other.stack_kinds,
+		|a, b| (a, b),
+	) {
+		match met_kind(a, b) {
+			Ok(kind) => {
+				$stack_kinds = $stack_kinds.append(kind)
+			}
+			Err(Apart) => return Err(code_refusal(lowering, TwoStacks(at)))
+		}
 	}
 	var $slots = []
 	for (a, b) in List.map2(
@@ -462,16 +670,15 @@ meeting_state = |lowering, { at, one, other }| {
 	) {
 		slot = match (a, b) {
 			(Ready(left), Ready(right)) =>
-				if left == right {
-					Ready(left)
-				} else {
-					return Err(code_refusal(lowering, TwoSlotKinds(at)))
+				match met_kind(left, right) {
+					Ok(kind) => Ready(kind)
+					Err(Apart) => return Err(code_refusal(lowering, TwoSlotKinds(at)))
 				}
 			_ => Unready
 		}
 		$slots = $slots.append(slot)
 	}
-	Ok({ slots: $slots, stack_kinds: one.stack_kinds })
+	Ok({ slots: $slots, stack_kinds: $stack_kinds })
 }
 
 slot_place : U64 -> X86.Mem
@@ -559,9 +766,8 @@ written_slot = |site, { state, slot }| {
 		_ => {}
 	}
 	kind = kind_below(state, 0)
-	match kind {
-		Number | Boolean | Undefined => {}
-		_ => return refusal(site, "a variable is given a function, `console` or a method")
+	if !is_value_kind(kind) {
+		return refusal(site, "a variable is given a function, `console` or a method")
 	}
 	slots = state.slots.set(slot, Ready(kind)) ?? crash "Lowering.written_slot: a slot of the frame"
 	Ok({ ..state, slots })
@@ -605,7 +811,16 @@ truth_items = |site, state| {
 				Instruction(MovqToXmm({ to: Xmm1, from: Rcx })),
 				Instruction(Ucomisd({ left: Xmm0, right: Xmm1 })),
 			])
-		_ => refusal(site, "a test of a value that is neither a number nor a boolean")
+		kind =>
+			if is_value_kind(kind) {
+				Ok([
+					Emit.load(Rdi, top),
+					Emit.call(Runtime.truthy),
+					Emit.test(Rax, Rax),
+				])
+			} else {
+				refusal(site, "a test of a ${kind_text(kind)}")
+			}
 	}
 }
 
@@ -623,10 +838,15 @@ update_items : Site,
 } -> Try(Lowered, [Refused(Str)])
 update_items = |site, { state, slot, step }| {
 	kind = slot_kind(site, { state, slot, name: "a variable" })?
-	if kind != Number {
+	if !is_numeric(kind) {
 		return refusal(site, "`++` or `--` of a value that is not a number")
 	}
 	top = stack_place(site.code, state.stack_kinds.len())
+	checked = number_check_items({ kind, place: slot_place(slot) })
+	numbered = {
+		..state,
+		slots: state.slots.set(slot, Ready(Number)) ?? crash "Lowering.update_items: a slot",
+	}
 	stepped = [
 		Instruction(MovsdLoad({ to: Xmm0, from: slot_place(slot) })),
 		Instruction(MovRegImm({ to: Rax, value: step.delta.to_bits().to_i64_wrap() })),
@@ -644,7 +864,7 @@ update_items = |site, { state, slot, step }| {
 		Postfix => copy_items({ from: slot_place(slot), to: top }).concat(stepped)
 		Prefix => stepped.append(Instruction(MovsdStore({ to: top, from: Xmm0 })))
 	}
-	Ok(falling(items, with_top(state, Number)))
+	Ok(falling(checked.concat(items), with_top(numbered, Number)))
 }
 
 ## A binary operator on the two values on top of the stack, its answer in
@@ -773,6 +993,65 @@ binary_items = |site, { state, operator }| {
 		)
 		(StrictEqual, (Boolean, Boolean)) => Ok(booleans_compared(E))
 		(StrictNotEqual, (Boolean, Boolean)) => Ok(booleans_compared(Ne))
+		(StrictEqual, _) | (StrictNotEqual, _) =>
+			dynamic_equality_items(site, { state, operator, kinds })
+		(Add, _) =>
+			match added_kind(kinds) {
+				Ok(kind) =>
+					Ok(
+						falling(
+							[
+								Emit.load(Rdi, left),
+								Emit.load(Rsi, right),
+								Emit.call(Runtime.add),
+								Emit.store(left, Rax),
+							],
+							with_top(without_top(state, 2), kind),
+						),
+					)
+				Err(Unadded) => refusal(
+					site,
+					"`+` of a ${kind_text(kinds.0)} and a ${kind_text(kinds.1)} isn't compiled yet",
+				)
+			}
+		(Subtract, _)
+		| (Multiply, _)
+		| (Divide, _) if is_numeric(kinds.0) and is_numeric(kinds.1) => {
+			operation = match operator {
+				Subtract => Subsd
+				Multiply => Mulsd
+				_ => Divsd
+			}
+			checked = number_check_items({ kind: kinds.0, place: left })
+				.concat(number_check_items({ kind: kinds.1, place: right }))
+			done = arithmetic(operation)
+			Ok({ ..done, statements: checked.concat(done.statements) })
+		}
+		(Less, _) | (LessOrEqual, _) | (Greater, _) | (GreaterOrEqual, _) if is_ordered(kinds) => {
+			mapped = match operator {
+				Less => [Emit.cmp_imm(Rax, 0), Instruction(Setcc({ condition: E, to: Al }))]
+				LessOrEqual => [Emit.cmp_imm(Rax, 1), Instruction(Setcc({ condition: Be, to: Al }))]
+				Greater => [Emit.cmp_imm(Rax, 2), Instruction(Setcc({ condition: E, to: Al }))]
+				_ => [
+					Emit.minus_imm(Rax, 1),
+					Emit.cmp_imm(Rax, 1),
+					Instruction(Setcc({ condition: Be, to: Al })),
+				]
+			}
+			Ok(
+				falling(
+					[
+						Emit.load(Rdi, left),
+						Emit.load(Rsi, right),
+						Emit.call(Runtime.compare),
+					]
+						.concat(mapped)
+						.concat(boolean_items)
+						.append(Emit.store(left, Rax)),
+					with_top(without_top(state, 2), Boolean),
+				),
+			)
+		}
 		(Remainder, _) => refusal(site, "`%` is not compiled yet")
 		(Power, _) => refusal(site, "`**` is not compiled yet")
 		_ => {
@@ -781,6 +1060,91 @@ binary_items = |site, { state, operator }| {
 			refusal(site, "`${named}` of ${operands} is not compiled yet")
 		}
 	}
+}
+
+## Whether a kind may be a number: arithmetic on it is checked or free.
+is_numeric : Kind -> Bool
+is_numeric = |kind|
+	match kind {
+		Number | Value => True
+		_ => False
+	}
+
+## Whether two kinds may be ordered by `runtime_compare`: two numbers or two
+## strings, as far as is known.
+is_ordered : (Kind, Kind) -> Bool
+is_ordered = |kinds|
+	match kinds {
+		(Number, Number) | (Number, Value) | (Value, Number) | (Value, Value) => True
+		(String, String) | (String, Value) | (Value, String) => True
+		_ => False
+	}
+
+## The kind `+` gives: a string when either is one, a number of two, and an
+## unknown value when either is unknown. Anything else isn't compiled.
+added_kind : (Kind, Kind) -> Try(Kind, [Unadded])
+added_kind = |kinds|
+	match kinds {
+		(Number, Number) => Ok(Number)
+		(String, other) | (other, String) if is_value_kind(other) => Ok(String)
+		(Value, other) | (other, Value) if is_value_kind(other) => Ok(Value)
+		_ => Err(Unadded)
+	}
+
+## The statements that stop the program unless the value at `place` is a
+## number, for a kind that may not be one.
+number_check_items : { kind : Kind, place : X86.Mem } -> List(Assembly.Statement)
+number_check_items = |{ kind, place }|
+	match kind {
+		Number => []
+		_ => [Emit.load(Rax, place), Emit.call(Runtime.check_number)]
+	}
+
+## `===` or `!==` of two values whose kinds aren't both numbers or both
+## booleans: settled here when their kinds are known to differ, and by
+## `runtime_strict_equal` otherwise.
+dynamic_equality_items : Site,
+{
+	state : State,
+	operator : Ast.BinaryOperator,
+	kinds : (Kind, Kind),
+} -> Try(Lowered, [Refused(Str)])
+dynamic_equality_items = |site, { state, operator, kinds }| {
+	left = stack_place(site.code, state.stack_kinds.len() - 2)
+	right = stack_place(site.code, state.stack_kinds.len() - 1)
+	(one, other) = kinds
+	if !is_value_kind(one) or !is_value_kind(other) {
+		return refusal(site, "`===` of a ${kind_text(one)} and a ${kind_text(other)}")
+	}
+	flipped = match operator {
+		StrictNotEqual => [
+			Instruction(
+				AluImm({
+					operation: Xor,
+					to: Rax,
+					value: 1,
+				}),
+			),
+		]
+		_ => []
+	}
+	settled = one != other and one != Value and other != Value
+	compared =
+		if settled {
+			[Emit.imm(Rax, Boxing.false_bits)]
+		} else {
+			[
+				Emit.load(Rdi, left),
+				Emit.load(Rsi, right),
+				Emit.call(Runtime.strict_equal),
+			]
+		}
+	Ok(
+		falling(
+			compared.concat(flipped).append(Emit.store(left, Rax)),
+			with_top(without_top(state, 2), Boolean),
+		),
+	)
 }
 
 ## The flag in `al` (0 or 1) made a boolean's bits in `rax`.
@@ -806,6 +1170,12 @@ kind_text = |kind|
 		Number => "number"
 		Boolean => "boolean"
 		Undefined => "undefined"
+		Null => "null"
+		String => "string"
+		Array => "array"
+		Object => "object"
+		Value => "value of a kind not known before it runs"
+		Method(name) => "method `${name}`"
 		Function(_) => "function"
 		Console => "console"
 		Log => "console.log"
@@ -866,6 +1236,41 @@ unary_items = |site, { state, operator }| {
 				),
 			)
 		}
+		(Negate, Value) | (Plus, Value) => {
+			negated = match operator {
+				Negate => [
+					Emit.imm(Rcx, (0x8000000000000000).to_i64_wrap()),
+					Instruction(
+						Alu({
+							operation: Xor,
+							to: Rax,
+							from: Rcx,
+						}),
+					),
+				]
+				_ => []
+			}
+			Ok(
+				falling(
+					[Emit.load(Rax, top), Emit.call(Runtime.check_number)]
+						.concat(negated)
+						.append(Emit.store(top, Rax)),
+					with_top(without_top(state, 1), Number),
+				),
+			)
+		}
+		(Not, kind) if is_value_kind(kind) => {
+			tested = truth_items(site, state)?
+			Ok(
+				falling(
+					tested
+						.append(Instruction(Setcc({ condition: E, to: Al })))
+						.concat(boolean_items)
+						.append(Emit.store(top, Rax)),
+					with_top(without_top(state, 1), Boolean),
+				),
+			)
+		}
 		(_, kind) => refusal(
 			site,
 			"`${Str.inspect(operator)}` of a ${kind_text(kind)} is not compiled yet",
@@ -898,8 +1303,8 @@ call_items = |site, { state, count }| {
 	var $items = []
 	for back in 0..<count {
 		argument = count - 1 - back
-		if kind_below(state, back) != Number {
-			return refusal(site, "a call with an argument that is not a number")
+		if !is_value_kind(kind_below(state, back)) {
+			return refusal(site, "a call with a function, `console` or a method as an argument")
 		}
 		$items = $items.concat([
 			Instruction(MovRegMem({ to: Rax, from: stack_place(site.code, base + 1 + argument) })),
@@ -943,7 +1348,7 @@ log_items = |site, { state, count }| {
 				Instruction(MovRegMem({ to: Rax, from: place })),
 				CallTo(Runtime.print_number),
 			]
-			Boolean | Undefined => [
+			kind if is_value_kind(kind) => [
 				Instruction(MovRegMem({ to: Rdi, from: place })),
 				CallTo(Runtime.write_value),
 			]
@@ -998,6 +1403,41 @@ test_jump_items = |site, { state, skip, condition, kept }| {
 	})
 }
 
+## `s += e` where either isn't a number: `runtime_add` of the two, stored
+## in the slot and left on the stack.
+appended_items : Site,
+{
+	state : State,
+	slot : U64,
+	held : Kind,
+} -> Try(Lowered, [Refused(Str)])
+appended_items = |site, { state, slot, held }| {
+	top = stack_place(site.code, state.stack_kinds.len() - 1)
+	kind = match added_kind((held, kind_below(state, 0))) {
+		Ok(added) => added
+		Err(Unadded) => return refusal(
+			site,
+			"`+=` of a ${kind_text(held)} and a ${kind_text(kind_below(state, 0))}",
+		)
+	}
+	slots = state.slots.set(
+		slot,
+		Ready(kind),
+	) ?? crash "Lowering.appended_items: a slot of the frame"
+	Ok(
+		falling(
+			[
+				Emit.load(Rdi, slot_place(slot)),
+				Emit.load(Rsi, top),
+				Emit.call(Runtime.add),
+				Emit.store(slot_place(slot), Rax),
+				Emit.store(top, Rax),
+			],
+			with_top(without_top({ ..state, slots }, 1), kind),
+		),
+	)
+}
+
 ## The machine code of one instruction, and the kinds after it.
 instruction_items : Site,
 {
@@ -1024,6 +1464,62 @@ instruction_items = |site, { instruction, state }| {
 				False => Boxing.false_bits.to_u64_wrap()
 			}
 			Ok(falling(constant_items({ bits, to: next_place }), with_top(state, Boolean)))
+		}
+		PushText(text) => Ok(
+			falling(
+				[
+					Emit.address_of(Rax, text_label(site, text)),
+					Emit.imm(Rcx, Boxing.tag_bits(Boxing.string_tag)),
+					Emit.plus(Rax, Rcx),
+					Emit.store(next_place, Rax),
+				],
+				with_top(state, String),
+			),
+		)
+		PushNull => Ok(
+			falling(
+				constant_items({ bits: Boxing.null_bits.to_u64_wrap(), to: next_place }),
+				with_top(state, Null),
+			),
+		)
+		TemplatePart(piece) =>
+			if kind_below(state, 1) == String and is_value_kind(kind_below(state, 0)) {
+				Ok(
+					falling(
+						[
+							Emit.load(Rdi, top_place(1)),
+							Emit.load(Rsi, top_place(0)),
+							Emit.address_of(Rdx, text_label(site, piece)),
+							Emit.call(Runtime.template),
+							Emit.store(top_place(1), Rax),
+						],
+						with_top(without_top(state, 2), String),
+					),
+				)
+			} else {
+				refusal(site, "a template's substitution of a ${kind_text(kind_below(state, 0))}")
+			}
+		GetProperty(key, _) => {
+			kind = kind_below(state, 0)
+			given = match (kind, key) {
+				(String, "length") | (Array, "length") => Number
+				_ => Value
+			}
+			match kind {
+				String | Array | Object | Value =>
+					Ok(
+						falling(
+							[
+								Emit.load(Rdi, top_place(0)),
+								Emit.address_of(Rsi, text_label(site, key)),
+								Emit.call(Runtime.get_property),
+								Emit.store(top_place(0), Rax),
+							],
+							with_top(without_top(state, 1), given),
+						),
+					)
+				_ => refusal(site, "the property `${key}` of a ${kind_text(kind)}")
+			}
 		}
 		PushUndefined => Ok(
 			falling(
@@ -1132,7 +1628,7 @@ instruction_items = |site, { instruction, state }| {
 		AppendLocal({ slot, at: _ }) => {
 			held = slot_kind(site, { state, slot, name: "a variable" })?
 			if held != Number or kind_below(state, 0) != Number {
-				return refusal(site, "`+=` of a value that is not a number")
+				return appended_items(site, { state, slot, held })
 			}
 			items = [
 				Instruction(MovsdLoad({ to: Xmm0, from: slot_place(slot) })),
@@ -1212,9 +1708,8 @@ instruction_items = |site, { instruction, state }| {
 		Call({ count, written: _, at: _ }) => call_items(site, { state, count })
 		Return => {
 			kind = kind_below(state, 0)
-			match kind {
-				Number | Boolean | Undefined => {}
-				_ => return refusal(site, "a function returns a ${kind_text(kind)}")
+			if !is_value_kind(kind) {
+				return refusal(site, "a function returns a ${kind_text(kind)}")
 			}
 			items = [
 				Instruction(MovRegMem({ to: Rax, from: top_place(0) })),
