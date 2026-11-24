@@ -519,7 +519,7 @@ start_state : Context, Bytecode.Code -> Try(State, [Refused(Str)])
 start_state = |lowering, code| {
 	parameters = match code.arguments {
 		Each(count) => count
-		Packed(_) => return Err(code_refusal(lowering, PatternedParameters))
+		Packed(_) => 0
 	}
 	known = {
 		program: lowering.program,
@@ -532,6 +532,12 @@ start_state = |lowering, code| {
 			slot,
 			Ready(parameter_kind(lowering, slot)),
 		) ?? crash "Lowering.start_state: a parameter has a slot"
+	}
+	match code.arguments {
+		Packed(slot) => {
+			$slots = $slots.set(slot, Ready(Array)) ?? crash "Lowering.start_state: a packed slot"
+		}
+		Each(_) => {}
 	}
 	for step in code.entry {
 		match step {
@@ -600,7 +606,6 @@ CodeFault : [
 	TwoStacks(U64),
 	TwoSlotKinds(U64),
 	FrameTooLarge,
-	PatternedParameters,
 ]
 
 ## The refusal of a function's fault, the function named.
@@ -612,7 +617,6 @@ code_refusal = |lowering, fault| {
 		TwoStacks(at) => "two ways reach instruction ${at.to_str()} with different stacks"
 		TwoSlotKinds(at) => "a variable holds values of two kinds at instruction ${at.to_str()}"
 		FrameTooLarge => "its frame is over a megabyte"
-		PatternedParameters => "its parameters have a pattern, a default or a rest"
 	}
 	Refused("${function_name(lowering)}: ${why}")
 }
@@ -845,8 +849,10 @@ call_kinds = |lowering, { instruction, state }|
 ## slot. A function a value may hold has a second entry before it, for a
 ## call through the value, which takes as many arguments as `rcx` says: a
 ## parameter past them is `undefined`, an argument past the parameters
-## unread. Both go on to make the cells of its own variables a closure
-## captures.
+## unread. A function whose parameters have a pattern, a default or a rest
+## takes its arguments as a call through a value passes them, by either
+## entry, and packs them into an array in its slot. Both go on to make the
+## cells of its own variables a closure captures.
 entry_items : Context, { code : Bytecode.Code, frame_bytes : U64 } -> List(Assembly.Statement)
 entry_items = |lowering, { code, frame_bytes }| {
 	index = lowering.index
@@ -897,8 +903,17 @@ entry_items = |lowering, { code, frame_bytes }| {
 				}
 		}
 	}
-	var $direct = []
-	var $counted = []
+	packed = match code.arguments {
+		Packed(slot) => [
+			Emit.lea(Rdi, argument(0)),
+			Emit.mov(Rsi, Rcx),
+			Emit.call(Runtime.pack),
+			Emit.store(slot_place(slot), Rax),
+		]
+		Each(_) => []
+	}
+	var $direct = packed
+	var $counted = packed
 	for slot in 0..<parameters {
 		missing = "${value_label(index)}_missing_${slot.to_str()}"
 		got = "${value_label(index)}_got_${slot.to_str()}"
@@ -1430,7 +1445,21 @@ binary_items = |site, { state, operator }| {
 					with_top(without_top(state, 2), Number),
 				),
 			)
-		(Power, _) => refusal(site, "`**` is not compiled yet")
+		(Power, _) if is_numeric(kinds.0) and is_numeric(kinds.1) => {
+			checked = number_check_items({ kind: kinds.0, place: left })
+				.concat(number_check_items({ kind: kinds.1, place: right }))
+			Ok(
+				falling(
+					checked.concat([
+						Emit.load(Rdi, left),
+						Emit.load(Rsi, right),
+						Emit.call(Runtime.power),
+						Emit.store(left, Rax),
+					]),
+					with_top(without_top(state, 2), Number),
+				),
+			)
+		}
 		_ => {
 			named = Str.inspect(operator)
 			operands = "${kind_phrase(kinds.0)} and ${kind_phrase(kinds.1)}"
@@ -1656,11 +1685,99 @@ unary_items = |site, { state, operator }| {
 				),
 			)
 		}
+		(TypeOf, kind) => {
+			named = match kind {
+				Number => Named("runtime_text_type_number")
+				String => Named("runtime_text_type_string")
+				Boolean => Named("runtime_text_type_boolean")
+				Undefined => Named("runtime_text_undefined")
+				Null | Array | Object | Console => Named("runtime_text_type_object")
+				Function(_) | Closure(_) | Log | Method(_) => Named("runtime_text_type_function")
+				Value => Unnamed
+			}
+			found = match named {
+				Named(label) => [
+					Emit.address_of(Rax, label),
+					Emit.imm(Rcx, Boxing.tag_bits(Boxing.string_tag)),
+					Emit.plus(Rax, Rcx),
+				]
+				Unnamed => [Emit.load(Rdi, top), Emit.call(Runtime.type_of)]
+			}
+			Ok(falling(found.append(Emit.store(top, Rax)), with_top(without_top(state, 1), String)))
+		}
 		(_, kind) => refusal(
 			site,
 			"`${Str.inspect(operator)}` of ${kind_phrase(kind)} is not compiled yet",
 		)
 	}
+}
+
+## A jump taken, the value on top kept, when it is not `null` or
+## `undefined` (`??`'s) or not `undefined` (a default's); otherwise the
+## value is dropped and the next instruction follows.
+defined_jump_items : Site,
+{
+	state : State,
+	skip : U64,
+	settles : [Defined, NotUndefined],
+} -> Try(Lowered, [Refused(Str)])
+defined_jump_items = |site, { state, skip, settles }| {
+	kind = kind_below(state, 0)
+	if !is_value_kind(kind) {
+		return refusal(site, "`??` or a default of ${kind_phrase(kind)}")
+	}
+	top = stack_place(site.code, state.stack_kinds.len() - 1)
+	# `undefined` and `null` differ in their lowest bit alone.
+	tested = match settles {
+		Defined => [
+			Emit.load(Rax, top),
+			Instruction(
+				AluImm({
+					operation: Or,
+					to: Rax,
+					value: 1,
+				}),
+			),
+			Emit.imm(Rcx, Boxing.null_bits),
+			Emit.cmp(Rax, Rcx),
+		]
+		NotUndefined => [
+			Emit.load(Rax, top),
+			Emit.imm(Rcx, Boxing.undefined_bits),
+			Emit.cmp(Rax, Rcx),
+		]
+	}
+	target = forward(site, skip)
+	Ok({
+		statements: tested.append(Emit.jcc(Ne, place_label(site.lowering, target))),
+		falls: Falls(without_top(state, 1)),
+		branch: Branch({ target, state }),
+		result: GivesNothing,
+	})
+}
+
+## A `switch`'s case: the two values on top compared by `===`, both
+## dropped, and the jump taken when they are the same.
+same_jump_items : Site, { state : State, skip : U64 } -> Try(Lowered, [Refused(Str)])
+same_jump_items = |site, { state, skip }| {
+	compared = binary_items(site, { state, operator: StrictEqual })?
+	after = match compared.falls {
+		Falls(next) => next
+		Ends => crash "Lowering.same_jump_items: a comparison falls through"
+	}
+	target = forward(site, skip)
+	dropped = without_top(after, 1)
+	Ok({
+		statements: compared.statements.concat([
+			Emit.load(Rax, stack_place(site.code, after.stack_kinds.len() - 1)),
+			Emit.imm(Rcx, Boxing.true_bits),
+			Emit.cmp(Rax, Rcx),
+			Emit.jcc(E, place_label(site.lowering, target)),
+		]),
+		falls: Falls(dropped),
+		branch: Branch({ target, state: dropped }),
+		result: GivesNothing,
+	})
 }
 
 ## A call: of a function known by its code, directly, `rbx` holding its
@@ -1673,7 +1790,11 @@ call_items = |site, { state, count }| {
 		Closure(made) => {
 			codes = site.lowering.program.codes
 			callee = codes.get(made) ?? crash "Lowering.call_items: a function's code"
-			if callee.arguments == Each(count) {
+			takes_count = match callee.arguments {
+				Each(parameters) => parameters == count
+				Packed(_) => True
+			}
+			if takes_count {
 				record_statements = [
 					Emit.load(Rbx, callee_place),
 					Emit.shl(Rbx, 16),
@@ -1700,21 +1821,20 @@ direct_call_items : Site,
 } -> Try(Lowered, [Refused(Str)])
 direct_call_items = |site, { state, count, made, record_statements }| {
 	callee = site.lowering.program.codes.get(made) ?? crash "Lowering.call_items: a function's code"
-	parameters = match callee.arguments {
-		Each(given) => given
-		Packed(_) => return refusal(
-			site,
-			"a call of a function whose parameters have a pattern, a default or a rest",
-		)
-	}
-	if parameters != count {
-		given = count_text(count, "argument")
-		taken = count_text(parameters, "parameter")
-		return refusal(site, "a call with ${given} to ${taken}")
+	counted = match callee.arguments {
+		Each(parameters) =>
+			if parameters != count {
+				given = count_text(count, "argument")
+				taken = count_text(parameters, "parameter")
+				return refusal(site, "a call with ${given} to ${taken}")
+			} else {
+				[]
+			}
+		Packed(_) => [Emit.imm(Rcx, count.to_i64_wrap())]
 	}
 	base = state.stack_kinds.len() - count - 1
 	pushed = arguments_pushed(site, { state, count })?
-	var $items = record_statements.concat(pushed).append(CallTo(code_label(made)))
+	var $items = record_statements.concat(pushed).concat(counted).append(CallTo(code_label(made)))
 	if count > 0 {
 		$items = $items.append(Emit.plus_imm(Rsp, (8 * count).to_i64_wrap()))
 	}
@@ -2167,6 +2287,8 @@ instruction_items = |site, { instruction, state }| {
 			} else {
 				refusal(site, "a template's substitution of ${kind_phrase(kind_below(state, 0))}")
 			}
+		GetProperty("log", _) if kind_below(state, 0) == Console =>
+			Ok(falling([], with_top(without_top(state, 1), Log)))
 		GetProperty(key, _) => {
 			kind = kind_below(state, 0)
 			given = match (kind, key) {
@@ -2272,17 +2394,68 @@ instruction_items = |site, { instruction, state }| {
 				}
 				kind => refusal(site, "an index of ${kind_phrase(kind)} written")
 			}
-		IterStart(_) =>
+		IterStart(_) | DestructureItems(_) =>
 			match kind_below(state, 0) {
-				Array | Value =>
+				Array => Ok(falling([], state))
+				String | Value =>
 					Ok(
 						falling(
-							[Emit.load(Rax, top_place(0)), Emit.call(Runtime.check_array)],
+							[
+								Emit.load(Rdi, top_place(0)),
+								Emit.call(Runtime.items_of),
+								Emit.store(top_place(0), Rax),
+							],
 							with_top(without_top(state, 1), Array),
 						),
 					)
-				kind => refusal(site, "a `for ... of` over ${kind_phrase(kind)}")
+				kind => {
+					phrase = kind_phrase(kind)
+					refusal(site, "a `for ... of` or an array pattern over ${phrase}")
+				}
 			}
+		ItemOf(position) =>
+			Ok(
+				falling(
+					[
+						Emit.load(Rdi, top_place(0)),
+						Emit.imm(Rsi, position.to_f64().to_bits().to_i64_wrap()),
+						Emit.call(Runtime.get_index),
+						Emit.store(top_place(0), Rax),
+					],
+					with_top(without_top(state, 1), Value),
+				),
+			)
+		ItemsFrom(position) =>
+			Ok(
+				falling(
+					[
+						Emit.load(Rdi, top_place(0)),
+						Emit.imm(Rsi, position.to_f64().to_bits().to_i64_wrap()),
+						Emit.imm(Rcx, 1),
+						Emit.call(Runtime.slice),
+						Emit.store(top_place(0), Rax),
+					],
+					with_top(without_top(state, 1), Array),
+				),
+			)
+		CheckDestructurable(_) =>
+			match kind_below(state, 0) {
+				Object | Array | String | Number | Boolean => Ok(falling([], state))
+				Value =>
+					Ok(
+						falling(
+							[Emit.load(Rax, top_place(0)), Emit.call(Runtime.check_destructurable)],
+							state,
+						),
+					)
+				kind => {
+					phrase = kind_phrase(kind)
+					refusal(site, "an object pattern of ${phrase}, which throws in node")
+				}
+			}
+		SkipIfDefined(skip) => defined_jump_items(site, { state, skip, settles: Defined })
+		SkipIfNotUndefined(skip) => defined_jump_items(site, { state, skip, settles: NotUndefined })
+		JumpIfSame(skip) => same_jump_items(site, { state, skip })
 		IterNext({ slot, exit }) => {
 			target = forward(site, exit)
 			stepped = [

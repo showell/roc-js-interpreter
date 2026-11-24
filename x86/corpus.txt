@@ -12,5 +12,7 @@
 22-hoisting.js
 24-recursion-depth.js
 25-shared-references.js
+27-for-of.js
 29-linked-list.js
 31-matrix.js
+49-loops-labels.js

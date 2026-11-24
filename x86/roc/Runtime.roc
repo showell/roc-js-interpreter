@@ -136,11 +136,6 @@ Runtime :: [].{
 	next_item : Str
 	next_item = "runtime_next_item"
 
-	## The routine that stops the program unless the value in `rax` is an
-	## array. It changes `rcx` alone.
-	check_array : Str
-	check_array = "runtime_check_array"
-
 	## The routine that stops the program unless the value in `rax` is a
 	## function. It changes `rcx` alone.
 	check_function : Str
@@ -178,6 +173,34 @@ Runtime :: [].{
 	## `rsi`, or `""` past its end.
 	char_at : Str
 	char_at = "runtime_char_at"
+
+	## The routine that gives `rdi ** rsi` of two numbers: of a whole base
+	## and a whole exponent of at least 0, exactly, by squaring; it stops
+	## for any other, and for a power past 2^53 in size.
+	power : Str
+	power = "runtime_power"
+
+	## The routine that gives `typeof rdi`, a string, in `rax`.
+	type_of : Str
+	type_of = "runtime_type_of"
+
+	## The routine that makes an array of the `rsi` arguments at `rdi`, the
+	## first there and each next 8 bytes on, in `rax`: the parameters of a
+	## function with a pattern, a default or a rest, packed.
+	pack : Str
+	pack = "runtime_pack"
+
+	## The routine that gives the array a `for ... of` or an array pattern
+	## walks of the value `rdi`: an array as it is, a string as a new array
+	## of its characters; it stops for any other.
+	items_of : Str
+	items_of = "runtime_items_of"
+
+	## The routine that stops the program when the value in `rax`, which an
+	## object pattern takes apart, is `null` or `undefined` (node throws a
+	## TypeError). It changes `rcx` alone.
+	check_destructurable : Str
+	check_destructurable = "runtime_check_destructurable"
 
 	## The text `join` puts between items when it is given none.
 	comma_text : Str
@@ -250,6 +273,7 @@ Runtime :: [].{
 		loop_items,
 		callback_items,
 		slice_items,
+		language_items,
 	]
 		.join()
 		.concat(text_statements)
@@ -323,7 +347,10 @@ texts = [
 	),
 	(
 		"runtime_text_not_iterable",
-		"x86: a `for ... of` over a value that is not an array is not compiled yet\n",
+		Str.concat(
+			"x86: a `for ... of` or an array pattern over a value that is neither",
+			" an array nor a string is not compiled yet\n",
+		),
 	),
 	("runtime_text_empty_array", "[]"),
 	("runtime_text_comma", ","),
@@ -340,6 +367,22 @@ texts = [
 		"x86: `slice` from a place that is not a number is not compiled yet\n",
 	),
 	("runtime_text_empty_object", "{}"),
+	(
+		"runtime_text_not_destructurable",
+		"x86: an object pattern of null or undefined, which throws in node, is not compiled yet\n",
+	),
+	("runtime_text_type_number", "number"),
+	("runtime_text_type_string", "string"),
+	("runtime_text_type_boolean", "boolean"),
+	("runtime_text_type_object", "object"),
+	("runtime_text_type_function", "function"),
+	(
+		"runtime_text_power",
+		Str.concat(
+			"x86: `**` of numbers that are not whole, with a negative exponent,",
+			" or past 2^53 in size, is not compiled yet\n",
+		),
+	),
 	("runtime_text_deep_array", "[Array]"),
 	("runtime_text_deep_object", "[Object]"),
 	("runtime_text_colon", ": "),
@@ -2022,11 +2065,13 @@ list_items = {
 }
 
 ## The statements that leave the number in `reg`, as a whole number of at
-## most 2^53 in size, in `to`, or stop the program as `%` does. They
-## change `rcx`.
-whole_number_items : { reg : X86.Register, to : X86.Register } -> List(Assembly.Statement)
-whole_number_items = |{ reg, to }| {
-	label = "runtime_remainder_stop"
+## most 2^53 in size, in `to`, or jump to `label`. They change `rcx`.
+whole_number_items : {
+	reg : X86.Register,
+	to : X86.Register,
+	label : Str,
+} -> List(Assembly.Statement)
+whole_number_items = |{ reg, to, label }| {
 	[
 		Emit.to_xmm(Xmm0, reg),
 		Instruction(Cvttsd2si({ to, from: Xmm0 })),
@@ -2045,14 +2090,26 @@ whole_number_items = |{ reg, to }| {
 
 ## `runtime_remainder`, by `idiv`: the remainder has the dividend's sign,
 ## and a zero one is -0 when the dividend is negative; `% 0` is NaN.
-## `runtime_next_item` and `runtime_check_array`, for `for ... of`.
+## `runtime_next_item`, for `for ... of`.
 loop_items : List(Assembly.Statement)
 loop_items = {
 	remainder = [Emit.mark(Runtime.remainder)]
 		.concat(unless_number_items({ reg: Rdi, label: "runtime_not_a_number_stop" }))
 		.concat(unless_number_items({ reg: Rsi, label: "runtime_not_a_number_stop" }))
-		.concat(whole_number_items({ reg: Rdi, to: R8 }))
-		.concat(whole_number_items({ reg: Rsi, to: R9 }))
+		.concat(
+			whole_number_items({
+				reg: Rdi,
+				to: R8,
+				label: "runtime_remainder_stop",
+			}),
+		)
+		.concat(
+			whole_number_items({
+				reg: Rsi,
+				to: R9,
+				label: "runtime_remainder_stop",
+			}),
+		)
 		.concat([
 			Emit.test(R9, R9),
 			Emit.jcc(E, "runtime_remainder_not_a_number"),
@@ -2095,16 +2152,7 @@ loop_items = {
 			Emit.zero(Rdx),
 			Emit.ret,
 		])
-	check_array = [Emit.mark(Runtime.check_array)]
-		.concat(tag_load_items(Rax))
-		.concat([
-			Emit.cmp_imm(Rcx, Boxing.array_tag),
-			Emit.jcc(Ne, "runtime_not_iterable"),
-			Emit.ret,
-			Emit.mark("runtime_not_iterable"),
-		])
-		.concat(stopping_items("runtime_text_not_iterable"))
-	[remainder, next_item, check_array].join()
+	[remainder, next_item].join()
 }
 
 ## The statements that stop the program unless the value in `rdi` is an
@@ -2464,4 +2512,193 @@ slice_items = {
 		.concat(boxed_string_items)
 		.concat([Emit.mark("runtime_char_at_found"), Emit.ret])
 	[join, slice, char_at].join()
+}
+
+## `runtime_power`, `runtime_type_of`, `runtime_pack` and
+## `runtime_items_of`. The power is made by squaring in whole numbers,
+## each step held to 2^53 in size so that every product is exact: r10 the
+## base squared so far, r9 the exponent left, rax the result, r11 the
+## exponent given.
+language_items : List(Assembly.Statement)
+language_items = {
+	magnitude_held = |reg| [
+		Emit.imm(Rcx, 9007199254740992),
+		Emit.cmp(reg, Rcx),
+		Emit.jcc(G, "runtime_power_stop"),
+		Emit.imm(Rcx, -9007199254740992),
+		Emit.cmp(reg, Rcx),
+		Emit.jcc(L, "runtime_power_stop"),
+	]
+	power = [Emit.mark(Runtime.power)]
+		.concat(
+			whole_number_items({
+				reg: Rdi,
+				to: R10,
+				label: "runtime_power_stop",
+			}),
+		)
+		.concat(
+			whole_number_items({
+				reg: Rsi,
+				to: R9,
+				label: "runtime_power_stop",
+			}),
+		)
+		.concat([
+			Emit.test(R9, R9),
+			Emit.jcc(S, "runtime_power_stop"),
+			Emit.mov(R11, R9),
+			Emit.imm(Rax, 1),
+			Emit.mark("runtime_power_step"),
+			Emit.test(R9, R9),
+			Emit.jcc(E, "runtime_power_done"),
+			Emit.mov(Rcx, R9),
+			Emit.bit_and_imm(Rcx, 1),
+			Emit.jcc(E, "runtime_power_squared"),
+			Instruction(Imul({ to: Rax, from: R10 })),
+			Emit.jcc(O, "runtime_power_stop"),
+		])
+		.concat(magnitude_held(Rax))
+		.concat([
+			Emit.mark("runtime_power_squared"),
+			Emit.shr(R9, 1),
+			Emit.test(R9, R9),
+			Emit.jcc(E, "runtime_power_done"),
+			Instruction(Imul({ to: R10, from: R10 })),
+			Emit.jcc(O, "runtime_power_stop"),
+		])
+		.concat(magnitude_held(R10))
+		.concat([
+			Emit.jmp("runtime_power_step"),
+			# A zero power is -0 when the base is -0 and the exponent odd.
+			Emit.mark("runtime_power_done"),
+			Instruction(Cvtsi2sd({ to: Xmm0, from: Rax })),
+			Instruction(MovqFromXmm({ to: Rax, from: Xmm0 })),
+			Emit.test(Rax, Rax),
+			Emit.jcc(Ne, "runtime_power_signed"),
+			Emit.bit_and_imm(R11, 1),
+			Emit.jcc(E, "runtime_power_signed"),
+			Emit.imm(Rcx, (0x8000000000000000).to_i64_wrap()),
+			Emit.cmp(Rdi, Rcx),
+			Emit.jcc(Ne, "runtime_power_signed"),
+			Emit.mov(Rax, Rcx),
+			Emit.mark("runtime_power_signed"),
+			Emit.ret,
+			Emit.mark("runtime_power_stop"),
+		])
+		.concat(stopping_items("runtime_text_power"))
+	typed = |{ label, text }| [
+		Emit.mark(label),
+		Emit.address_of(Rax, text),
+		Emit.imm(Rcx, Boxing.tag_bits(Boxing.string_tag)),
+		Emit.plus(Rax, Rcx),
+		Emit.ret,
+	]
+	type_of = [Emit.mark(Runtime.type_of)]
+		.concat(tag_load_items(Rdi))
+		.concat([
+			Emit.cmp_imm(Rcx, Boxing.first_tag),
+			Emit.jcc(B, "runtime_type_of_number"),
+			Emit.cmp_imm(Rcx, Boxing.string_tag),
+			Emit.jcc(E, "runtime_type_of_string"),
+			Emit.cmp_imm(Rcx, Boxing.function_tag),
+			Emit.jcc(E, "runtime_type_of_function"),
+			Emit.cmp_imm(Rcx, Boxing.first_tag),
+			Emit.jcc(Ne, "runtime_type_of_object"),
+			Emit.imm(Rcx, Boxing.undefined_bits),
+			Emit.cmp(Rdi, Rcx),
+			Emit.jcc(E, "runtime_type_of_undefined"),
+			Emit.imm(Rcx, Boxing.null_bits),
+			Emit.cmp(Rdi, Rcx),
+			Emit.jcc(E, "runtime_type_of_object"),
+		])
+		.concat(typed({ label: "runtime_type_of_boolean", text: "runtime_text_type_boolean" }))
+		.concat(typed({ label: "runtime_type_of_number", text: "runtime_text_type_number" }))
+		.concat(typed({ label: "runtime_type_of_string", text: "runtime_text_type_string" }))
+		.concat(typed({ label: "runtime_type_of_function", text: "runtime_text_type_function" }))
+		.concat(typed({ label: "runtime_type_of_object", text: "runtime_text_type_object" }))
+		.concat(typed({ label: "runtime_type_of_undefined", text: "runtime_text_undefined" }))
+	pack = [
+		Emit.mark(Runtime.pack),
+		Emit.save(Rdi),
+		Emit.save(Rsi),
+		Emit.mov(Rdi, Rsi),
+		Emit.call(Runtime.new_array),
+		Emit.restore(Rcx),
+		Emit.restore(Rsi),
+		Emit.mov(Rdi, Rdx),
+		Emit.shl(Rcx, 3),
+		Instruction(RepMovsb),
+		Emit.ret,
+	]
+	# r10: the string; r9: its length; r11: the array; rdx: its items.
+	items_of = [Emit.mark(Runtime.items_of), Emit.mov(Rax, Rdi)]
+		.concat(tag_load_items(Rdi))
+		.concat([
+			Emit.cmp_imm(Rcx, Boxing.array_tag),
+			Emit.jcc(E, "runtime_items_of_done"),
+			Emit.cmp_imm(Rcx, Boxing.string_tag),
+			Emit.jcc(Ne, "runtime_not_iterable"),
+		])
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.mov(R10, Rdi),
+			Emit.load(R9, Emit.mem(Rdi, 0)),
+			Emit.save(R9),
+			Emit.save(R10),
+			Emit.mov(Rdi, R9),
+			Emit.call(Runtime.new_array),
+			Emit.restore(R10),
+			Emit.restore(R9),
+			Emit.mov(R11, Rax),
+			Emit.zero(R8),
+			Emit.mark("runtime_items_of_next"),
+			Emit.cmp(R8, R9),
+			Emit.jcc(E, "runtime_items_of_made"),
+			Emit.imm(Rdi, 9),
+			Emit.call(Runtime.allocate),
+			Emit.imm(Rcx, 1),
+			Emit.store(Emit.mem(Rax, 0), Rcx),
+			text_byte_item({ reg: Rcx, base: R10 }),
+			Emit.byte_store(Emit.mem(Rax, 8), Cl),
+		])
+		.concat(boxed_string_items)
+		.concat([
+			Emit.store(
+				Based({
+					base: Rdx,
+					index: Scaled({ reg: R8, scale: Times8 }),
+					displacement: 0,
+				}),
+				Rax,
+			),
+			Emit.plus_imm(R8, 1),
+			Emit.jmp("runtime_items_of_next"),
+			Emit.mark("runtime_items_of_made"),
+			Emit.mov(Rax, R11),
+			Emit.mark("runtime_items_of_done"),
+			Emit.ret,
+			Emit.mark("runtime_not_iterable"),
+		])
+		.concat(stopping_items("runtime_text_not_iterable"))
+	check_destructurable = [
+		Emit.mark(Runtime.check_destructurable),
+		Emit.mov(Rcx, Rax),
+		Instruction(
+			AluImm({
+				operation: Or,
+				to: Rcx,
+				value: 1,
+			}),
+		),
+		Emit.save(Rax),
+		Emit.imm(Rax, Boxing.null_bits),
+		Emit.cmp(Rcx, Rax),
+		Emit.restore(Rax),
+		Emit.jcc(E, "runtime_not_destructurable"),
+		Emit.ret,
+		Emit.mark("runtime_not_destructurable"),
+	]
+		.concat(stopping_items("runtime_text_not_destructurable"))
+	[power, type_of, pack, items_of, check_destructurable].join()
 }
