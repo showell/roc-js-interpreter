@@ -1965,9 +1965,15 @@ test_jump_items = |site, { state, skip, condition, kept }| {
 	})
 }
 
+## The methods of an array compiled here.
+array_methods : List(Str)
+array_methods = ["push", "pop", "map", "filter", "forEach", "reduce", "join", "slice"]
+
 ## An array's `push` of each argument in turn, its answer the length
-## after the last, or its `pop`: the receiver lies below the method looked
-## up, and the answer takes its place.
+## after the last, its `pop`, its `map`, `filter`, `forEach` and `reduce`
+## of a function, its `join` and `slice`, or a string's `charAt`: the
+## receiver lies below the method looked up, and the answer takes its
+## place.
 array_method_items : Site,
 {
 	state : State,
@@ -1977,6 +1983,7 @@ array_method_items : Site,
 array_method_items = |site, { state, name, count }| {
 	receiver = stack_place(site.code, state.stack_kinds.len() - count - 2)
 	base = state.stack_kinds.len() - count
+	argument = |at| stack_place(site.code, base + at)
 	after = |kind| with_top(without_top(state, count + 2), kind)
 	match (name, count) {
 		("push", given) if given > 0 => {
@@ -2001,6 +2008,65 @@ array_method_items = |site, { state, name, count }| {
 					after(Value),
 				),
 			)
+		("map", 1) | ("filter", 1) | ("forEach", 1) => {
+			(routine, kind) = match name {
+				"map" => (Runtime.map, Array)
+				"filter" => (Runtime.filter, Array)
+				_ => (Runtime.for_each, Undefined)
+			}
+			called = [
+				Emit.load(Rdi, receiver),
+				Emit.load(Rsi, argument(0)),
+				Emit.call(routine),
+				Emit.store(receiver, Rax),
+			]
+			Ok(falling(called, after(kind)))
+		}
+		("reduce", 1) | ("reduce", 2) | ("slice", 0) | ("slice", 1) | ("slice", 2) => {
+			var $loaded = []
+			for (at, reg) in [(0, Rsi), (1, Rdx)].take_first(count) {
+				$loaded = $loaded.append(Emit.load(reg, argument(at)))
+			}
+			(routine, kind) = match name {
+				"reduce" => (Runtime.reduce, Value)
+				_ => (Runtime.slice, Array)
+			}
+			called = [Emit.load(Rdi, receiver)]
+				.concat($loaded)
+				.concat([
+					Emit.imm(Rcx, count.to_i64_wrap()),
+					Emit.call(routine),
+					Emit.store(receiver, Rax),
+				])
+			Ok(falling(called, after(kind)))
+		}
+		("join", 0) | ("join", 1) => {
+			separator =
+				if count == 0 {
+					[Emit.address_of(Rsi, Runtime.comma_text)]
+				} else if kind_below(state, 0) == String {
+					[
+						Emit.load(Rsi, argument(0)),
+						Emit.shl(Rsi, 16),
+						Emit.shr(Rsi, 16),
+					]
+				} else {
+					return refusal(site, "`join` with a separator that is not a string")
+				}
+			called = [Emit.load(Rdi, receiver)]
+				.concat(separator)
+				.concat([Emit.call(Runtime.join), Emit.store(receiver, Rax)])
+			Ok(falling(called, after(String)))
+		}
+		("charAt", 1) => {
+			called = [
+				Emit.load(Rdi, receiver),
+				Emit.load(Rsi, argument(0)),
+				Emit.call(Runtime.char_at),
+				Emit.store(receiver, Rax),
+			]
+			Ok(falling(called, after(String)))
+		}
 		_ => refusal(site, "`${name}` with ${count_text(count, "argument")} is not compiled yet")
 	}
 }
@@ -2446,7 +2512,9 @@ instruction_items = |site, { instruction, state }| {
 		MethodLookup(name, _) =>
 			match (kind_below(state, 0), name) {
 				(Console, "log") => Ok(falling([], with_top(state, Log)))
-				(Array, "push") | (Array, "pop") | (Value, "push") | (Value, "pop") =>
+				(Array, _) | (Value, _) if array_methods.contains(name) =>
+					Ok(falling([], with_top(state, Method(name))))
+				(String, "charAt") | (Value, "charAt") =>
 					Ok(falling([], with_top(state, Method(name))))
 				(Object, _) | (Value, _) =>
 					Ok(

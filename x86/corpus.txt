@@ -4,10 +4,13 @@
 03-let-const.js
 04-if-while.js
 05-for.js
+06-closures.js
 07-counter.js
 14-arrow-functions.js
+16-template-strings.js
 19-printing-nested.js
 22-hoisting.js
+24-recursion-depth.js
 25-shared-references.js
 29-linked-list.js
 31-matrix.js

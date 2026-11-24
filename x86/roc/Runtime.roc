@@ -144,6 +144,43 @@ Runtime :: [].{
 	check_function : Str
 	check_function = "runtime_check_function"
 
+	## The routines of an array's methods that take a function, the array in
+	## `rdi` and the function in `rsi`: `map` (the new array in `rax`),
+	## `filter` (the same), `forEach` (`undefined`), and `reduce`, with its
+	## first value in `rdx` when `rcx` is 2. Each calls the function through
+	## its value, so `rbx` changes.
+	map : Str
+	map = "runtime_map"
+
+	filter : Str
+	filter = "runtime_filter"
+
+	for_each : Str
+	for_each = "runtime_for_each"
+
+	reduce : Str
+	reduce = "runtime_reduce"
+
+	## The routine that joins the array `rdi`'s items as text, the string at
+	## `rsi` (an address) between them: the string in `rax`.
+	join : Str
+	join = "runtime_join"
+
+	## The routine that gives the items of the array `rdi` from the place
+	## `rsi` to the place `rdx` (numbers; `rcx` says how many of the two
+	## were given), a new array in `rax`.
+	slice : Str
+	slice = "runtime_slice"
+
+	## The routine that gives the character of the string `rdi` at the place
+	## `rsi`, or `""` past its end.
+	char_at : Str
+	char_at = "runtime_char_at"
+
+	## The text `join` puts between items when it is given none.
+	comma_text : Str
+	comma_text = "runtime_text_comma"
+
 	## The routine that makes a variable's cell, 8 bytes holding `rsi`: its
 	## address in `rax`. It changes `rax` and `rdi` alone.
 	new_cell : Str
@@ -209,6 +246,8 @@ Runtime :: [].{
 		container_items,
 		inspect_items,
 		loop_items,
+		callback_items,
+		slice_items,
 	]
 		.join()
 		.concat(text_statements)
@@ -285,6 +324,19 @@ texts = [
 		"x86: a `for ... of` over a value that is not an array is not compiled yet\n",
 	),
 	("runtime_text_empty_array", "[]"),
+	("runtime_text_comma", ","),
+	("runtime_text_empty", ""),
+	(
+		"runtime_text_empty_reduce",
+		Str.concat(
+			"x86: `reduce` of an empty array with no first value,",
+			" which throws in node, is not compiled yet\n",
+		),
+	),
+	(
+		"runtime_text_slice_place",
+		"x86: `slice` from a place that is not a number is not compiled yet\n",
+	),
 	("runtime_text_empty_object", "{}"),
 	("runtime_text_deep_array", "[Array]"),
 	("runtime_text_deep_object", "[Object]"),
@@ -2051,4 +2103,363 @@ loop_items = {
 		])
 		.concat(stopping_items("runtime_text_not_iterable"))
 	[remainder, next_item, check_array].join()
+}
+
+## The statements that stop the program unless the value in `rdi` is an
+## array. They change `rcx`.
+array_check_items : List(Assembly.Statement)
+array_check_items =
+	tag_load_items(Rdi).concat([
+		Emit.cmp_imm(Rcx, Boxing.array_tag),
+		Emit.jcc(Ne, "runtime_not_an_array"),
+	])
+
+## The address of item `index` of the items whose address is in `r8`.
+listed_item : X86.Register -> X86.Mem
+listed_item = |index| Based({
+	base: R8,
+	index: Scaled({ reg: index, scale: Times8 }),
+	displacement: 0,
+})
+
+## `runtime_call_back`, which calls the function `rdi` through its value
+## with the item `rsi`, its place `rdx` (a whole number) and the array `rcx`,
+## its result in `rax`, as `map`, `filter` and `forEach` call theirs; then
+## those three, one walk (`runtime_walk`, its kind in `rdx`: 0 `map`, 1
+## `filter`, 2 `forEach`), and `reduce`. A walk's frame holds the array
+## (`[rbp - 8]`), the function (16), the kind (24), the place (32), the new
+## array (40) and the item (48); a function called may change every
+## register but `rbp`, `rsp` and `r12` to `r15`.
+callback_items : List(Assembly.Statement)
+callback_items = {
+	local = |offset| Emit.mem(Rbp, 0 - offset)
+	call_back = [
+		Emit.mark("runtime_call_back"),
+		Emit.save(Rcx),
+		Instruction(Cvtsi2sd({ to: Xmm0, from: Rdx })),
+		Instruction(MovqFromXmm({ to: Rax, from: Xmm0 })),
+		Emit.save(Rax),
+		Emit.save(Rsi),
+		Emit.mov(Rbx, Rdi),
+	]
+		.concat(unboxed_items(Rbx))
+		.concat([
+			Emit.load(Rax, Emit.mem(Rbx, 0)),
+			Emit.plus(Rax, Rbx),
+			Emit.imm(Rcx, 3),
+			Instruction(CallReg(Rax)),
+			Emit.plus_imm(Rsp, 24),
+			Emit.ret,
+		])
+	kinds = [
+		Emit.mark(Runtime.map),
+		Emit.zero(Rdx),
+		Emit.jmp("runtime_walk"),
+		Emit.mark(Runtime.filter),
+		Emit.imm(Rdx, 1),
+		Emit.jmp("runtime_walk"),
+		Emit.mark(Runtime.for_each),
+		Emit.imm(Rdx, 2),
+	]
+	start = [
+		Emit.mark("runtime_walk"),
+		Emit.save(Rbp),
+		Emit.mov(Rbp, Rsp),
+		Emit.minus_imm(Rsp, 48),
+	]
+		.concat(array_check_items)
+		.concat([Emit.mov(Rax, Rsi), Emit.call(Runtime.check_function)])
+		.concat([
+			Emit.store(local(8), Rdi),
+			Emit.store(local(16), Rsi),
+			Emit.store(local(24), Rdx),
+			Emit.zero(Rax),
+			Emit.store(local(32), Rax),
+			Emit.zero(Rcx),
+			Emit.test(Rdx, Rdx),
+			Emit.jcc(Ne, "runtime_walk_sized"),
+		])
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.load(Rcx, Emit.mem(Rdi, 0)),
+			Emit.mark("runtime_walk_sized"),
+			Emit.mov(Rdi, Rcx),
+			Emit.call(Runtime.new_array),
+			Emit.store(local(40), Rax),
+		])
+	walk = [Emit.mark("runtime_walk_next"), Emit.load(Rdi, local(8))]
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.load(Rcx, Emit.mem(Rdi, 0)),
+			Emit.load(Rdx, local(32)),
+			Emit.cmp(Rdx, Rcx),
+			Emit.jcc(Ae, "runtime_walk_done"),
+			Emit.load(R8, Emit.mem(Rdi, 16)),
+			Emit.load(Rsi, listed_item(Rdx)),
+			Emit.store(local(48), Rsi),
+			Emit.load(Rdi, local(16)),
+			Emit.load(Rcx, local(8)),
+			Emit.call("runtime_call_back"),
+			Emit.load(Rdx, local(24)),
+			Emit.test(Rdx, Rdx),
+			Emit.jcc(Ne, "runtime_walk_kept"),
+			Emit.load(Rdi, local(40)),
+		])
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.load(R8, Emit.mem(Rdi, 16)),
+			Emit.load(Rdx, local(32)),
+			Emit.store(listed_item(Rdx), Rax),
+			Emit.jmp("runtime_walk_stepped"),
+			Emit.mark("runtime_walk_kept"),
+			Emit.cmp_imm(Rdx, 1),
+			Emit.jcc(Ne, "runtime_walk_stepped"),
+			Emit.mov(Rdi, Rax),
+			Emit.call(Runtime.truthy),
+			Emit.test(Rax, Rax),
+			Emit.jcc(E, "runtime_walk_stepped"),
+			Emit.load(Rdi, local(40)),
+		])
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.load(Rsi, local(48)),
+			Emit.call("runtime_push_item"),
+			Emit.mark("runtime_walk_stepped"),
+			Emit.load(Rax, local(32)),
+			Emit.plus_imm(Rax, 1),
+			Emit.store(local(32), Rax),
+			Emit.jmp("runtime_walk_next"),
+			Emit.mark("runtime_walk_done"),
+			Emit.load(Rax, local(40)),
+			Emit.load(Rdx, local(24)),
+			Emit.cmp_imm(Rdx, 2),
+			Emit.jcc(Ne, "runtime_walk_return"),
+			Emit.imm(Rax, Boxing.undefined_bits),
+			Emit.mark("runtime_walk_return"),
+			Emit.mov(Rsp, Rbp),
+			Emit.restore(Rbp),
+			Emit.ret,
+		])
+	# reduce's frame: the array (8), the function (16), the value so far
+	# (24) and the place (32).
+	reduce = [
+		Emit.mark(Runtime.reduce),
+		Emit.save(Rbp),
+		Emit.mov(Rbp, Rsp),
+		Emit.minus_imm(Rsp, 32),
+		Emit.mov(R11, Rcx),
+	]
+		.concat(array_check_items)
+		.concat([
+			Emit.mov(Rax, Rsi),
+			Emit.call(Runtime.check_function),
+			Emit.store(local(8), Rdi),
+			Emit.store(local(16), Rsi),
+			Emit.store(local(24), Rdx),
+			Emit.zero(Rax),
+			Emit.store(local(32), Rax),
+			Emit.cmp_imm(R11, 2),
+			Emit.jcc(E, "runtime_reduce_next"),
+		])
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.load(Rcx, Emit.mem(Rdi, 0)),
+			Emit.test(Rcx, Rcx),
+			Emit.jcc(E, "runtime_reduce_empty"),
+			Emit.load(R8, Emit.mem(Rdi, 16)),
+			Emit.load(Rax, Emit.mem(R8, 0)),
+			Emit.store(local(24), Rax),
+			Emit.imm(Rax, 1),
+			Emit.store(local(32), Rax),
+			Emit.mark("runtime_reduce_next"),
+			Emit.load(Rdi, local(8)),
+		])
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.load(Rcx, Emit.mem(Rdi, 0)),
+			Emit.load(Rdx, local(32)),
+			Emit.cmp(Rdx, Rcx),
+			Emit.jcc(Ae, "runtime_reduce_done"),
+			Emit.load(Rax, local(8)),
+			Emit.save(Rax),
+			Instruction(Cvtsi2sd({ to: Xmm0, from: Rdx })),
+			Instruction(MovqFromXmm({ to: Rax, from: Xmm0 })),
+			Emit.save(Rax),
+			Emit.load(R8, Emit.mem(Rdi, 16)),
+			Emit.load(Rax, listed_item(Rdx)),
+			Emit.save(Rax),
+			Emit.load(Rax, local(24)),
+			Emit.save(Rax),
+			Emit.load(Rbx, local(16)),
+		])
+		.concat(unboxed_items(Rbx))
+		.concat([
+			Emit.load(Rax, Emit.mem(Rbx, 0)),
+			Emit.plus(Rax, Rbx),
+			Emit.imm(Rcx, 4),
+			Instruction(CallReg(Rax)),
+			Emit.plus_imm(Rsp, 32),
+			Emit.store(local(24), Rax),
+			Emit.load(Rax, local(32)),
+			Emit.plus_imm(Rax, 1),
+			Emit.store(local(32), Rax),
+			Emit.jmp("runtime_reduce_next"),
+			Emit.mark("runtime_reduce_done"),
+			Emit.load(Rax, local(24)),
+			Emit.mov(Rsp, Rbp),
+			Emit.restore(Rbp),
+			Emit.ret,
+			Emit.mark("runtime_reduce_empty"),
+		])
+		.concat(stopping_items("runtime_text_empty_reduce"))
+	[call_back, kinds, start, walk, reduce].join()
+}
+
+## `runtime_join`, `runtime_slice` and `runtime_char_at`. join's frame holds
+## the array (`[rbp - 8]`), the separator (16), the text so far (24) and
+## the place (32).
+slice_items : List(Assembly.Statement)
+slice_items = {
+	local = |offset| Emit.mem(Rbp, 0 - offset)
+	join = [
+		Emit.mark(Runtime.join),
+		Emit.save(Rbp),
+		Emit.mov(Rbp, Rsp),
+		Emit.minus_imm(Rsp, 32),
+	]
+		.concat(array_check_items)
+		.concat([
+			Emit.store(local(8), Rdi),
+			Emit.store(local(16), Rsi),
+			Emit.address_of(Rax, "runtime_text_empty"),
+			Emit.store(local(24), Rax),
+			Emit.zero(Rax),
+			Emit.store(local(32), Rax),
+			Emit.mark("runtime_join_next"),
+			Emit.load(Rdi, local(8)),
+		])
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.load(Rcx, Emit.mem(Rdi, 0)),
+			Emit.load(Rdx, local(32)),
+			Emit.cmp(Rdx, Rcx),
+			Emit.jcc(Ae, "runtime_join_done"),
+			Emit.test(Rdx, Rdx),
+			Emit.jcc(E, "runtime_join_item"),
+			Emit.load(Rdi, local(24)),
+			Emit.load(Rsi, local(16)),
+			Emit.call("runtime_concat"),
+			Emit.store(local(24), Rax),
+			Emit.mark("runtime_join_item"),
+			Emit.load(Rdi, local(8)),
+		])
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.load(R8, Emit.mem(Rdi, 16)),
+			Emit.load(Rdx, local(32)),
+			Emit.load(Rdi, listed_item(Rdx)),
+			Emit.imm(Rcx, Boxing.undefined_bits),
+			Emit.cmp(Rdi, Rcx),
+			Emit.jcc(E, "runtime_join_stepped"),
+			Emit.imm(Rcx, Boxing.null_bits),
+			Emit.cmp(Rdi, Rcx),
+			Emit.jcc(E, "runtime_join_stepped"),
+			Emit.call("runtime_text_of"),
+			Emit.mov(Rsi, Rax),
+			Emit.load(Rdi, local(24)),
+			Emit.call("runtime_concat"),
+			Emit.store(local(24), Rax),
+			Emit.mark("runtime_join_stepped"),
+			Emit.load(Rax, local(32)),
+			Emit.plus_imm(Rax, 1),
+			Emit.store(local(32), Rax),
+			Emit.jmp("runtime_join_next"),
+			Emit.mark("runtime_join_done"),
+			Emit.load(Rax, local(24)),
+		])
+		.concat(boxed_string_items)
+		.concat([
+			Emit.mov(Rsp, Rbp),
+			Emit.restore(Rbp),
+			Emit.ret,
+		])
+	# A place given as a number, made a whole one counted from the start:
+	# from the end when negative, then held between 0 and the length (r9).
+	place = |{ reg, label }|
+		unless_number_items({ reg, label: "runtime_slice_not_a_number" })
+			.concat([
+				Emit.to_xmm(Xmm0, reg),
+				Instruction(Cvttsd2si({ to: reg, from: Xmm0 })),
+				Emit.cmp_imm(reg, 0),
+				Emit.jcc(Ge, "${label}_counted"),
+				Emit.plus(reg, R9),
+				Emit.cmp_imm(reg, 0),
+				Emit.jcc(Ge, "${label}_counted"),
+				Emit.zero(reg),
+				Emit.mark("${label}_counted"),
+				Emit.cmp(reg, R9),
+				Emit.jcc(Le, "${label}_held"),
+				Emit.mov(reg, R9),
+				Emit.mark("${label}_held"),
+			])
+	# r11: how many places were given; r10: the array; r9: its length;
+	# rsi: the start; rdx: the end.
+	slice = [Emit.mark(Runtime.slice), Emit.mov(R11, Rcx)]
+		.concat(array_check_items)
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.mov(R10, Rdi),
+			Emit.load(R9, Emit.mem(Rdi, 0)),
+			Emit.test(R11, R11),
+			Emit.jcc(Ne, "runtime_slice_start"),
+			Emit.zero(Rsi),
+			Emit.jmp("runtime_slice_started"),
+			Emit.mark("runtime_slice_start"),
+		])
+		.concat(place({ reg: Rsi, label: "runtime_slice_start" }))
+		.concat([
+			Emit.mark("runtime_slice_started"),
+			Emit.cmp_imm(R11, 2),
+			Emit.jcc(E, "runtime_slice_end"),
+			Emit.mov(Rdx, R9),
+			Emit.jmp("runtime_slice_ended"),
+			Emit.mark("runtime_slice_end"),
+		])
+		.concat(place({ reg: Rdx, label: "runtime_slice_end" }))
+		.concat([
+			Emit.mark("runtime_slice_ended"),
+			Emit.minus(Rdx, Rsi),
+			Emit.cmp_imm(Rdx, 0),
+			Emit.jcc(Ge, "runtime_slice_counted"),
+			Emit.zero(Rdx),
+			Emit.mark("runtime_slice_counted"),
+			Emit.save(R10),
+			Emit.save(Rsi),
+			Emit.save(Rdx),
+			Emit.mov(Rdi, Rdx),
+			Emit.call(Runtime.new_array),
+			Emit.mov(Rdi, Rdx),
+			Emit.restore(Rcx),
+			Emit.restore(Rsi),
+			Emit.restore(R10),
+			Emit.load(R8, Emit.mem(R10, 16)),
+			Emit.lea(Rsi, listed_item(Rsi)),
+			Emit.shl(Rcx, 3),
+			Instruction(RepMovsb),
+			Emit.ret,
+			Emit.mark("runtime_slice_not_a_number"),
+		])
+		.concat(stopping_items("runtime_text_slice_place"))
+	char_at = [Emit.mark(Runtime.char_at)]
+		.concat(unless_string_items({ reg: Rdi, label: "runtime_index_not_compiled" }))
+		.concat([
+			Emit.call(Runtime.get_index),
+			Emit.imm(Rcx, Boxing.undefined_bits),
+			Emit.cmp(Rax, Rcx),
+			Emit.jcc(Ne, "runtime_char_at_found"),
+			Emit.address_of(Rax, "runtime_text_empty"),
+		])
+		.concat(boxed_string_items)
+		.concat([Emit.mark("runtime_char_at_found"), Emit.ret])
+	[join, slice, char_at].join()
 }
