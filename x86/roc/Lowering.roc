@@ -31,6 +31,8 @@
 import js.Ast
 import js.Bytecode
 import Assembly
+import Boxing
+import Emit
 import Runtime
 import X86
 
@@ -46,7 +48,7 @@ Lowering :: [].{
 			$returns = $returns.insert(index, Number)
 		}
 		for _ in 0..<3 {
-			var $items = [CallTo(code_label(program.main))]
+			var $items = Runtime.start_items(code_label(program.main))
 			var $found = $returns
 			for index in 0..<program.codes.len() {
 				lowered = code_items({ program, makers, returns: $returns, index })?
@@ -423,6 +425,8 @@ entry_items = |lowering, { code, frame_bytes }| {
 				value: frame_bytes.to_i32_wrap(),
 			}),
 		),
+		Emit.cmp(Rsp, R12),
+		Emit.jcc(B, Runtime.stack_overflow),
 	]
 	for slot in 0..<parameters {
 		with_top = Based({
@@ -585,7 +589,8 @@ truth_items = |site, state| {
 	match kind_below(state, 0) {
 		Boolean => Ok([
 			Instruction(MovRegMem({ to: Rax, from: top })),
-			Instruction(Test({ left: Rax, right: Rax })),
+			Emit.imm(Rcx, Boxing.false_bits),
+			Emit.cmp(Rax, Rcx),
 		])
 		Number =>
 			Ok([
@@ -674,9 +679,9 @@ binary_items = |site, { state, operator }| {
 				Instruction(MovsdLoad({ to: Xmm1, from: second })),
 				Instruction(Ucomisd({ left: Xmm0, right: Xmm1 })),
 				Instruction(Setcc({ condition, to: Al })),
-				Instruction(MovzxByte({ to: Rax, from: Al })),
-				Instruction(MovMemReg({ to: left, from: Rax })),
-			],
+			]
+				.concat(boolean_items)
+				.append(Instruction(MovMemReg({ to: left, from: Rax }))),
 			with_top(without_top(state, 2), Boolean),
 		)
 	# Two doubles are equal when ZF is set and PF, the NaN's flag, is not.
@@ -695,6 +700,8 @@ binary_items = |site, { state, operator }| {
 						from: Rcx,
 					}),
 				),
+				Emit.imm(Rcx, Boxing.false_bits),
+				Emit.plus(Rax, Rcx),
 				Instruction(MovMemReg({ to: left, from: Rax })),
 			]),
 			with_top(without_top(state, 2), Boolean),
@@ -712,9 +719,9 @@ binary_items = |site, { state, operator }| {
 					}),
 				),
 				Instruction(Setcc({ condition, to: Al })),
-				Instruction(MovzxByte({ to: Rax, from: Al })),
-				Instruction(MovMemReg({ to: left, from: Rax })),
-			],
+			]
+				.concat(boolean_items)
+				.append(Instruction(MovMemReg({ to: left, from: Rax }))),
 			with_top(without_top(state, 2), Boolean),
 		)
 	match (operator, kinds) {
@@ -775,6 +782,14 @@ binary_items = |site, { state, operator }| {
 		}
 	}
 }
+
+## The flag in `al` (0 or 1) made a boolean's bits in `rax`.
+boolean_items : List(Assembly.Statement)
+boolean_items = [
+	Instruction(MovzxByte({ to: Rax, from: Al })),
+	Emit.imm(Rcx, Boxing.false_bits),
+	Emit.plus(Rax, Rcx),
+]
 
 ## A count and its noun, singular for one: `1 argument`, `2 arguments`.
 count_text : U64, Str -> Str
@@ -843,11 +858,10 @@ unary_items = |site, { state, operator }| {
 			tested = truth_items(site, state)?
 			Ok(
 				falling(
-					tested.concat([
-						Instruction(Setcc({ condition: E, to: Al })),
-						Instruction(MovzxByte({ to: Rax, from: Al })),
-						Instruction(MovMemReg({ to: top, from: Rax })),
-					]),
+					tested
+						.append(Instruction(Setcc({ condition: E, to: Al })))
+						.concat(boolean_items)
+						.append(Instruction(MovMemReg({ to: top, from: Rax }))),
 					with_top(without_top(state, 1), Boolean),
 				),
 			)
@@ -929,20 +943,10 @@ log_items = |site, { state, count }| {
 				Instruction(MovRegMem({ to: Rax, from: place })),
 				CallTo(Runtime.print_number),
 			]
-			Boolean => {
-				label = "${place_label(site.lowering, site.at)}_${argument.to_str()}"
-				[
-					Instruction(MovRegMem({ to: Rax, from: place })),
-					Instruction(Test({ left: Rax, right: Rax })),
-					JccTo({ condition: E, label: "${label}_false" }),
-				]
-					.concat(Runtime.text_items(True))
-					.append(JmpTo("${label}_written"))
-					.append(Mark("${label}_false"))
-					.concat(Runtime.text_items(False))
-					.append(Mark("${label}_written"))
-			}
-			Undefined => Runtime.text_items(Undefined)
+			Boolean | Undefined => [
+				Instruction(MovRegMem({ to: Rdi, from: place })),
+				CallTo(Runtime.write_value),
+			]
 			kind => return refusal(site, "console.log of a ${kind_text(kind)} is not compiled yet")
 		}
 		$items = $items.concat(written)
@@ -1016,13 +1020,16 @@ instruction_items = |site, { instruction, state }| {
 		)
 		PushBoolean(value) => {
 			bits = match value {
-				True => 1
-				False => 0
+				True => Boxing.true_bits.to_u64_wrap()
+				False => Boxing.false_bits.to_u64_wrap()
 			}
 			Ok(falling(constant_items({ bits, to: next_place }), with_top(state, Boolean)))
 		}
 		PushUndefined => Ok(
-			falling(constant_items({ bits: 0, to: next_place }), with_top(state, Undefined)),
+			falling(
+				constant_items({ bits: Boxing.undefined_bits.to_u64_wrap(), to: next_place }),
+				with_top(state, Undefined),
+			),
 		)
 		Pop => Ok(falling([], without_top(state, 1)))
 		Duplicate => Ok(
@@ -1223,17 +1230,7 @@ instruction_items = |site, { instruction, state }| {
 			})
 		}
 		Finish => {
-			items = [
-				Instruction(MovRegImm({ to: Rax, value: 231 })),
-				Instruction(
-					Alu({
-						operation: Xor,
-						to: Rdi,
-						from: Rdi,
-					}),
-				),
-				Instruction(Syscall),
-			]
+			items = [Emit.zero(Rdi), Emit.jmp(Runtime.exit)]
 			Ok({
 				statements: items,
 				falls: Ends,

@@ -61,7 +61,7 @@ X86 :: [].{
 	## immediate, and set the flags.
 	AluOperation := [Add, Or, And, Sub, Xor, Cmp]
 
-	ShiftOperation := [Shl, Sar]
+	ShiftOperation := [Shl, Shr, Sar]
 
 	SseOperation := [Addsd, Subsd, Mulsd, Divsd]
 
@@ -101,6 +101,10 @@ X86 :: [].{
 		# The byte register's value, zero-extended to 64 bits.
 		MovzxByte({ to : X86.Register, from : X86.ByteRegister }),
 		MovByteStore({ to : X86.Mem, from : X86.ByteRegister }),
+		# A byte of memory, zero-extended to 64 bits (`movzx r64, byte`).
+		MovzxByteLoad({ to : X86.Register, from : X86.Mem }),
+		# `rcx` bytes copied from `[rsi]` to `[rdi]`, both moved past them.
+		RepMovsb,
 		Test({ left : X86.Register, right : X86.Register }),
 		Shift(
 			{
@@ -272,6 +276,15 @@ X86 :: [].{
 					operand: Memory(to),
 				}),
 			)
+			MovzxByteLoad({ to, from }) => append_encoded(
+				out,
+				integer_layout({
+					opcode: [0x0F, 0xB6],
+					reg: register_number(to),
+					operand: Memory(from),
+				}),
+			)
+			RepMovsb => out.concat([0xF3, 0xA4])
 			Test({ left, right }) => append_encoded(
 				out,
 				integer_layout({
@@ -283,6 +296,7 @@ X86 :: [].{
 			Shift({ operation, reg, count }) => {
 				digit = match operation {
 					Shl => 4
+					Shr => 5
 					Sar => 7
 				}
 				append_encoded(
@@ -622,6 +636,27 @@ X86 :: [].{
 			count: 63,
 		}),
 	) == "49 c1 fb 3f"
+	expect hex_of(
+		Shift({
+			operation: Shr,
+			reg: Rcx,
+			count: 48,
+		}),
+	) == "48 c1 e9 30"
+	expect hex_of(MovzxByteLoad({ to: Rax, from: at_base(Rsi, 0) })) == "48 0f b6 06"
+	expect hex_of(MovzxByteLoad({ to: R9, from: at_base(Rdi, 8) })) == "4c 0f b6 4f 08"
+	expect hex_of(
+		MovzxByteLoad({
+			to: Rdx,
+			from: at_index({
+				base: Rsi,
+				index: R8,
+				scale: Times1,
+				displacement: 8,
+			}),
+		}),
+	) == "4a 0f b6 54 06 08"
+	expect hex_of(RepMovsb) == "f3 a4"
 	expect hex_of(Push(Rbp)) == "55"
 	expect hex_of(Push(R12)) == "41 54"
 	expect hex_of(Pop(Rbp)) == "5d"

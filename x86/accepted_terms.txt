@@ -38,6 +38,9 @@ xor    -- an instruction's mnemonic
 imul   -- an instruction's mnemonic
 sar    -- an instruction's mnemonic
 shl    -- an instruction's mnemonic
+shr    -- an instruction's mnemonic
+rep    -- an instruction prefix's mnemonic (rep movsb)
+null   -- JavaScript's own value, by its name
 jmp    -- an instruction's mnemonic
 jcc    -- the manual's name for the conditional jumps
 ret    -- an instruction's mnemonic
