@@ -26,7 +26,9 @@
 --     sample in js/canvas/ to its golden log of effects;
 --   - x86/hello.shale, which runs the x86-64 backend's expects and runs the
 --     hello-world executable it writes, its output and exit code held exactly;
---   - x86/programs.shale, which holds each program in x86/tests/ to node and
+--   - x86/fib.shale timing=0, which runs the compiler's expects and compiles
+--     x86/fib.js, its executable's output held to node's, and
+--     x86/programs.shale, which holds each program in x86/tests/ to node and
 --     each in x86/tests/refused/ to its refusal.
 --
 -- `js=1` is the allocation tier, kept out of the default run for its time
@@ -164,6 +166,7 @@ function all()
   script_check("js/canvas.shale", "the canvas samples against their logs")
   script_check("js/dump.shale", "the bytecode dumper's output for one program")
   script_check("x86/hello.shale", "the x86-64 backend's expects and its hello-world executable")
+  script_check("x86/fib.shale", "the compiler's expects and fib, compiled and held to node", {"timing=0"})
   script_check("x86/programs.shale", "the compiled programs held to node, and the refused to their refusals")
   return nil
 end

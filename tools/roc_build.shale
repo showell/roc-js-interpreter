@@ -19,7 +19,10 @@
 --
 -- It prints one line, `built <name> <mode> in N s` or `reused <name> <mode>
 -- (<key>)`, then `exe<tab><the executable's real path>`, the line a caller
--- reads.
+-- reads. With `cached=1` it builds nothing: a build the cache doesn't hold
+-- is the one line `missing <name> <mode> (<key>)`, for a caller that
+-- measures only what is already built (x86/fib.shale's timing of js-vm's
+-- release build). The twin has no `cached`.
 --
 -- **The key is the content of every input**, never a commit, so an edit
 -- not yet committed is a new key: the app's root and each module it imports
@@ -61,6 +64,7 @@ const NAME = arg("name", "")
 const MODE = arg("mode", "")
 const FLAGS = arg("flags", "")
 const ALLOW = arg("allow", "")
+const CACHED = arg("cached", false)
 
 const MODE_FLAGS = {
   dev = {"--opt=dev"},
@@ -222,6 +226,10 @@ function main()
     replace(dir .. "/used", tostring(now()) .. "\n")
     print("reused " .. NAME .. " " .. MODE .. " (" .. key .. ")")
     print("exe\t" .. real(exe))
+    return nil
+  end
+  if CACHED then
+    print("missing " .. NAME .. " " .. MODE .. " (" .. key .. ")")
     return nil
   end
   mkdir(app_dir)

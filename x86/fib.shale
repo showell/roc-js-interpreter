@@ -1,0 +1,116 @@
+-- budget: steps=40000000
+-- x86/fib.shale: milestone 2 of the x86-64 backend, fib compiled and timed.
+-- It runs the compiler's expects (`roc test x86/roc/JsToX86.roc`), holding
+-- their number to EXPECTS exactly, builds js-x86 on the dev backend, compiles
+-- x86/fib.js (a recursive fib, printing fib(22) and fib(30)) to a static
+-- executable under the build mount, runs it, and holds what it printed and its exit code to
+-- node's run of the same program, exactly. From the repository's root:
+--
+--   shale x86/fib.shale             the check, then the times
+--   shale x86/fib.shale timing=0    the check alone, as check.shale runs it
+--
+-- The times are each the best of RUNS runs, wall clock and CPU, of the
+-- executable, of node, and of js-vm's release build (the bytecode VM), each
+-- for x86/fib.js and for the program with its fib(30) line left out, which
+-- is the book's fib(22). js-vm's release build is timed only when
+-- tools/roc_build.shale's cache already holds one of today's inputs
+-- (`cached=1`): this script never starts a release build, and says so when
+-- there is none. The box's load average, from `uptime`, comes first.
+
+use("./executables.shale")
+
+const WHO = "x86/fib.shale"
+const EXPECTS = 112
+const PROGRAM = "x86/fib.js"
+const LAST_LINE = "console.log(fib(30));\n"
+const RUNS = 3
+const WANT_VM = "js-vm: the bytecode VM's release build, timed beside the executable"
+const TIMING = arg("timing", true)
+
+-- The executable for `src`, checked against node's run of the program at
+-- `js_path`: same output, both exit 0. Its size in bytes.
+function checked_executable(exe, src, js_path, path)
+  local size = written_executable(WHO, exe, src, path)
+  local r = executable_run(path)
+  local n = node_run(js_path)
+  local wrong = {}
+  if n.code ~= 0 then push(wrong, "node exited " .. n.code .. ": " .. trim(n.out)) end
+  if r.ended ~= "exit" then push(wrong, "the executable ended " .. r.ended) end
+  if r.code ~= 0 then push(wrong, "the executable exited " .. r.code) end
+  if r.out ~= n.out then push(wrong, "it printed " .. json_write(r.out) .. ", node " .. json_write(n.out)) end
+  if #wrong > 0 then fail(WHO .. ": the " .. size .. "-byte executable at " .. path .. " was wrong: " .. join(wrong, "; ")) end
+  return size
+end
+
+-- The best of RUNS runs of `argv`: `{ms, cpu_ms}`, each the least, and
+-- what the last run printed.
+function best_of(argv, want)
+  local best = nil
+  local out = ""
+  for _ = 1, RUNS do
+    local r = run(argv, {timeout_ms = 120000, whole = 1000000, want = want})
+    if r.ended ~= "exit" or r.code ~= 0 then fail(WHO .. ": " .. join(argv, " ") .. " ended " .. r.ended .. " " .. get(r, "code", "") .. ": " .. trim(r.out)) end
+    if best == nil then
+      best = {ms = r.ms, cpu_ms = r.cpu_ms}
+    else
+      if r.ms < best.ms then best.ms = r.ms end
+      if r.cpu_ms < best.cpu_ms then best.cpu_ms = r.cpu_ms end
+    end
+    out = r.out
+  end
+  return {ms = best.ms, cpu_ms = best.cpu_ms, out = out}
+end
+
+-- js-vm's release build, if the cache holds one of these inputs, else nil.
+function cached_vm()
+  local r = run({"shale", "--root", ".", "tools/roc_build.shale", "--args-stdin"}, {timeout_ms = 120000, tail = 10, stdin = "app=js/roc/JsVm.roc\nname=js-vm\nmode=speed\ncached=1\n"})
+  if r.code ~= 0 then fail(WHO .. ": tools/roc_build.shale failed: " .. trim(r.out)) end
+  for l in lines(r.out) do
+    if starts_with(l, "exe\t") then return sub(l, 5) end
+    if starts_with(l, "missing ") then print("js-vm's release build is not cached (" .. l .. "), so it is not timed: this script starts no release build") end
+  end
+  return nil
+end
+
+function timed_line(what, t)
+  return what .. ": " .. t.ms .. " ms wall, " .. t.cpu_ms .. " ms CPU"
+end
+
+-- Each program's times, its executable's, node's and js-vm's, each a line.
+function times(programs, vm)
+  print("load average: " .. trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out))
+  for p in programs do
+    local own = best_of({real(p.path)}, WANT_BINARY)
+    print(timed_line(p.name .. ", the executable (" .. p.size .. " bytes)", own))
+    print(timed_line(p.name .. ", node", best_of({"node", real(p.js_path)}, WANT_NODE)))
+    if vm ~= nil then
+      local t = best_of({vm, p.src}, WANT_VM)
+      if t.out ~= own.out then fail(WHO .. ": js-vm printed " .. json_write(t.out) .. " for " .. p.name .. ", the executable " .. json_write(own.out)) end
+      print(timed_line(p.name .. ", js-vm's release build", t))
+    end
+  end
+  return nil
+end
+
+function main()
+  local expects = expects_passed(WHO, "JsToX86.roc")
+  if expects ~= EXPECTS then fail(WHO .. ": roc test x86/roc/JsToX86.roc ran " .. expects .. " expects, held at " .. EXPECTS) end
+  local exe = built_roc(WHO, "x86/roc/JsToX86.roc", "js-x86", "dev")
+  local dir = executables_dir()
+  local src = read(PROGRAM)
+  local size = checked_executable(exe, src, PROGRAM, dir .. "/fib")
+  print("x86/fib: " .. expects .. " expects passed; " .. PROGRAM .. " compiled to a " .. size .. "-byte static executable, which printed what node prints")
+  if not TIMING then return nil end
+  local at = find(src, LAST_LINE)
+  if at == nil then fail(WHO .. ": " .. PROGRAM .. " has no line " .. json_write(LAST_LINE)) end
+  local short = sub(src, 1, at - 1) .. sub(src, at + #LAST_LINE)
+  replace(dir .. "/fib22.js", short)
+  local short_size = checked_executable(exe, short, dir .. "/fib22.js", dir .. "/fib22")
+  times({
+    {name = "fib(22)", path = dir .. "/fib22", js_path = dir .. "/fib22.js", src = short, size = short_size},
+    {name = "fib(22) and fib(30)", path = dir .. "/fib", js_path = PROGRAM, src = src, size = size},
+  }, cached_vm())
+  return nil
+end
+
+main()
