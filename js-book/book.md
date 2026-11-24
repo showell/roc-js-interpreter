@@ -248,7 +248,7 @@ Writing `Freed` over a garbage cell drops the cell that was there, and Roc's ref
 
 ### Around the copy cliff
 
-The collector is shaped around Roc's copy cliff, where a write to a list that something else still refers to copies the whole list first (`docs/roc-notes.md` in roc-apps, "Speed and copying"):
+The collector is shaped around Roc's copy cliff, where a write to a list that something else still refers to copies the whole list first ("What copies" lists the shapes):
 
 - **The marks are a list of their own.** `marked` reads the cells and writes only its marks and its stack of cells waiting to be visited, each in place, so every list it writes is its own. A mark bit inside each cell would make the first mark copy the heap.
 - **The sweep owns the cells.** `collected` takes the cells out of the machine with `lent` before it calls `swept`, so each `set` in the sweep is the list's only reference and writes in place:
@@ -321,15 +321,35 @@ The memory view, `js_memory.js`, is a popup with two small charts of the last ru
 
 ## What copies
 
-The project's performance work came down to three rules about Roc values.
+The project's performance work came down to Roc's copy rule and three habits that follow from it.
+
+### Roc's copy rule
+
+Roc writes a list in place only while the list has a single owner, and a copy is silent. On RC1 every copy is a use after a consume: a write (`List.set`, `append`, `Dict.insert`) takes the value, and something still reads the old one after it. The copy allocates the whole list again on every such write, so its cost grows with the list. roc-apps holds each shape below as a loop in its `tools/copy_shapes/`, checked in the release and dev builds.
+
+Shapes that copy in every build:
+
+1. The old list read after its write: `ys = xs.set(j, v) ?? xs`, then `xs.get(j)`. Reading first is free.
+2. A closure over the list called after the write.
+3. An inner list got, written and set back while the outer list still holds it. `List.update` hands the element over unshared and is free.
+4. The old dict read after an insert, even its length.
+5. A value got from a dict, written and inserted back while the dict still holds it.
+
+Shapes that copy in the dev build only, where a helper stays a call that owns its arguments and the release build specializes it first:
+
+6. A helper that reads its list after writing it.
+7. A helper that reads the whole record inside the write of one of its fields.
+8. `?? xs` on a list whose entries hold a reference count, such as a list of strings. `?? crash` is free.
+
+A record update copies the record around the field it writes, inline sub-records included. A `Box` carried untouched is free, but every write re-boxes it, one allocation a write.
 
 ### A value is copied when it is handed on
 
-Every VM instruction takes the machine and hands it back, and a handler copies the machine record on the way in. A record update copies the record around the field it writes, inline sub-records included (`docs/roc-notes.md`, "Speed and copying").
+Every VM instruction takes the machine and hands it back, and a handler copies the machine record on the way in, by the record rule above.
 
 ### Box what is rarely written
 
-A part of the machine that most instructions leave alone costs a copy on every instruction if it sits inline. The event queue was the first example: only timers and clicks touch it, yet inline it made the release build's fib(22) take 123 ms; boxed, 82 ms (`15686d94`). `docs/roc-notes.md` adds the qualification: a `Box` carried untouched is free, but every write re-boxes, one allocation per write, so a box suits a part that is rarely written after it is made.
+A part of the machine that most instructions leave alone costs a copy on every instruction if it sits inline. The event queue was the first example: only timers and clicks touch it, yet inline it made the release build's fib(22) take 123 ms; boxed, 82 ms (`15686d94`). Since every write re-boxes, a box suits a part that is rarely written after it is made.
 
 ### Stay under 256 bytes
 
@@ -369,7 +389,7 @@ This difference forced a decision. The walker's heap writers were first rewritte
 
 ### Copies that happen only in dev
 
-Some copies are made only by the dev build, at a helper's boundary: there a helper stays a call that owns its arguments, where the release build specializes it first. `docs/roc-notes.md` lists three such shapes. This project met two kinds:
+Some copies are made only by the dev build, at a helper's boundary: there a helper stays a call that owns its arguments, where the release build specializes it first. "Roc's copy rule" lists three such shapes. This project met two kinds:
 
 - **A rule generic over the whole machine.** When `ValueRules` was split out, a version that took the engine's whole machine as an open record came first. The dev build copied the cells a rule wrote through it (a probe measured 3 allocations a write against 1), and the walker's dev controls went red, 05-array-push rising from 3 to 12.73 a pass (`d8d6b7fe`). The rules now take a small machine of the cells, which the VM lends and takes back.
 - **A planted copy the release build optimized away.** Twice, a `List.drop_last` was planted back into the walker's scope handling. Each time the dev ladder went red on 02-closure-call alone (15 to 16 in `920cda0c`, 3 to 4 in `2233adc9`) and the release ladder stayed green, because the release build makes zero copies there.
