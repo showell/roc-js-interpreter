@@ -103,21 +103,7 @@ The VM's loop fetches the next instruction and hands the machine to `dispatch!`,
 
 ### The heap is one Roc value
 
-JavaScript shares arrays, objects and closures by reference: two variables that hold one array see each other's writes. Roc has only values. So the interpreter keeps everything JavaScript shares in one list of cells, the heap, and a JavaScript reference is an index into it. A cell is one of these:
-
-{{lines js/roc/Heap.roc from "Cell : [" to "Freed(Heap.Free),"}}
-
-An `Instance` is a class's instance: an object marked with the names of its class and of each class it extends, which `x instanceof C` reads (`NewInstance`, `InstanceOf`). It is the VM's one part in classes.
-
-Roc writes a list in place only while it is the list's sole owner, so a single stray reference to the heap makes every write copy the whole heap. `js/README.md`, "Why the heap is one value", lists the shapes that keep the heap unique, each with a comment where it is used:
-
-- a cell is written by `List.update`, which hands its function the cell as the sole owner;
-- a writer gets the list straight from the record it updates, `{ ..machine, cells: Heap.with_property(machine.cells, ...) }`;
-- a result is taken apart where it is answered, so its machine lives on alone;
-- a writer asks what a cell is (`ValueRules.kind_of`), and leaves the cell in the heap;
-- a stack place given up is cleared to `Null`;
-- a loop over the machine is a `var $st` loop, so the machine stays out of every closure;
-- the host travels as an argument of its own, beside the machine.
+JavaScript shares arrays, objects and closures by reference, and Roc has only values. So the interpreter keeps everything JavaScript shares in one list of cells, the heap, and a JavaScript reference is an index into it. {{chapter Memory strategy}} lays out the heap, the stack and what each operation costs.
 
 ### The machine
 
@@ -125,27 +111,140 @@ Everything a run holds is one record, `Vm.Machine`, handed to each instruction's
 
 {{lines js/roc/Vm.roc from "Machine : {" to "turtle : Box(Canvas.Turtle),"}}
 
-The boxes are the subject of {{chapter What copies}}: each boxed part is one that most instructions leave alone.
+The boxes in it are the subject of {{chapter What copies}}: each boxed part is one that most instructions leave alone.
+
+## Memory strategy
+
+Everything a JavaScript program shares lives in one Roc list, and every operation is shaped so that Roc writes that list in place. This chapter lays out the types, states what each operation costs and how that is checked, and follows one line of JavaScript through the machine.
+
+### A reference is an index
+
+A JavaScript value is one of these, and a `Reference` is the index of a cell in the machine's `cells : List(Heap.Cell)`:
+
+{{lines js/roc/Heap.roc from "Value : [" to "Reference(U64),"}}
+
+A cell is one of these:
+
+{{lines js/roc/Heap.roc from "Cell : [" to "Freed(Heap.Free),"}}
+
+An `Instance` is an object marked with the names of its class and of each class it extends, which `x instanceof C` reads. Two variables that hold one array hold one index, so each sees the other's writes.
+
+### The free list
+
+A freed cell stays in its place as `Freed(next)`, a link to the next free cell, and the machine's `free` names the first, `FreeAt(id)` or `NoneFree`. An allocation reads the link out of the first free cell and writes the new cell into its place with one `set`; only an empty free list appends:
+
+{{lines js/roc/Heap.roc from "allocated : List(Heap.Cell), Heap.Free" to "{ cells: cells.set(id, cell)"}}
+
+Garbage collection is what refills the free list; {{chapter The garbage collector}} says how.
+
+Two references into the heap, and its free list
+```dot
+digraph {
+  rankdir=LR;
+  node [shape=box, style=rounded];
+  s0 [label="slot 0: Reference(0)"];
+  s1 [label="slot 1: Reference(1)"];
+  free [label="free: FreeAt(2)"];
+  subgraph cluster_cells {
+    label="cells : List(Heap.Cell)";
+    c0 [label="0: Object"];
+    c1 [label="1: Array"];
+    c2 [label="2: Freed(FreeAt(3))"];
+    c3 [label="3: Freed(NoneFree)"];
+  }
+  s0 -> c0;
+  s1 -> c1;
+  free -> c2;
+}
+```
 
 ### Slots and boxes
 
-A call's frame is a run of slots on the operand stack, starting at its base: its parameters, then the variables its blocks and loops declare, then the hidden slots its `for ... of` loops keep their place in, then the boxes of the variables it captures. An instruction names a slot by its place from the base, so reading a local is one index into the stack. The values a function is working on sit above its slots, and the callers' frames wait in `frames`.
+A call's frame is a run of slots on the operand stack, from its base: its parameters, the variables its blocks declare, the hidden places of its `for ... of` loops, then the boxes it captures. An instruction names a slot by its place from the base, so a local is one index into the stack. The values being worked on sit above the slots, and the callers wait in `frames`. A push writes the place at `top`, and appends only past the stack's end:
 
-A variable that a closure may capture lives in a box: a heap cell, `Variable`, that the frame and its closures share. The parser marks each scope that holds a function literal (`Ast.Capture`), and only those scopes box their variables; the rest stay plain slots. A closure's `Fun` cell names an `Environment` cell, which holds its code's number and the boxes it captures. A `for` loop whose body makes closures gives each pass a fresh box, as JavaScript's `let` requires.
+{{function js/roc/Vm.roc pushed}}
 
-So everything a program holds is data: the stack, the frames and the cells. That is what lets a collector find it all.
+A variable a closure may capture lives in a box, a `Variable` cell the frame and its closures share; the parser marks each scope that holds a function literal (`Ast.Capture`), and only those box their variables. A closure's `Fun` cell names an `Environment` cell, its code's number and the boxes it captures.
+
+### What each operation costs
+
+A control's count is what one more pass allocates, run at 1,000 and 10,000 passes ({{chapter Dev and release builds disagree}}). A write that copies its list allocates once a pass, so a flat count rules the copy out. A count is a count of allocations; the probes time a write at three sizes on the dev build (`js/README.md`, "What the probes say", 2026-11-24).
+
+| operation | cost | how it is checked |
+|---|---|---|
+| allocate, a cell free | O(1), one `set` | 08-garbage-in-a-call: 1 a pass in release (the object's property list), its cells reused |
+| allocate, the free list empty | amortized O(1), an append | unchecked: every control's heap stays one size |
+| read a property | O(p) in the object's p properties | 08-garbage-in-a-call reads one a pass; O(p) unchecked (`find_first`) |
+| write a property | O(p) | 04-property-write: 0 release, 1 dev; probe 14, 12, 12 µs beside 2,000 to 8,000 objects |
+| read an item | O(1), a `get` | unchecked by a control |
+| store an item | O(1) | 01-array-store: 0 release, 1 dev; probe flat to 8,000 items |
+| push | amortized O(1) | 05-array-push: 1 release (the argument list); probe flat to 160,000 pushes |
+| read or write a slot | O(1) | 00-loop: 0 in both builds |
+| a boxed variable | O(1) | 02-closure-call's `++c`; probe flat beside 8,000 closures |
+| call a closure | O(frame size) | 02-closure-call: 0 release, 1 dev |
+| write a shared list | O(n), the list's length: the copy cliff | roc-apps' `get-after-set` copy shape: 1 whole-list allocation a write, every build |
+
+`js/controls/expected-dev.txt` names the cause of each dev count, line by line.
+
+### One line of JavaScript
+
+The line `o.total = o.total + a[i];` runs in a loop whose frame holds `o` in slot 0, `a` in 1 and `i` in 2. These are the instructions `Compile.program` makes for it, printed for this chapter by a scratch program that runs `Parser.program_of` and `Compile.program` and writes each instruction with `Str.inspect`:
+
+| instruction | the stack after | what it does |
+|---|---|---|
+| `LoadLocal(0)` | o | copies slot 0's reference to the top |
+| `LoadLocal(0)` | o o | |
+| `GetProperty("total")` | o t | reads cell 0's property in place of its reference |
+| `LoadLocal(1)` | o t a | |
+| `LoadLocal(2)` | o t a i | |
+| `GetIndex` | o t x | reads cell 1's item |
+| `Binary(Add)` | o s | two numbers: the VM's own fast path |
+| `SetProperty("total")` | s | `Heap.with_property`, a `List.update` of cell 0 |
+| `Pop` | | clears the place to `Null` |
+
+What the line's instructions touch
+```dot
+digraph {
+  rankdir=LR;
+  node [shape=box, style=rounded];
+  load [label="LoadLocal (4)"];
+  get [label="GetProperty, GetIndex"];
+  add [label="Binary(Add)"];
+  set [label="SetProperty"];
+  pop [label="Pop"];
+  stack [label="the stack", shape=box, style=solid];
+  cells [label="the cells", shape=box, style=solid];
+  load -> stack [label="push a slot"];
+  get -> stack [label="replace the top"];
+  add -> stack [label="replace the top"];
+  pop -> stack [label="clear to Null"];
+  get -> cells [label="read"];
+  set -> cells [label="List.update"];
+}
+```
+
+Each instruction is O(1) but the two property lookups, O(p). The reads copy one `Value` onto the stack and leave the cells alone. The store hands `Heap.with_property` the list straight from the record it updates, `{ ..machine, cells: Heap.with_property(machine.cells, ...) }`, and `List.update` hands its function cell 0 as its sole owner, so the property is written in place. The stack is written in place too, by `set` at `top`.
+
+That holds while the cells have one owner. `js/README.md`, "Why the heap is one value", lists the shapes that keep it so, each with a comment where it is used:
+
+- a writer gets the list straight from the record it updates;
+- a result is taken apart where it is answered, so its machine lives on alone;
+- a writer asks what a cell is (`ValueRules.kind_of`), and leaves the cell in the heap;
+- a stack place given up is cleared to `Null`;
+- a loop over the machine is a `var $st` loop, so the machine stays out of every closure;
+- the host travels as an argument of its own.
 
 ## The garbage collector
 
 ### What it does
 
-`Collector.roc` is the VM's garbage collector, a precise mark and sweep. The VM names its roots, `marked` follows every reference from them through the cells, and `swept` turns each unmarked cell into a `Freed` cell linked into the free list, which `Heap.allocated` takes from before it grows the heap. The collector leaves every live cell where it is: a JavaScript reference is a cell's index, and a live cell keeps its index, so every reference stays valid across a collection.
+`Collector.roc` is the VM's garbage collector, a precise mark and sweep. The VM names its roots, `marked` follows every reference from them through the cells, and `swept` turns each unmarked cell into a `Freed` cell on the free list. A live cell keeps its index, so every reference stays valid across a collection.
 
 The sweep is where memory comes back:
 
 {{lines js/roc/Collector.roc from "swept : " to "{ cells: $cells, free: $free, live: $live }"}}
 
-Writing `Freed` over a garbage cell drops the cell that was there, and Roc's reference counting returns what it held (an object's properties, an array's items, a closure's boxes) to the allocator at that write. The heap's list keeps its length; its freed places are taken again before it grows. That is how the programs in `js/heaps/` went from peaks of 40 to 164 MB to about 4 MB each (`62110109`).
+Writing `Freed` over a garbage cell drops the cell that was there, and Roc's reference counting returns what it held (an object's properties, an array's items, a closure's boxes) to the allocator at that write. The heap's list keeps its length, and {{chapter Memory strategy}} shows an allocation taking a freed place. That is how the programs in `js/heaps/` went from peaks of 40 to 164 MB to about 4 MB each (`62110109`).
 
 ### Around the copy cliff
 
@@ -158,13 +257,15 @@ The collector is shaped around Roc's copy cliff, where a write to a list that so
 
 - **The waiting stack reuses its places.** A visited cell's place is written over by the next one pushed, so the stack grows only to the mark's deepest point.
 
+A count holds these three only loosely. On the dev build, 08-garbage-in-a-call's collections allocate 0.04 a pass, about one collection every thousand passes (`js/controls/expected-dev.txt`); one copy of the heap at each collection would add about a thousandth a pass, inside the ladder's tolerance of 0.05 a pass (`tools/alloc_ladder.shale`). So the guards are unchecked as copies; the heap programs' peaks of about 4 MB (`62110109`) are the nearest measure.
+
 ### Its roots, and when it runs
 
 The roots are the machine's data:
 
 {{function js/roc/Vm.roc roots}}
 
-A collection is due when the free list is empty and the heap has reached its threshold. After each one, the threshold is twice what the collection kept, and at least 1,024 cells:
+A collection is due when the free list is empty and the heap has reached its threshold. After each one, the threshold is twice what the collection kept, and at least 1,024 cells, so a collection's cost, O(heap), comes to amortized O(1) a cell allocated (unchecked by a timing):
 
 {{function js/roc/Vm.roc is_collection_due}}
 
