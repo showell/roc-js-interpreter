@@ -4,10 +4,11 @@ The code here was written by AI coding agents (Claude), with human supervision. 
 
 A subset of JavaScript run by a bytecode VM written in Roc, a web playground where a program draws on a canvas as it runs, and a corpus that holds the language to node. Every program in the subset is real JavaScript, so node is a free oracle: what node prints for a program is what the interpreter must print.
 
-It has two parts, each with its own README or manuscript:
+It has three parts, each with its own README or manuscript:
 
 - [js/](js/README.md): the interpreter, its playground and its tests. Its README says what the subset holds, how the VM and its collector work, and how each part is tested.
 - [js-book/](js-book/book.md): the book *A JavaScript Interpreter in Roc*, built with roc-apps' book builder. It tells how the interpreter came to be and what it taught us about Roc.
+- [x86/](x86/README.md): the start of a compiler from the subset to static Linux x86-64 executables, every byte written by Roc. It writes a hello-world binary so far.
 
 Both moved here from [roc-apps](https://github.com/showell/roc-apps) with their history, so a commit message older than the move may name a file of roc-apps that this repository doesn't have.
 
@@ -25,7 +26,7 @@ Both moved here from [roc-apps](https://github.com/showell/roc-apps) with their 
 
 ## Checking it
 
-    shale check.shale          # the Roc recipes, the roots, roc fmt, roc check, the oracle and the canvas samples
+    shale check.shale          # the Roc recipes, the roots, roc fmt, roc check, the oracle, the canvas samples and x86's hello world
     shale check.shale js=1     # the controls' allocations, in the release and the dev build
     shale js/build.shale       # the playground, built and checked, into the dev channel's /js/
     shale js-book/book.shale   # the book, built and checked, into the dev channel's /js-book/

@@ -1,0 +1,61 @@
+-- Short terms the x86-64 backend's Roc names may hold though no word list
+-- has them, one a line, each with its reason after `--`: the words of the
+-- Intel and AMD manuals, which name the registers, the instructions and the
+-- parts of an encoding so, and which a reader of the encoder looks up there.
+-- tools/lints.shale hands it to find_names_and_docs_that_say_too_little
+-- (`accepted=`), through x86/lints.shale.
+rax    -- a general register, by the manual's name
+rbx    -- a general register, by the manual's name
+rcx    -- a general register, by the manual's name
+rdx    -- a general register, by the manual's name
+rsi    -- a general register, by the manual's name
+rdi    -- a general register, by the manual's name
+rsp    -- the stack pointer, by the manual's name
+rbp    -- the frame pointer, by the manual's name
+xmm    -- the SSE registers, by the manual's name
+xmm0   -- an SSE register, by the manual's name
+xmm1   -- an SSE register, by the manual's name
+xmm2   -- an SSE register, by the manual's name
+xmm3   -- an SSE register, by the manual's name
+xmm4   -- an SSE register, by the manual's name
+xmm5   -- an SSE register, by the manual's name
+xmm6   -- an SSE register, by the manual's name
+xmm7   -- an SSE register, by the manual's name
+xmm8   -- an SSE register, by the manual's name
+xmm9   -- an SSE register, by the manual's name
+xmm10  -- an SSE register, by the manual's name
+xmm11  -- an SSE register, by the manual's name
+xmm12  -- an SSE register, by the manual's name
+xmm13  -- an SSE register, by the manual's name
+xmm14  -- an SSE register, by the manual's name
+xmm15  -- an SSE register, by the manual's name
+mov    -- an instruction's mnemonic
+movq   -- an instruction's mnemonic
+lea    -- an instruction's mnemonic
+cmp    -- an instruction's mnemonic
+sub    -- an instruction's mnemonic
+xor    -- an instruction's mnemonic
+imul   -- an instruction's mnemonic
+sar    -- an instruction's mnemonic
+shl    -- an instruction's mnemonic
+jmp    -- an instruction's mnemonic
+jcc    -- the manual's name for the conditional jumps
+ret    -- an instruction's mnemonic
+ae     -- a condition's suffix (jae: above or equal)
+ge     -- a condition's suffix (jge: greater or equal)
+le     -- a condition's suffix (jle: less or equal)
+ne     -- a condition's suffix (jne: not equal)
+np     -- a condition's suffix (jnp: no parity)
+ns     -- a condition's suffix (jns: no sign)
+alu    -- the arithmetic and logic unit, the manual's group of integer operations
+sse    -- the SSE2 instruction set, by its name
+rex    -- the REX prefix, by the manual's name
+sib    -- the SIB byte, by the manual's name
+reg    -- the ModRM byte's reg field, by the manual's name
+imm    -- an immediate operand, as the manual's opcode tables abbreviate it
+imm8   -- an 8-bit immediate, as the manual's opcode tables name it
+imm32  -- a 32-bit immediate, as the manual's opcode tables name it
+mem    -- a memory operand, as the manual's opcode tables abbreviate it
+rel32  -- a 32-bit relative offset, as the manual's opcode tables name it
+abi    -- the System V ABI, ELF's name for Linux's calling convention
+len    -- Roc's own field, `List.sublist`'s `{ start, len }`

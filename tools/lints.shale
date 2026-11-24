@@ -3,9 +3,9 @@
 -- js-book/ while they were roc-apps' folders, with the same arguments and in
 -- the same shape, so the counts line up with what roc-apps reported: each
 -- recipe runs over each project (a top-level folder holding .roc files) on
--- its own, and a folder with settings of its own (js/lints.shale's, which
--- stay their one home) runs on its own with them, its findings left out of
--- its project's run. check.shale runs this and takes its lines; on its own,
+-- its own, and a folder with settings of its own (js/lints.shale's and
+-- x86/lints.shale's, which stay their one home) runs on its own with them,
+-- its findings left out of its project's run. check.shale runs this and takes its lines; on its own,
 -- from the repository's root:
 --
 --   shale tools/lints.shale
@@ -27,7 +27,7 @@
 --
 -- budget: steps=400000000 arena_bytes=1000000000 output_bytes=1000000
 
-const SETTINGS_SOURCE = "js/lints.shale"
+const SETTINGS_SOURCES = {"js/lints.shale", "x86/lints.shale"}
 const FINDING_RE = "^([^ :]+\\.roc):[0-9]+(?::[0-9]+)?: ([a-z_]+(?: [a-z_]+)?): "
 
 -- Each recipe, with each count's name in its summary and the name its
@@ -100,6 +100,11 @@ const HELD = {
   ["js/find_functions_and_parameters_that_dont_earn_their_keep/fixed"] = 2,
   ["js/find_functions_and_parameters_that_dont_earn_their_keep/constant"] = 1,
   ["js/find_functions_and_parameters_that_dont_earn_their_keep/dead"] = 2,
+  -- x86/roc/Hello.roc's `main!`, which Roc's default platform calls and the
+  -- recipe doesn't know of: the finding js's two are too, JsVm.roc's and
+  -- JsCanvas.roc's `main!`. It goes when the recipe learns a headerless
+  -- app's entry.
+  ["x86/find_functions_and_parameters_that_dont_earn_their_keep/dead"] = 1,
 }
 
 -- The number a summary gives for a check: "check N", or "N check" for
@@ -139,24 +144,29 @@ function count_under(files, folder)
   return n
 end
 
--- js/lints.shale's settings: `{recipe, folder, args}` a recipe and folder.
+-- The settings of SETTINGS_SOURCES: `{recipe, folder, args, source}` a
+-- recipe and folder.
 function settings()
-  local r = must(run({"shale", "--root", ".", SETTINGS_SOURCE, "reads=settings"}, {timeout_ms = 60000, whole = 100000}))
   local by = {}
   local out = {}
-  for l in lines(r.out) do
-    if starts_with(l, "SETTING\t") then
-      local f = split(l, "\t")
-      if #f ~= 4 then fail("lints: " .. SETTINGS_SOURCE .. " printed a setting that is not four fields: " .. l) end
-      local k = f[2] .. "@" .. f[3]
-      if not has_key(by, k) then
-        by[k] = {recipe = f[2], folder = f[3], args = {}}
-        push(out, by[k])
+  for source in SETTINGS_SOURCES do
+    local r = must(run({"shale", "--root", ".", source, "reads=settings"}, {timeout_ms = 60000, whole = 100000}))
+    local found = 0
+    for l in lines(r.out) do
+      if starts_with(l, "SETTING\t") then
+        local f = split(l, "\t")
+        if #f ~= 4 then fail("lints: " .. source .. " printed a setting that is not four fields: " .. l) end
+        local k = f[2] .. "@" .. f[3]
+        if not has_key(by, k) then
+          by[k] = {recipe = f[2], folder = f[3], args = {}, source = source}
+          push(out, by[k])
+        end
+        push(by[k].args, f[4])
+        found = found + 1
       end
-      push(by[k].args, f[4])
     end
+    if found == 0 then fail("lints: " .. source .. " printed no settings") end
   end
-  if #out == 0 then fail("lints: " .. SETTINGS_SOURCE .. " printed no settings") end
   return out
 end
 
@@ -241,17 +251,22 @@ function main()
   local failed = 0
   local judged = {}
   for lint in LINTS do
-    local alone = nil
+    local alone = {}
     for s in own_runs do
-      if s.recipe == lint.recipe then alone = s end
+      if s.recipe == lint.recipe then push(alone, s) end
     end
     for project in projects do
       local leave_out = nil
-      if alone ~= nil and starts_with(alone.folder, project .. "/") then leave_out = alone.folder end
+      for s in alone do
+        if starts_with(s.folder, project .. "/") then
+          if leave_out ~= nil then fail("lints: " .. project .. " has two folders with settings for " .. lint.recipe .. ", and a project's run leaves out one") end
+          leave_out = s.folder
+        end
+      end
       failed = failed + judge(lint, project, run_lint(lint, project, {}, count_under(files, project), leave_out), judged)
     end
-    if alone ~= nil then
-      failed = failed + judge(lint, alone.folder, run_lint(lint, alone.folder, alone.args, count_under(files, alone.folder), nil), judged)
+    for s in alone do
+      failed = failed + judge(lint, s.folder, run_lint(lint, s.folder, s.args, count_under(files, s.folder), nil), judged)
     end
   end
   for s in own_runs do
@@ -261,7 +276,7 @@ function main()
     end
     if not known then
       failed = failed + 1
-      print("FAIL  " .. SETTINGS_SOURCE .. " has settings for " .. s.recipe .. ", which this gate doesn't run")
+      print("FAIL  " .. s.source .. " has settings for " .. s.recipe .. ", which this gate doesn't run")
     end
   end
   for key in keys(HELD) do

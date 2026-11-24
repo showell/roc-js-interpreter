@@ -1,0 +1,26 @@
+-- This script holds the x86-64 backend's own settings for Shale's Roc lints:
+-- the terms in x86/accepted_terms.txt, the manuals' own words for registers,
+-- mnemonics and encodings (`rax`, `lea`, `rex`) that
+-- find_names_and_docs_that_say_too_little would read as abbreviations.
+--
+--   cd <roc-js-interpreter checkout> && shale x86/lints.shale reads=settings
+--
+-- It prints one line `SETTING<tab>recipe<tab>folder<tab>arg` an argument,
+-- paths from the checkout's root, for tools/lints.shale, which runs the
+-- recipes over every project and so must judge x86's files with x86's
+-- terms. This table stays their one home.
+
+-- The folder the settings judge is x86/roc, the backend's Roc:
+-- tools/lints.shale runs a folder with settings on its own and leaves it out
+-- of its project's run, which it can only do for a folder inside the
+-- project.
+const HERE = "x86/roc"
+const SETTINGS = {
+  {recipe = "find_names_and_docs_that_say_too_little", arg = "accepted=x86/accepted_terms.txt"},
+}
+
+const READS = arg("reads", "")
+if READS ~= "settings" then fail("x86 lints: reads=settings is the one reading") end
+for s in SETTINGS do
+  print("SETTING\t" .. s.recipe .. "\t" .. HERE .. "\t" .. s.arg)
+end
