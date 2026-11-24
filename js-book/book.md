@@ -296,6 +296,27 @@ That is the whole of it: a program draws, listens and waits, and the page's DOM,
 
 {{file js/canvas/7-click-dots.js}}
 
+### The page
+
+The page is `js/web/`. `js_page.js` makes everything the page shows, its styles included, so the HTML is only a door: an editor, the canvas and the console. `js_runner.js` loads `js.wasm`, the interpreter compiled from Roc, starts a program, then calls it a frame at a time, about 30 times a second. Each frame is a tick of the program's clock (`Vm.tick!`) that runs the clicks queued since the last tick, the timers due and `frame(t)`. `js_painter.js` paints each effect's line on a 2D canvas as it arrives, and the browser shows the canvas when the frame's call returns. The page's JavaScript only loads, ticks and paints; the program itself runs in the wasm.
+
+One frame on the page
+```dot
+digraph {
+  rankdir=TB;
+  node [shape=box, style=rounded];
+  tick [label="js_runner.js\nevery 1/30 s"];
+  vm [label="Vm.tick!\nclicks, timers, frame(t)"];
+  emit [label="emit!\na line per effect"];
+  paint [label="js_painter.js\n2D canvas"];
+  tick -> vm -> emit -> paint;
+}
+```
+
+The memory view, `js_memory.js`, is a popup with two small charts of the last run. The top one is the heap's cells in use, which climb as the program allocates and drop at each collection, a sawtooth; the bottom one is the wasm memory's size.
+
+`js/build.shale` names every file but `index.html` by its bytes, so a browser always loads the scripts that match its page, and it replaces the page only after `js/page_check.mjs` passes.
+
 ### How an effect travels
 
 The interpreter reaches the world through a host, `Canvas.Host`, a record of four effectful functions:
@@ -323,29 +344,6 @@ digraph {
 - **The page's** host (`JsApp.roc`, on the platform in `js/wasm/`) calls into the page's JavaScript while the Roc call runs.
 - **The recording host,** `js-canvas` (`JsCanvas.roc`), writes every effect and every read as a line, for the golden logs.
 - **`js-vm`'s** host prints each log as it is made.
-
-A frame on the page runs from the browser's timer to the paint:
-
-One frame on the page
-```dot
-digraph {
-  rankdir=TB;
-  node [shape=box, style=rounded];
-  tick [label="js_runner.js\nevery 1/30 s"];
-  vm [label="Vm.tick!\nclicks, timers, frame(t)"];
-  emit [label="emit!\na line per effect"];
-  paint [label="js_painter.js\n2D canvas"];
-  tick -> vm -> emit -> paint;
-}
-```
-
-### The page
-
-The page is `js/web/`. `js_page.js` makes everything the page shows, its styles included, so the HTML is only a door: an editor, the canvas and the console. `js_runner.js` loads `js.wasm`, starts a program, then calls it a frame at a time, about 30 times a second, each frame a tick of the program's clock (`Vm.tick!`) that runs the clicks queued since the last tick, the timers due and `frame(t)`. `js_painter.js` paints each effect's line on a 2D canvas as it arrives, and the browser shows the canvas when the frame's call returns.
-
-The memory view, `js_memory.js`, is a popup with two small charts of the last run. The top one is the heap's cells in use, which climb as the program allocates and drop at each collection, a sawtooth; the bottom one is the wasm memory's size. The VM reports each collection through `collected!`, so the count lives in the host, outside the machine.
-
-`js/build.shale` names every file but `index.html` by its bytes, so a browser always loads the scripts that match its page, and it replaces the page only after `js/page_check.mjs` passes.
 
 ## What copies
 
@@ -508,20 +506,33 @@ The record lists five plants, each reverted:
 
 The subset covers a part of JavaScript on purpose, and it will never cover every corner of the language. A program that steps outside it is refused with a message naming what it used; it never gets a wrong answer.
 
-These are the known differences from node, and the limits, from `js/README.md` and the record:
+The limits fall in three groups: the runtime is small on purpose, the language is fairly complete, and a few limits come from the tools.
+
+### Runtime
+
+- **In the browser, a program gets only the playground's small API:** one 400 by 400 canvas, the mouse and keys, the timers, `frame(t)`, `onCollect` and `console.log` ({{chapter A canvas in the browser}}). Every statement of the program runs in the Roc VM, compiled to wasm. The page's own JavaScript paints the lines the VM emits and passes clicks and keys in; the program's code runs only in the VM.
+- **At the command line, `js-vm`'s runtime is as small:** `console.log`, the timers, and the builtins `js/README.md` lists under "The subset" (`Math`, the methods of strings, arrays, Maps and Sets, `Object.keys` and its kin). Files, processes, `require`, the network and node's other modules are out of reach. The compiler to x86-64 in `x86/` keeps the same small runtime.
+- **Async is out:** promises, `async` and `await` are refused. Timers are the one way to wait, on a virtual clock that runs each callback after the program, in node's order.
+- An interval never cleared stops after 100,000 callbacks with a message, where node runs it for good (`js/README.md`, "The subset").
+- On the page, a program is held to step budgets, 3,000,000 before the first frame and 300,000 a frame ({{chapter Dev and release builds disagree}}).
+
+### Language
+
+The language itself is fairly complete: numbers, strings, arrays, objects, closures, `let` and `const`, `try` and `finally`, `switch`, destructuring, optional chains, spread, Maps, Sets and classes ({{chapter Introduction}}). These are its known differences from node:
 
 - Each class instance holds its own method closures, so `a.m === b.m` is false where node's is true (`js/README.md`, "Classes are syntax sugar").
 - A method read off an instance and called alone keeps its instance, where node loses `this` and throws (the same section).
 - Printing or listing a class instance, or printing a class, is refused: node prints an instance by its class's name, and an instance here holds its methods beside its fields (the same section).
 - An exhausted Map iterator still sees entries added after it finished, where node's stays done. No corpus program holds this yet.
 - A builtin's callback (`map`, `sort`, a Map's `forEach`) throws a RangeError once 400 calls wait under it, where a plain call goes 10,000 deep, near node's own limit (`f4320451`).
-- An interval never cleared stops after 100,000 callbacks with a message, where node runs it for good (`js/README.md`, "The subset").
-- A string method that counts positions is refused on non-ASCII text: JavaScript counts UTF-16 units, and these strings are UTF-8 (the same section).
-- `js-vm` takes the program as one command-line argument, limited to 128 KiB (`js/README.md`, "Pitfalls").
-- On the page, a program is held to step budgets, 3,000,000 before the first frame and 300,000 a frame ({{chapter Dev and release builds disagree}}).
-- `onCollect` and the other canvas builtins are this project's own, so logs of effects judge them in place of node.
+- A string method that counts positions is refused on non-ASCII text: JavaScript counts UTF-16 units, and these strings are UTF-8 (`js/README.md`, "The subset").
 
 The parser refuses these forms, each with a message that names it: getters and setters, `#private` names, class fields, static blocks, computed method names, class expressions, `this` outside a class's code or in a static method, `super` misused, a constructor that returns a value, `extends` of anything but a class declared above, a class's name declared again or assigned, `new` on a program's own function, `var`, `in`, `eval`, regular expressions, async and modules. A run refuses `==` and the other coercions, and the rest of `js/README.md`'s list, "The subset", where only the run can see them.
+
+### Other
+
+- `js-vm` takes the program as one command-line argument, limited to 128 KiB (`js/README.md`, "Pitfalls").
+- `onCollect` and the other canvas builtins are this project's own, so logs of effects judge them in place of node.
 
 ## Appendix A: The playground's samples
 
