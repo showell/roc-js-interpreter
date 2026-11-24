@@ -16,3 +16,4 @@
 29-linked-list.js
 31-matrix.js
 49-loops-labels.js
+56-call-depth.js

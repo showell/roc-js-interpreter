@@ -196,6 +196,37 @@ Runtime :: [].{
 	items_of : Str
 	items_of = "runtime_items_of"
 
+	## Where a throw goes, the value thrown in `rax`: to the innermost
+	## `try`'s handler, whose record (`Runtime.handler_place` holds its
+	## address, on the machine's stack) holds the handler before it, the
+	## frame's `rbp` and the code that takes the throw, which it enters with
+	## `rsp` above the record and the value in `rax`; with none, the program
+	## stops.
+	throw : Str
+	throw = "runtime_throw"
+
+	## The innermost `try`'s handler record, or 0.
+	handler_place : X86.Mem
+	handler_place = Emit.mem(R13, 16)
+
+	## The routine that makes an error, an object holding its `name` (the
+	## string at `rdi`) and its `message` (the string at `rsi`) and a key no
+	## program can name, which marks it an error for console.log: the object
+	## in `rax`.
+	new_error : Str
+	new_error = "runtime_new_error"
+
+	## The routine that gives an error's message of the value `rdi`, as
+	## `new Error(v)` takes it: `""` for `undefined`, else `String(v)`, a
+	## string's address in `rax`.
+	error_message : Str
+	error_message = "runtime_error_message"
+
+	## The label of the text of an error's name, `Error` or `TypeError` and
+	## the rest.
+	error_name_label : Str -> Str
+	error_name_label = |name| "runtime_text_error_${name}"
+
 	## The routine that stops the program when the value in `rax`, which an
 	## object pattern takes apart, is `null` or `undefined` (node throws a
 	## TypeError). It changes `rcx` alone.
@@ -274,6 +305,7 @@ Runtime :: [].{
 		callback_items,
 		slice_items,
 		language_items,
+		exception_items,
 	]
 		.join()
 		.concat(text_statements)
@@ -289,9 +321,11 @@ heap_size = 0x40000000
 stack_size : I64
 stack_size = 6 * 1024 * 1024
 
-## Where the output buffer starts past `r13`, and its size.
+## Where the output buffer starts past `r13`, and its size. Before it are
+## the buffer's fill (`[r13]`), node's inspect depth (8) and the innermost
+## `try`'s handler (16, 0 when none waits).
 buffer_place : I64
-buffer_place = 16
+buffer_place = 24
 
 buffer_size : I64
 buffer_size = 65536
@@ -310,8 +344,13 @@ text_statements = {
 	for (label, text) in texts {
 		$out = $out.concat([Mark(label), Data(Runtime.string_data(text))])
 	}
-	$out
+	# The error's key: one byte, 0xFF, which no string a program writes
+	# holds, since a string here is ASCII.
+	$out.concat([Mark(error_mark), Data([1, 0, 0, 0, 0, 0, 0, 0, 0xFF])])
 }
+
+error_mark : Str
+error_mark = "runtime_text_error_mark"
 
 ## Every text, with its label.
 texts : List((Str, Str))
@@ -334,6 +373,25 @@ texts = [
 		),
 	),
 	("runtime_text_stack_overflow", "RangeError: Maximum call stack size exceeded\n"),
+	("runtime_text_call_stack", "Maximum call stack size exceeded"),
+	("runtime_text_name", "name"),
+	("runtime_text_message", "message"),
+	(Runtime.error_name_label("Error"), "Error"),
+	(Runtime.error_name_label("TypeError"), "TypeError"),
+	(Runtime.error_name_label("RangeError"), "RangeError"),
+	(Runtime.error_name_label("ReferenceError"), "ReferenceError"),
+	(Runtime.error_name_label("SyntaxError"), "SyntaxError"),
+	(
+		"runtime_text_uncaught",
+		Str.concat(
+			"x86: a throw that nothing catches, which node reports with its source line,",
+			" is not compiled yet\n",
+		),
+	),
+	(
+		"runtime_text_error_written",
+		"x86: console.log of an error, which node writes with its stack, is not compiled yet\n",
+	),
 	(
 		"runtime_text_out_of_memory",
 		"x86: out of memory: the heap of 1 GiB is full, and no collector runs yet\n",
@@ -554,7 +612,16 @@ stop_items =
 		Emit.imm(Rdi, 1),
 		Emit.imm(Rax, 231),
 		Emit.syscall,
+		# Node's RangeError, thrown where a `try` waits, else its line.
 		Emit.mark(Runtime.stack_overflow),
+		Emit.load(Rcx, Runtime.handler_place),
+		Emit.test(Rcx, Rcx),
+		Emit.jcc(E, "runtime_stack_overflow_stop"),
+		Emit.address_of(Rdi, Runtime.error_name_label("RangeError")),
+		Emit.address_of(Rsi, "runtime_text_call_stack"),
+		Emit.call(Runtime.new_error),
+		Emit.jmp(Runtime.throw),
+		Emit.mark("runtime_stack_overflow_stop"),
 	]
 		.concat(stopping_items("runtime_text_stack_overflow"))
 		.append(Emit.mark("runtime_out_of_memory"))
@@ -1593,6 +1660,19 @@ inspect_items = {
 			Emit.zero(Rdx),
 			Emit.jmp("runtime_inspect_list"),
 			Emit.mark("runtime_inspect_object"),
+			Emit.mov(Rax, Rdi),
+		])
+		.concat(unboxed_items(Rax))
+		.concat([
+			Emit.load(Rcx, Emit.mem(Rax, 0)),
+			Emit.test(Rcx, Rcx),
+			Emit.jcc(E, "runtime_inspect_plain"),
+			Emit.load(Rcx, Emit.mem(Rax, 16)),
+			Emit.load(Rcx, Emit.mem(Rcx, 0)),
+			Emit.address_of(Rdx, error_mark),
+			Emit.cmp(Rcx, Rdx),
+			Emit.jcc(E, "runtime_inspect_error"),
+			Emit.mark("runtime_inspect_plain"),
 			Emit.imm(Rdx, 1),
 			Emit.jmp("runtime_inspect_list"),
 			# A function's text is its record's, 8 bytes in, by its distance.
@@ -2701,4 +2781,63 @@ language_items = {
 	]
 		.concat(stopping_items("runtime_text_not_destructurable"))
 	[power, type_of, pack, items_of, check_destructurable].join()
+}
+
+## `runtime_throw`, `runtime_new_error` and `runtime_error_message`. A
+## handler's record is three values on the machine's stack, from its
+## address up: the handler before it, the frame's `rbp`, and the code the
+## throw enters.
+exception_items : List(Assembly.Statement)
+exception_items = {
+	throw = [
+		Emit.mark(Runtime.throw),
+		Emit.load(Rcx, Runtime.handler_place),
+		Emit.test(Rcx, Rcx),
+		Emit.jcc(E, "runtime_uncaught"),
+		Emit.mov(Rsp, Rcx),
+		Emit.restore(Rdx),
+		Emit.store(Runtime.handler_place, Rdx),
+		Emit.restore(Rbp),
+		Emit.ret,
+		Emit.mark("runtime_uncaught"),
+	]
+		.concat(stopping_items("runtime_text_uncaught"))
+		.append(Emit.mark("runtime_inspect_error"))
+		.concat(stopping_items("runtime_text_error_written"))
+	property = |{ key, value }| [
+		Emit.load(Rdi, Emit.mem(Rsp, 0)),
+		Emit.address_of(Rsi, key),
+		Emit.load(Rdx, value),
+		Emit.imm(Rcx, Boxing.tag_bits(Boxing.string_tag)),
+		Emit.plus(Rdx, Rcx),
+		Emit.call(Runtime.set_property),
+	]
+	new_error =
+		[
+			Emit.mark(Runtime.new_error),
+			Emit.save(Rsi),
+			Emit.save(Rdi),
+			Emit.call(Runtime.new_object),
+			Emit.save(Rax),
+			Emit.mov(Rdi, Rax),
+			Emit.address_of(Rsi, error_mark),
+			Emit.imm(Rdx, Boxing.true_bits),
+			Emit.call(Runtime.set_property),
+		]
+			.concat(property({ key: "runtime_text_name", value: Emit.mem(Rsp, 8) }))
+			.concat(property({ key: "runtime_text_message", value: Emit.mem(Rsp, 16) }))
+			.concat([
+				Emit.restore(Rax),
+				Emit.plus_imm(Rsp, 16),
+				Emit.ret,
+			])
+	message = [
+		Emit.mark(Runtime.error_message),
+		Emit.imm(Rcx, Boxing.undefined_bits),
+		Emit.cmp(Rdi, Rcx),
+		Emit.jcc(Ne, "runtime_text_of"),
+		Emit.address_of(Rax, "runtime_text_empty"),
+		Emit.ret,
+	]
+	[throw, new_error, message].join()
 }

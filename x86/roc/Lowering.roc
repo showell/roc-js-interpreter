@@ -153,6 +153,7 @@ Kind : [
 	Console,
 	Log,
 	Method(Str),
+	ErrorClass(Str),
 ]
 
 ## A slot holds a value of its kind once its declaration has run.
@@ -200,7 +201,7 @@ is_value_kind : Kind -> Bool
 is_value_kind = |kind|
 	match kind {
 		Number | Boolean | Undefined | Null | String | Array | Object | Value | Closure(_) => True
-		Function(_) | Console | Log | Method(_) => False
+		Function(_) | Console | Log | Method(_) | ErrorClass(_) => False
 	}
 
 ## The kind two ways give a place: their own when they agree, `Value` when
@@ -1001,7 +1002,7 @@ taken_count : Bytecode.Op -> U64
 taken_count = |instruction|
 	match instruction {
 		StoreLocal(_) | SetLocal(_) | SetBoxed(_) | Return | SetField(_) | TemplatePart(_) => 1
-		StoreBoxed(_) | SetProperty(_, _) | SetIndex(_) | Unary(_, _) => 1
+		StoreBoxed(_) | SetProperty(_, _) | SetIndex(_) | Unary(_, _) | Throw(_) => 1
 		JumpIfFalse(_) | SkipIfFalsy(_) | SkipIfTruthy(_) => 1
 		Binary(_, _) => 2
 		MakeArray(count) => count
@@ -1593,6 +1594,7 @@ kind_text = |kind|
 		Function(_) | Closure(_) => "function"
 		Console => "console"
 		Log => "console.log"
+		ErrorClass(name) => "`${name}`"
 	}
 
 ## A unary operator on the value on top of the stack.
@@ -1693,6 +1695,7 @@ unary_items = |site, { state, operator }| {
 				Undefined => Named("runtime_text_undefined")
 				Null | Array | Object | Console => Named("runtime_text_type_object")
 				Function(_) | Closure(_) | Log | Method(_) => Named("runtime_text_type_function")
+				ErrorClass(_) => Named("runtime_text_type_function")
 				Value => Unnamed
 			}
 			found = match named {
@@ -2054,6 +2057,7 @@ builtin_items = |site, { state, place }| {
 		Ok("Infinity") => Ok(
 			falling(constant_items({ bits: 0x7FF0000000000000, to: top }), with_top(state, Number)),
 		)
+		Ok(name) if error_names.contains(name) => Ok(falling([], with_top(state, ErrorClass(name))))
 		Ok(name) => refusal(site, "the builtin `${name}` is not compiled yet")
 		Err(_) => crash "Lowering.builtin_items: a builtin's place"
 	}
@@ -2562,14 +2566,19 @@ instruction_items = |site, { instruction, state }| {
 			after = written_slot(site, { state, slot })?
 			Ok(falling(boxed_store_items(site, { state, slot }), without_top(after, 1)))
 		}
-		StoreBoxed({ slot, name, kind, at: _ }) =>
+		StoreBoxed({ slot, name, kind, at: _ }) => {
+			throws = "which throws in node"
+			unready = "may be assigned before its declaration has run"
 			match kind {
-				Fixed => refusal(site, "the constant `${name}` is assigned, which throws in node")
+				Fixed => refusal(site, "the constant `${name}` is assigned, ${throws}")
+				Mutable if state.slots.get(slot) == Ok(Unready) =>
+					refusal(site, "`${name}` ${unready}, ${throws}")
 				Mutable => {
 					after = written_slot(site, { state, slot })?
 					Ok(falling(boxed_store_items(site, { state, slot }), after))
 				}
 			}
+		}
 		NewBox(slot) =>
 			match state.slots.get(slot) {
 				Ok(Ready(Function(_))) => refusal(site, "a function's name is declared again")
@@ -2764,6 +2773,35 @@ instruction_items = |site, { instruction, state }| {
 		)
 		ThrowConstant(_) => refusal(site, "a constant is assigned, which throws in node")
 		Refuse(why) => refusal(site, why)
+		EnterTry({ handler, kind }) => try_items(site, { state, skip: handler, handling: kind })
+		LeaveTry =>
+			Ok(
+				falling(
+					[
+						Emit.load(Rcx, Emit.mem(Rsp, 0)),
+						Emit.store(Runtime.handler_place, Rcx),
+						Emit.plus_imm(Rsp, 24),
+					],
+					state,
+				),
+			)
+		Throw(_) | Rethrow => {
+			kind = kind_below(state, 0)
+			if !is_value_kind(kind) {
+				return refusal(site, "a throw of ${kind_phrase(kind)}")
+			}
+			Ok({
+				statements: [Emit.load(Rax, top_place(0)), Emit.jmp(Runtime.throw)],
+				falls: Ends,
+				branch: NoBranch,
+				result: GivesNothing,
+			})
+		}
+		Construct({ count, callee: _, at: _ }) =>
+			match kind_below(state, count) {
+				ErrorClass(name) if count <= 1 => error_items(site, { state, count, name })
+				kind => refusal(site, "`new` of ${kind_phrase(kind)} is not compiled yet")
+			}
 		_ => refusal(site, "${instruction_name(instruction)} is not compiled yet")
 	}
 }
@@ -2776,4 +2814,105 @@ instruction_name = |instruction| {
 		Ok({ before, after: _ }) => before
 		Err(_) => text
 	}
+}
+
+## The builtins that make errors with `new`.
+error_names : List(Str)
+error_names = ["Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError"]
+
+## `new Error(message)` and its kin: an error made with the class's name
+## and the message, which takes the class's place.
+error_items : Site,
+{
+	state : State,
+	count : U64,
+	name : Str,
+} -> Try(Lowered, [Refused(Str)])
+error_items = |site, { state, count, name }| {
+	depth = state.stack_kinds.len()
+	message =
+		if count == 0 {
+			[Emit.address_of(Rsi, "runtime_text_empty")]
+		} else {
+			given = stack_place(site.code, depth - 1)
+			match kind_below(state, 0) {
+				String => [
+					Emit.load(Rsi, given),
+					Emit.shl(Rsi, 16),
+					Emit.shr(Rsi, 16),
+				]
+				kind if is_value_kind(kind) => [
+					Emit.load(Rdi, given),
+					Emit.call(Runtime.error_message),
+					Emit.mov(Rsi, Rax),
+				]
+				kind => return refusal(site, "an error's message of ${kind_phrase(kind)}")
+			}
+		}
+	made = message.concat([
+		Emit.address_of(Rdi, Runtime.error_name_label(name)),
+		Emit.call(Runtime.new_error),
+		Emit.store(stack_place(site.code, depth - count - 1), Rax),
+	])
+	Ok(falling(made, with_top(without_top(state, count + 1), Object)))
+}
+
+## A `try`'s handler pushed: its record on the machine's stack (the code
+## a throw enters, the frame's `rbp`, the handler before it), the innermost
+## handler made it. The code a throw enters puts the value thrown where the
+## stack's top was, with a `finally`'s line and column under it (0 and 0,
+## which only node's report of an uncaught throw would read), and jumps to
+## the handler's instruction. A throw may come from anywhere in the `try`,
+## after its variables took other kinds, so there each holds a `Value`.
+try_items : Site,
+{
+	state : State,
+	skip : U64,
+	handling : Bytecode.Handling,
+} -> Try(Lowered, [Refused(Str)])
+try_items = |site, { state, skip, handling }| {
+	target = forward(site, skip)
+	depth = state.stack_kinds.len()
+	landing = "${place_label(site.lowering, site.at)}_thrown"
+	after = "${place_label(site.lowering, site.at)}_tried"
+	widened = {
+		..state,
+		slots: state.slots.map(
+			|slot|
+				match slot {
+					Ready(kind) if is_value_kind(kind) => Ready(Value)
+					_ => slot
+				},
+		),
+	}
+	(placed, sent) = match handling {
+		Catching => ([Emit.store(stack_place(site.code, depth), Rax)], with_top(widened, Value))
+		Finishing => (
+			[
+				Emit.zero(Rcx),
+				Emit.store(stack_place(site.code, depth), Rcx),
+				Emit.store(stack_place(site.code, depth + 1), Rcx),
+				Emit.store(stack_place(site.code, depth + 2), Rax),
+			],
+			with_top(with_top(with_top(widened, Number), Number), Value),
+		)
+	}
+	statements = [
+		Emit.address_of(Rax, landing),
+		Emit.save(Rax),
+		Emit.save(Rbp),
+		Emit.load(Rcx, Runtime.handler_place),
+		Emit.save(Rcx),
+		Emit.store(Runtime.handler_place, Rsp),
+		Emit.jmp(after),
+		Emit.mark(landing),
+	]
+		.concat(placed)
+		.concat([Emit.jmp(place_label(site.lowering, target)), Emit.mark(after)])
+	Ok({
+		statements,
+		falls: Falls(state),
+		branch: Branch({ target, state: sent }),
+		result: GivesNothing,
+	})
 }
