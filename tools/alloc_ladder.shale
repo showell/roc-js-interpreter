@@ -1,0 +1,88 @@
+-- An allocation ladder for any interpreter built on Roc's default platform:
+-- each control (a small program) run at two sizes, and what one more
+-- iteration allocates, held to an expected file. It knows nothing of the
+-- interpreter: the caller builds it and hands this script a plan, a JSON
+-- file naming each control's two command lines. js/controls.shale is its
+-- caller here. It is a copy of roc-apps' tools/alloc_ladder.shale, on
+-- purpose, until the ladder is a library both can share; that file is its
+-- twin, and a fix to one is a fix to look at in the other.
+--
+--   cd <roc-js-interpreter checkout> && shale tools/alloc_ladder.shale plan=<plan.json>
+--
+-- The plan is `{who, gen, expected, small, big, limit_ms, hold, controls}`:
+-- `gen` a writable folder for the counter, `expected` the file each control
+-- is held to ("" for none), `small` and `big` the two iteration counts,
+-- `limit_ms` one run's limit, `hold` false for a report that fails nothing,
+-- and `controls` a list of `{name, small_argv, big_argv}`, `big_argv` empty
+-- for a control with no loop. Each argv is the program and its arguments;
+-- every argv runs the same executable.
+--
+-- **AN ALLOCATION IS A CALL OF roc_alloc**, counted by roc-alloc-trace
+-- (tools/alloc_trace.shale builds it from its sibling checkout) with a
+-- breakpoint, in the very executable that is timed: RC1's default platform
+-- takes memory from the kernel a few large pieces at a time, so counting
+-- mmap calls says nothing. roc_realloc's calls (a list or a string grown
+-- where it is) are counted and held beside. Each counted call stops the
+-- program, about 80 µs a call. This script writes the plan and the
+-- expected file as roc-alloc-trace's check file, `<gen>/ladder.check`, and
+-- roc-alloc-trace runs every control and holds it there.
+--
+-- The expected file has a line a control that allocates:
+-- `<control> <allocs> <reallocs> <why>`, each count an iteration (`1`,
+-- `2.03`). A control not listed is held to 0 and 0, within 0.05 an
+-- iteration either way. A run that prints `overflowed` (a Roc crash),
+-- `HALTED` or `UNSUPPORTED` fails, since its counts measure nothing.
+--
+-- budget: steps=50000000
+
+use("./alloc_trace.shale")
+
+const PLAN = arg("plan", "")
+
+-- The expected file, each control's counts as written; a line naming no
+-- control of the plan stops the run.
+function expected(who, file, names)
+  local held = {}
+  if file == "" then return held end
+  for l in lines(read(file)) do
+    local t = trim(l)
+    if t ~= "" and not starts_with(t, "#") then
+      local w = words(t)
+      if #w < 4 then fail(who .. ": " .. file .. ": `" .. t .. "` is not `<control> <allocs> <reallocs> <why>`") end
+      if not has_key(names, w[1]) then fail(who .. ": " .. file .. " names " .. w[1] .. ", which is no control") end
+      for n in {w[2], w[3]} do
+        if not re_match(n, "^[0-9]+(?:\\.[0-9][0-9])?$") then fail(who .. ": " .. file .. ": `" .. n .. "` is not a count like 2 or 2.03") end
+      end
+      held[w[1]] = {alloc = w[2], realloc = w[3]}
+    end
+  end
+  return held
+end
+
+function main()
+  if PLAN == "" then fail("tools/alloc_ladder.shale: no plan= given") end
+  local p = json_read(read(PLAN))
+  local who = p.who
+  local names = {}
+  for c in p.controls do names[c.name] = true end
+  local held = expected(who, p.expected, names)
+  if p.hold then
+    for c in p.controls do
+      if not has_key(held, c.name) then held[c.name] = {alloc = "0", realloc = "0"} end
+    end
+  end
+  local tool = build_alloc_trace(who, p.gen)
+  local check = p.gen .. "/ladder.check"
+  write_check_file(check, p, p.controls, held, {"overflowed", "HALTED", "UNSUPPORTED"})
+  local argv = {tool, "check"}
+  if not p.hold then push(argv, "--report") end
+  push(argv, real(check))
+  local r = run(argv, {timeout_ms = 1800000, tail = 200, want = ALLOC_TRACE_WANT})
+  print(trim(r.out))
+  if r.ended ~= "exit" or r.code ~= 0 then
+    if p.hold and r.code == 1 then fail(who .. ": controls off their counts, held to " .. p.expected) end
+    fail(who .. ": roc-alloc-trace ended " .. r.ended .. " " .. get(r, "code", ""))
+  end
+end
+
+main()

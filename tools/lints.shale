@@ -1,0 +1,277 @@
+-- **SHALE'S ROC RECIPES OVER EVERY .roc FILE GIT TRACKS, EACH COUNT HELD
+-- EXACT**: the parse recipes roc-apps' tools/quality.shale ran over js/ and
+-- js-book/ while they were roc-apps' folders, with the same arguments and in
+-- the same shape, so the counts line up with what roc-apps reported: each
+-- recipe runs over each project (a top-level folder holding .roc files) on
+-- its own, and a folder with settings of its own (js/lints.shale's, which
+-- stay their one home) runs on its own with them, its findings left out of
+-- its project's run. check.shale runs this and takes its lines; on its own,
+-- from the repository's root:
+--
+--   shale tools/lints.shale
+--
+-- It prints one line a recipe and project, `PASS` or `FAIL` with its counts,
+-- and exits nonzero when any failed. Each run's files are held to the number
+-- git tracks there, so a build's output never enters a count and a file the
+-- glob missed never leaves one.
+--
+-- A count is held exactly, never "at most": HELD names each that isn't zero.
+-- **THE COUNTS ARE A DEBT ON THE WAY TO ZERO**, taken when js/ and js-book/
+-- moved here from roc-apps (its master 6a5dc06c, 2026-11-24): roc-apps'
+-- baseline held js/ at an older, smaller tree, so these are the findings the
+-- code had at the move, not counts anyone chose. One that falls is a fix,
+-- and moves HELD down in the same commit; one that rises is a new finding,
+-- to fix rather than hold. The typed counts roc-apps kept (roc-types'
+-- `unreached` 2) are not here: they need roc-types, which this gate doesn't
+-- run.
+--
+-- budget: steps=400000000 arena_bytes=1000000000 output_bytes=1000000
+
+const SETTINGS_SOURCE = "js/lints.shale"
+const FINDING_RE = "^([^ :]+\\.roc):[0-9]+(?::[0-9]+)?: ([a-z_]+(?: [a-z_]+)?): "
+
+-- Each recipe, with each count's name in its summary and the name its
+-- finding lines give.
+const LINTS = {
+  {recipe = "find_awkward_names", args = {}, checks = {
+    {"state_effect", "state_effect"}, {"question", "question"}, {"vague", "vague"}, {"name_type", "name_type"},
+    {"negative", "negative"}, {"noun_effect", "noun_effect"}, {"command_tense", "command_tense"},
+    {"mixed_tense", "mixed_tense"}, {"container", "container"}, {"preposition_split", "preposition_split"},
+    {"short_name", "short_name"}, {"worker_name", "worker_name"}, {"stacked_preposition", "stacked_preposition"},
+    {"taken_word", "taken_word"}, {"bare_participle", "bare_participle"}, {"phrase_name", "phrase_name"},
+    {"singular_list", "singular_list"}, {"world_verb", "world_verb"}, {"where_name", "where_name"},
+    {"stale_doc_name", "stale_doc_name"},
+  }},
+  {recipe = "check_and_fix_group_stacking", args = {}, checks = {
+    {"to stack", "stack"}, {"to unstack", "unstack"}, {"long", "long"}, {"wide string", "wide string"},
+  }},
+  {recipe = "find_and_remove_extra_parentheses", args = {}, checks = {
+    {"paren_if", "paren_if"}, {"wrapped_body", "wrapped_body"}, {"else_block", "else_block"}, {"lambda_if", "lambda_if"},
+  }},
+  {recipe = "check_how_failure_is_reported", args = {}, checks = {
+    {"error_alias", "error_alias"}, {"optional_tag", "optional_tag"}, {"set_fallback", "set_fallback"},
+    {"placeholder", "placeholder"}, {"number_fallback", "number_fallback"},
+  }},
+  {recipe = "find_calls_nested_three_deep", args = {"min=4"}, checks = {{"nested", "nested"}}},
+  {recipe = "find_unused_imports", args = {}, checks = {{"unused_import", "unused_import"}}},
+  {recipe = "find_names_that_disagree_with_their_types", args = {}, checks = {
+    {"name_type", "name_type"}, {"bare_beside_unit", "bare_beside_unit"}, {"no_value", "no_value"},
+  }},
+  {recipe = "find_names_that_differ_across_lookalike_modules", args = {}, checks = {
+    {"family", "family"}, {"twin_name", "twin_name"}, {"unpaired_conversion", "unpaired_conversion"},
+  }},
+  {recipe = "find_names_and_docs_that_say_too_little", args = {}, checks = {
+    {"pure_mutator", "pure_mutator"}, {"abbreviation", "abbreviation"}, {"module_doc", "module_doc"},
+  }},
+  {recipe = "find_functions_and_parameters_that_dont_earn_their_keep", args = {}, checks = {
+    {"single", "single"}, {"fixed", "fixed"}, {"entry", "entry"}, {"constant", "constant"},
+    {"bool_param", "bool_param"}, {"dead", "dead"}, {"unused_api", "unused_api"}, {"same_branches", "same_branches"},
+  }},
+}
+
+-- The counts that aren't zero, `place/recipe/check`, the place a project or
+-- a folder with settings: the findings at the move (the header says so).
+const HELD = {
+  ["js/find_awkward_names/state_effect"] = 3,
+  ["js/find_awkward_names/noun_effect"] = 18,
+  ["js/find_awkward_names/container"] = 14,
+  ["js/find_awkward_names/preposition_split"] = 1,
+  ["js/find_awkward_names/short_name"] = 32,
+  ["js/find_awkward_names/worker_name"] = 3,
+  ["js/find_awkward_names/bare_participle"] = 34,
+  ["js/find_awkward_names/phrase_name"] = 7,
+  ["js/find_awkward_names/singular_list"] = 10,
+  ["js/find_awkward_names/stale_doc_name"] = 1,
+  ["js/check_and_fix_group_stacking/to stack"] = 414,
+  ["js/check_and_fix_group_stacking/to unstack"] = 3,
+  ["js/check_and_fix_group_stacking/long"] = 122,
+  ["js/check_and_fix_group_stacking/wide string"] = 152,
+  ["js-book/check_and_fix_group_stacking/long"] = 1,
+  ["js/find_and_remove_extra_parentheses/paren_if"] = 1,
+  ["js/find_and_remove_extra_parentheses/lambda_if"] = 1,
+  ["js/check_how_failure_is_reported/optional_tag"] = 1,
+  ["js/check_how_failure_is_reported/number_fallback"] = 2,
+  ["js/find_calls_nested_three_deep/nested"] = 15,
+  ["js/find_names_that_disagree_with_their_types/no_value"] = 1,
+  ["js/find_names_that_differ_across_lookalike_modules/twin_name"] = 12,
+  ["js/roc/find_names_and_docs_that_say_too_little/abbreviation"] = 28,
+  ["js/roc/find_names_and_docs_that_say_too_little/module_doc"] = 1,
+  ["js/find_functions_and_parameters_that_dont_earn_their_keep/single"] = 20,
+  ["js/find_functions_and_parameters_that_dont_earn_their_keep/fixed"] = 2,
+  ["js/find_functions_and_parameters_that_dont_earn_their_keep/constant"] = 1,
+  ["js/find_functions_and_parameters_that_dont_earn_their_keep/dead"] = 2,
+}
+
+-- The number a summary gives for a check: "check N", or "N check" for
+-- check_and_fix_group_stacking's "N to stack". Nil when the summary doesn't name it.
+function count_in_summary(summary, label)
+  local after = re_find(summary, "(?:^|[;:,] )" .. label .. " ([0-9]+)")
+  if after ~= nil then return tonumber(after.group) end
+  local before = re_find(summary, "(?:^|[;:,] )([0-9]+) " .. label .. "(?:,|$)")
+  if before ~= nil then return tonumber(before.group) end
+  return nil
+end
+
+-- The recipe's own lines: not Shale's `──` reports or the `called from`
+-- lines under a stop.
+function own_lines(out)
+  local kept = {}
+  for l in lines(out) do
+    if not starts_with(l, "──") and not starts_with(l, "   ") and trim(l) ~= "" then push(kept, l) end
+  end
+  return kept
+end
+
+function tracked_roc_files()
+  local r = must(run({"git", "ls-files", "*.roc"}, {timeout_ms = 30000, whole = 1000000}))
+  local kept = {}
+  for f in lines(trim(r.out)) do
+    if f ~= "" then push(kept, f) end
+  end
+  return kept
+end
+
+function count_under(files, folder)
+  local n = 0
+  for f in files do
+    if starts_with(f, folder .. "/") then n = n + 1 end
+  end
+  return n
+end
+
+-- js/lints.shale's settings: `{recipe, folder, args}` a recipe and folder.
+function settings()
+  local r = must(run({"shale", "--root", ".", SETTINGS_SOURCE, "reads=settings"}, {timeout_ms = 60000, whole = 100000}))
+  local by = {}
+  local out = {}
+  for l in lines(r.out) do
+    if starts_with(l, "SETTING\t") then
+      local f = split(l, "\t")
+      if #f ~= 4 then fail("lints: " .. SETTINGS_SOURCE .. " printed a setting that is not four fields: " .. l) end
+      local k = f[2] .. "@" .. f[3]
+      if not has_key(by, k) then
+        by[k] = {recipe = f[2], folder = f[3], args = {}}
+        push(out, by[k])
+      end
+      push(by[k].args, f[4])
+    end
+  end
+  if #out == 0 then fail("lints: " .. SETTINGS_SOURCE .. " printed no settings") end
+  return out
+end
+
+-- One run of a recipe over `place`: `{wrong, counts}`, the counts by each
+-- check's summary name, from its finding lines, with the findings under
+-- `leave_out` (a folder that runs on its own) not counted.
+function run_lint(lint, place, extra, files, leave_out)
+  local argv = {"shale", "--budget", "steps=40000000000", real("cookbook:roc/" .. lint.recipe .. ".shale"), "glob=" .. place .. "/**/*.roc"}
+  for a in lint.args do push(argv, a) end
+  for a in extra do push(argv, a) end
+  -- `want`: a gate recipe exits nonzero on a finding, and its counts say which.
+  local r = run(argv, {timeout_ms = 120000, whole = 4000000, want = "any"})
+  local wrong = {}
+  local counts = {}
+  local own = own_lines(r.out)
+  if #own == 0 then return {wrong = {lint.recipe .. " printed nothing of its own: " .. trim(r.out)}, counts = counts} end
+  local summary = own[#own]
+  for l in own do
+    if starts_with(l, "refused: ") or starts_with(l, "not reached by ") then push(wrong, l) end
+  end
+  local read_files = re_find(summary, "([0-9]+) files")
+  if read_files == nil then
+    push(wrong, "no file count in its summary: " .. summary)
+  elseif tonumber(read_files.group) ~= files then
+    push(wrong, "it read " .. read_files.group .. " files, and git tracks " .. files)
+  end
+  local labels = {}
+  for c in lint.checks do labels[c[2]] = c[1] end
+  local seen = {}
+  local kept = {}
+  for l in own do
+    local m = re_find(l, FINDING_RE)
+    if m ~= nil then
+      if not has_key(labels, m.groups[2]) then push(wrong, "a finding of a check this gate doesn't know: " .. l) end
+      incr(seen, m.groups[2])
+      if leave_out == nil or not starts_with(m.groups[1], leave_out .. "/") then incr(kept, m.groups[2]) end
+    end
+  end
+  for c in lint.checks do
+    local said = count_in_summary(summary, c[1])
+    if said == nil then
+      push(wrong, "its summary has no count of " .. c[1])
+    elseif said ~= get(seen, c[2], 0) then
+      push(wrong, "its summary counts " .. said .. " " .. c[1] .. ", and it printed " .. get(seen, c[2], 0) .. " such lines")
+    end
+    counts[c[1]] = get(kept, c[2], 0)
+  end
+  return {wrong = wrong, counts = counts}
+end
+
+-- The verdict line of one run, against HELD; names each key it judged in
+-- `judged`.
+function judge(lint, place, result, judged)
+  local wrong = result.wrong
+  local said = {}
+  for c in lint.checks do
+    local key = place .. "/" .. lint.recipe .. "/" .. c[1]
+    judged[key] = true
+    local want = get(HELD, key, 0)
+    local got = get(result.counts, c[1], 0)
+    if got ~= want then push(wrong, c[1] .. " is " .. got .. ", held at " .. want) end
+    if want ~= 0 then push(said, c[1] .. " " .. want) end
+  end
+  if #wrong == 0 then
+    print("PASS  roc recipe " .. lint.recipe .. " on " .. place .. ": " .. (#said == 0 and "all at zero" or ("zero but " .. join(said, ", "))))
+    return 0
+  end
+  print("FAIL  roc recipe " .. lint.recipe .. " on " .. place .. ": " .. join(wrong, "; "))
+  return 1
+end
+
+function main()
+  local files = tracked_roc_files()
+  local projects = {}
+  for f in files do
+    local top = split(f, "/")[1]
+    if #split(f, "/") > 1 and not has_item(projects, top) then push(projects, top) end
+    if #split(f, "/") == 1 then fail("lints: " .. f .. " is a .roc file at the root, in no project") end
+  end
+  sort(projects)
+  local own_runs = settings()
+  local failed = 0
+  local judged = {}
+  for lint in LINTS do
+    local alone = nil
+    for s in own_runs do
+      if s.recipe == lint.recipe then alone = s end
+    end
+    for project in projects do
+      local leave_out = nil
+      if alone ~= nil and starts_with(alone.folder, project .. "/") then leave_out = alone.folder end
+      failed = failed + judge(lint, project, run_lint(lint, project, {}, count_under(files, project), leave_out), judged)
+    end
+    if alone ~= nil then
+      failed = failed + judge(lint, alone.folder, run_lint(lint, alone.folder, alone.args, count_under(files, alone.folder), nil), judged)
+    end
+  end
+  for s in own_runs do
+    local known = false
+    for lint in LINTS do
+      if lint.recipe == s.recipe then known = true end
+    end
+    if not known then
+      failed = failed + 1
+      print("FAIL  " .. SETTINGS_SOURCE .. " has settings for " .. s.recipe .. ", which this gate doesn't run")
+    end
+  end
+  for key in keys(HELD) do
+    if not has_key(judged, key) then
+      failed = failed + 1
+      print("FAIL  HELD names " .. key .. ", which no run here counts")
+    end
+  end
+  if failed > 0 then fail("lints: " .. failed .. " failed") end
+  return nil
+end
+
+main()

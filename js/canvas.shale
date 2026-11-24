@@ -4,8 +4,8 @@
 -- every effect and read, in the order the program made them, must be
 -- js/canvas/<name>.log byte for byte, its exit code included.
 --
---   cd <roc-apps checkout> && shale js/canvas.shale            build js-canvas, then grade
---   cd <roc-apps checkout> && shale js/canvas.shale freeze=4-starfield
+--   cd <roc-js-interpreter checkout> && shale js/canvas.shale            build js-canvas, then grade
+--   cd <roc-js-interpreter checkout> && shale js/canvas.shale freeze=4-starfield
 --                                  write that sample's log anew from what it does now
 --
 -- js/canvas/goldens.txt names each sample, one a line: its name, the frames

@@ -1,0 +1,5 @@
+# Shale scripts keep their logs and answers here.
+.zig-cache/
+
+# Editor swap files.
+.*.swp

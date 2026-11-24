@@ -1,6 +1,7 @@
 -- This script builds the JavaScript playground's page into the dev channel:
 -- js/roc/JsApp.roc into a wasm32 archive with the pinned Roc on the dev
--- backend, linked by Zig with the host js/wasm/host.zig into js.wasm, beside
+-- backend, linked by Zig (zig016:zig, held to the version zig-version names)
+-- with the host js/wasm/host.zig into js.wasm, beside
 -- the page's files from js/web/ and js_samples.js, which it writes from the
 -- canvas samples in js/canvas/ and the console samples in js/console/ (each
 -- sample's first line, a `// ` comment, is its title) and the featured
@@ -20,7 +21,7 @@
 -- files. index.html, the one fixed name, is what the site's `Cache-Control:
 -- no-cache` makes the browser ask about each visit.
 --
---   cd <roc-apps checkout> && shale js/build.shale
+--   cd <roc-js-interpreter checkout> && shale js/build.shale
 --
 -- It lands at build:roc-apps/next/js/, served on :9210 by roc-site. It is
 -- built into a staging folder beside it, which takes its place at the end,
@@ -29,7 +30,7 @@
 --
 -- budget: steps=20000000
 
-const WANT_ROC = "roc-pin: roc-apps' pinned nightly"
+const WANT_ROC = "roc-pin: roc-js-interpreter's pinned nightly"
 const WANT_ZIG = "zig: the wasm host's linker"
 const WANT_NODE = "js-page: page_check.mjs drives the built page under node"
 
@@ -134,6 +135,9 @@ function main()
     fail("js/build.shale: the Roc build of JsApp.roc failed")
   end
   print("roc build JsApp.roc --target=wasm32 --opt=dev: " .. r.ms .. " ms")
+  local zig_pin = trim(read("zig-version"))
+  local zig_said = trim(must(run({real("zig016:zig"), "version"}, {timeout_ms = 30000, whole = 1000, want = WANT_ZIG})).out)
+  if zig_said ~= zig_pin then fail("js/build.shale: zig016:zig is " .. zig_said .. ", and zig-version names " .. zig_pin) end
   mkdir("build:roc-apps/zig-cache")
   mkdir("build:zig-global")
   local z = run({real("zig016:zig"), "build-exe", "js/wasm/host.zig", out .. "/js.a",

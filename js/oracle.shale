@@ -7,9 +7,9 @@
 -- the subset must refuse: its first line, `// refused: <text>`, is what
 -- js-vm's last line (`js: <why>`) must hold, and js-vm must exit 1.
 --
---   cd <roc-apps checkout> && shale js/oracle.shale            build js-vm, then grade
---   cd <roc-apps checkout> && shale js/oracle.shale only=11    the programs whose names start so
---   cd <roc-apps checkout> && shale js/oracle.shale collect=every
+--   cd <roc-js-interpreter checkout> && shale js/oracle.shale            build js-vm, then grade
+--   cd <roc-js-interpreter checkout> && shale js/oracle.shale only=11    the programs whose names start so
+--   cd <roc-js-interpreter checkout> && shale js/oracle.shale collect=every
 --                                                              the same, collecting at every allocation
 --
 -- `collect=every` runs js-vm with `--collect-at-every-allocation`, so its

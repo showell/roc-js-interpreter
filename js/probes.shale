@@ -3,8 +3,8 @@
 -- made in place, linear means each write copies something as big as the
 -- size. One number says nothing; the shape across sizes does.
 --
---   cd <roc-apps checkout> && shale js/probes.shale            build js-vm, then probe
---   cd <roc-apps checkout> && shale js/probes.shale only=3     the probes whose names start so
+--   cd <roc-js-interpreter checkout> && shale js/probes.shale            build js-vm, then probe
+--   cd <roc-js-interpreter checkout> && shale js/probes.shale only=3     the probes whose names start so
 --
 -- A probe's first line says its kind. A `fixed` probe holds its writes at W
 -- and grows N, what sits beside them (a heap, an array, other scopes); its

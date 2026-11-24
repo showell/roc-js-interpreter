@@ -5,8 +5,8 @@
 -- peak memory. The collector frees the cells a program no longer reaches,
 -- so the heap stays the size of what the program keeps.
 --
---   cd <roc-apps checkout> && shale js/heaps.shale             build js-vm --opt=speed, then measure
---   cd <roc-apps checkout> && shale js/heaps.shale opt=dev     the dev build
+--   cd <roc-js-interpreter checkout> && shale js/heaps.shale             build js-vm --opt=speed, then measure
+--   cd <roc-js-interpreter checkout> && shale js/heaps.shale opt=dev     the dev build
 --
 -- The peak is GNU time's maximum resident set size, in KiB.
 --

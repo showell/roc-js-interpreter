@@ -1,0 +1,166 @@
+-- budget: steps=200000000
+-- This is roc-js-interpreter's gate: every check of the JavaScript subset and
+-- its book's Roc, one line each, PASS or FAIL with its numbers. From the
+-- repository's root:
+--
+--   shale check.shale            the default run
+--   shale check.shale js=1       the allocation tier instead
+--
+-- The default run fails unless every line passed:
+--   - Shale's Roc recipes over every .roc file git tracks, each count held
+--     exact (tools/lints.shale, whose lines this takes);
+--   - the roots, each a Roc file that is an app (an `app [` header, or a
+--     `main! =` on the default platform), held exactly to ROOTS, so a root
+--     that stops being found fails as surely as one that stops compiling;
+--   - `roc fmt --check` over every tracked .roc file, by the Roc that
+--     roc-version pins (the prelude's `pinned_roc`);
+--   - `roc check` of each root, from its own folder, with no error and no
+--     warning;
+--   - js/oracle.shale, which grades the bytecode VM against node on every
+--     program in js/tests/, and js/canvas.shale, which holds each canvas
+--     sample in js/canvas/ to its golden log of effects.
+--
+-- `js=1` is the allocation tier, kept out of the default run for its time
+-- (about two minutes when js-vm's release build compiles; seconds when
+-- tools/roc_build.shale already holds both builds of these inputs):
+-- js/controls.shale holds the VM's release build's allocations a pass to
+-- js/controls/expected.txt and its dev build's to expected-dev.txt.
+--
+-- The playground's build (js/build.shale) and the book's (js-book/book.shale)
+-- are not run here: each writes into the box's dev channel, and each is its
+-- own gate.
+
+const WANT = "roc-pin: the repository's pinned nightly"
+const ROOTS = {"js-book/app/main.roc", "js/roc/JsApp.roc", "js/roc/JsCanvas.roc", "js/roc/JsVm.roc"}
+
+const board = {lines = {}, failed = 0}
+
+function say(ok, what)
+  local mark = "FAIL"
+  if ok then mark = "PASS" else board.failed = board.failed + 1 end
+  push(board.lines, mark .. "  " .. what)
+  print(mark .. "  " .. what)
+  return nil
+end
+
+function tracked_roc_files()
+  local r = must(run({"git", "ls-files", "*.roc"}, {timeout_ms = 30000, whole = 1000000}))
+  local kept = {}
+  for f in lines(trim(r.out)) do
+    if f ~= "" then push(kept, f) end
+  end
+  return kept
+end
+
+-- The tracked Roc files that are apps: an `app [` header, or a `main! =` at
+-- the top level, as an app on the default platform has.
+function found_roots(files)
+  local found = {}
+  for f in files do
+    local is_root = false
+    for l in lines(read(f)) do
+      if starts_with(l, "app [") or starts_with(l, "main! = ") then is_root = true end
+    end
+    if is_root then push(found, f) end
+  end
+  sort(found)
+  return found
+end
+
+-- The ✗ and ● lines of a compiler's output.
+function marks(out)
+  local n = 0
+  for l in lines(out) do
+    if contains(l, "✗") or contains(l, "●") then n = n + 1 end
+  end
+  return n
+end
+
+-- Shale's Roc recipes: tools/lints.shale prints a `PASS` or `FAIL` line a
+-- recipe, each a line here. A run that printed none, or failed with every
+-- line passing, is a line of its own.
+function lints()
+  local r = run({"shale", "--root", ".", "tools/lints.shale"}, {timeout_ms = 300000, tail = 60})
+  local count = 0
+  local any_failed = false
+  for l in lines(r.out) do
+    if starts_with(l, "PASS  ") or starts_with(l, "FAIL  ") then
+      count = count + 1
+      if starts_with(l, "FAIL  ") then any_failed = true end
+      say(starts_with(l, "PASS  "), sub(l, 7))
+    end
+  end
+  if count == 0 or (r.code ~= 0 and not any_failed) then
+    say(false, "tools/lints.shale exited " .. r.code .. ": " .. trim(r.out))
+  end
+  return nil
+end
+
+-- One tier script's run: its lines other than PASS ones printed, and its
+-- verdict a line here.
+function script_check(script, what)
+  local r = run({"shale", "--root", ".", script}, {timeout_ms = 600000, tail = 80, not_re = "^PASS "})
+  if r.code ~= 0 then print(trim(r.out)) end
+  -- The script's last line of its own: Shale's reports come after it, and
+  -- a `── time:` line can quote an argument that holds line breaks.
+  local said = ""
+  local reports = false
+  for l in lines(trim(r.out)) do
+    if starts_with(l, "──") then reports = true end
+    if not reports and trim(l) ~= "" and not starts_with(l, "…") then said = ": " .. l end
+  end
+  say(r.code == 0, script .. ", " .. what .. said)
+  return nil
+end
+
+function all()
+  lints()
+  local files = tracked_roc_files()
+  local roots = found_roots(files)
+  local same = join(roots, ",") == join(ROOTS, ",")
+  say(same, "roots: " .. #roots .. " found (" .. join(roots, ", ") .. "), held at " .. #ROOTS)
+  local roc = pinned_roc("check")
+  local fmt = {roc, "fmt", "--check"}
+  for f in files do push(fmt, f) end
+  local f = run(fmt, {timeout_ms = 600000, whole = 4000000, want = WANT})
+  say(f.code == 0, "roc fmt --check: " .. #files .. " files" .. (f.code == 0 and "" or (": " .. trim(f.out))))
+  for root in ROOTS do
+    local m = re_find(root, "^(.*)/([^/]+)$")
+    local r = run({roc, "check", m.groups[2]}, {cwd = m.groups[1], timeout_ms = 120000, whole = 4000000, want = WANT, nice = 19})
+    local n = marks(r.out)
+    say(r.code == 0 and n == 0 and contains(r.out, "No errors found"), "roc check " .. root .. ": " .. n .. " errors and warnings, exit " .. r.code)
+  end
+  script_check("js/oracle.shale", "the JavaScript subset against node")
+  script_check("js/canvas.shale", "the canvas samples against their logs")
+  return nil
+end
+
+-- One run of the controls in one build, its output's last 60 lines printed,
+-- and above them each line tools/roc_build.shale wrote (`built ...` or
+-- `reused ...`), so the tier says what it compiled however long the
+-- ladder's output.
+function tier_run(script, opt)
+  local r = run({"shale", "--root", ".", script, "opt=" .. opt}, {timeout_ms = 1800000, whole = 4000000})
+  local all_lines = lines(trim(r.out))
+  local cut = #all_lines - 60
+  for i = 1, cut do
+    if re_match(all_lines[i], "^(built|reused) ") then print(all_lines[i]) end
+  end
+  print(join(last(all_lines, 60), "\n"))
+  return r
+end
+
+-- The allocation tier: the controls in the release build, then in the dev
+-- build.
+function js_tier()
+  for opt in {"speed", "dev"} do
+    local r = tier_run("js/controls.shale", opt)
+    say(r.code == 0, "js/controls.shale opt=" .. opt .. ", the controls held to their expected counts")
+  end
+  return nil
+end
+
+const JS = arg("js", false)
+if JS then js_tier() else all() end
+if board.failed > 0 then fail("check: " .. board.failed .. " of " .. #board.lines .. " checks failed") end
+print("check: " .. #board.lines .. " of " .. #board.lines .. " passed")

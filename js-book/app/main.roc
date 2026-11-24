@@ -1,14 +1,14 @@
 ## This app builds the JavaScript book, A JavaScript Interpreter in Roc, on
-## the book platform with the book builder. Its folder is the roc-apps
-## checkout's root, so an include quotes the interpreter's code in js/ by its
+## the book platform with roc-apps' book builder, from the roc-apps checkout
+## beside this one. Its folder is the roc-js-interpreter checkout's root, so an include quotes the interpreter's code in js/ by its
 ## path in the repository. Its pre-step, book.shale, draws the diagrams with
 ## Graphviz into `js-book/build/prepared/`, and this app reads the drawings
 ## through the platform, and a missing one stops the build, named. The
 ## pre-step also writes the appendix's listings there, which this app puts in
 ## the manuscript before the builder reads it.
 app [main!] {
-	bb: "../../book_builder/builder/main.roc",
-	pf: platform "../../book_builder/platform/main.roc",
+	bb: "../../../roc-apps/book_builder/builder/main.roc",
+	pf: platform "../../../roc-apps/book_builder/platform/main.roc",
 	sc: "../../../roc-syntax-color/package/main.roc",
 }
 
@@ -53,7 +53,7 @@ prepared_folder : Str
 prepared_folder = "js-book/build/prepared"
 
 ## Everything this book chooses, but its fence hook, which needs the drawings.
-## Every path is the roc-apps checkout's: the book's read root is the
+## Every path is the roc-js-interpreter checkout's: the book's read root is the
 ## checkout itself, since the book quotes the interpreter's code in js/.
 settings : Builder.Settings
 settings = {

@@ -1,0 +1,54 @@
+-- This is roc-js-interpreter's prelude: every Shale script run from the
+-- repository's root has its functions. It holds the one home of this
+-- repository's compiler for Shale: the nightly named in roc-version,
+-- installed side by side at tools:roc-<pin>/roc (~/tools/ on the box). A
+-- missing pin file, a missing binary and a binary whose `roc version` isn't
+-- the pin each stop the run, named for `who`.
+--
+-- The three functions are copies of roc-apps' `.shale/prelude.shale`'s, on
+-- purpose: a prelude is per root, and the JavaScript subset's scripts were
+-- written against roc-apps'. Each copy's twin is the function of the same
+-- name there; a change to one is a change to look at in the other.
+
+-- The pinned Roc's real path. `pin_file` names another pin file, for a
+-- self-test of these refusals.
+function pinned_roc(who, pin_file?)
+  local file = "roc-version"
+  if pin_file ~= nil then file = pin_file end
+  if not exists(file) then fail(who .. ": no " .. file .. ": run from the roc-js-interpreter root") end
+  local pin = trim(read(file))
+  local roc = "tools:roc-" .. pin .. "/roc"
+  if not exists(roc) then fail(who .. ": no " .. roc .. ": install the pinned nightly " .. pin .. " at ~/tools/roc-" .. pin .. "/") end
+  local said = run({real(roc), "version"}, {timeout_ms = 30000, whole = 4000, want = "roc-pin: roc-js-interpreter's pinned nightly"})
+  check_roc_version(who, roc, pin, said.out)
+  return real(roc)
+end
+
+-- The executable `name` built from the Roc app at `app` in `mode` (`dev`,
+-- `speed` or `boxy`), by its real path: tools/roc_build.shale's, built only
+-- when its cache holds no build of these inputs (that script says what the
+-- key holds). `opts.flags` (a list) are more of `roc build`'s; `opts.allow`
+-- (a list of literals) is the one warning the build may make. Its line,
+-- built or reused, is printed.
+function built_roc(who, app, name, mode, opts?)
+  local o = {}
+  if opts ~= nil then o = opts end
+  local stdin = "app=" .. app .. "\nname=" .. name .. "\nmode=" .. mode .. "\n"
+  if has_key(o, "flags") then stdin = stdin .. "flags=" .. join(o.flags, ",") .. "\n" end
+  if has_key(o, "allow") then stdin = stdin .. "allow=" .. join(o.allow, "|") .. "\n" end
+  local r = run({"shale", "--root", ".", "tools/roc_build.shale", "--args-stdin"}, {timeout_ms = 1800000, tail = 60, stdin = stdin})
+  local exe = nil
+  for l in lines(r.out) do
+    if starts_with(l, "exe\t") then exe = sub(l, 5) else print(l) end
+  end
+  if r.code ~= 0 or exe == nil then fail(who .. ": tools/roc_build.shale could not build " .. name .. " " .. mode) end
+  return exe
+end
+
+-- Nothing, or a stop when `said`, what `roc version` printed, isn't the pin.
+function check_roc_version(who, roc, pin, said)
+  if trim(said) ~= "Roc compiler version " .. pin then
+    fail(who .. ": " .. roc .. " is " .. trim(said) .. ", not " .. pin)
+  end
+  return nil
+end

@@ -4,8 +4,8 @@
 -- less than wall time, but they are still rough: each run prints which
 -- other heavy programs were running beside it.
 --
---   cd <roc-apps checkout> && shale js/bench.shale             build both, then time
---   cd <roc-apps checkout> && shale js/bench.shale opt=dev     the dev build alone
+--   cd <roc-js-interpreter checkout> && shale js/bench.shale             build both, then time
+--   cd <roc-js-interpreter checkout> && shale js/bench.shale opt=dev     the dev build alone
 --
 -- budget: steps=20000000
 

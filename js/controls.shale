@@ -5,9 +5,9 @@
 -- expected file. A control reads its passes as `N`, which this script
 -- declares in a first line, `const N = <passes>;`.
 --
---   cd <roc-apps checkout> && shale js/controls.shale              the release build (--opt=speed)
---   cd <roc-apps checkout> && shale js/controls.shale opt=dev      the dev build
---   cd <roc-apps checkout> && shale js/controls.shale only=02      the controls whose names start so
+--   cd <roc-js-interpreter checkout> && shale js/controls.shale              the release build (--opt=speed)
+--   cd <roc-js-interpreter checkout> && shale js/controls.shale opt=dev      the dev build
+--   cd <roc-js-interpreter checkout> && shale js/controls.shale only=02      the controls whose names start so
 --
 -- **A CONTROL THAT STARTS ALLOCATING NAMES THE WRITE THAT COPIES**: 00-loop
 -- is the pass alone, and each control after it adds one write to it. A copy

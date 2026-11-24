@@ -3,15 +3,15 @@
 -- `Math.ceil`) that find_names_and_docs_that_say_too_little would read as
 -- abbreviations.
 --
---   cd <roc-apps checkout> && shale js/lints.shale reads=settings
+--   cd <roc-js-interpreter checkout> && shale js/lints.shale reads=settings
 --
 -- It prints one line `SETTING<tab>recipe<tab>folder<tab>arg` an argument,
--- paths from the checkout's root, for tools/quality.shale, which runs the
+-- paths from the checkout's root, for tools/lints.shale, which runs the
 -- recipes over every project and so must judge js's files with js's terms.
 -- This table stays their one home.
 
 -- The folder the settings judge is js/roc, the interpreter's Roc, not js
--- itself: tools/quality.shale runs a folder with settings on its own and
+-- itself: tools/lints.shale runs a folder with settings on its own and
 -- leaves it out of its project's run, which it can only do for a folder
 -- inside the project.
 const HERE = "js/roc"

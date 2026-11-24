@@ -12,7 +12,7 @@
 -- This checkout's folder for the plans a script writes for `opt`, made if
 -- it isn't there.
 function js_out_dir(opt)
-  local dir = "build:roc-apps/gen/js/" .. basename(real(".")) .. "/" .. opt
+  local dir = "build:roc-js-interpreter/gen/js/" .. basename(real(".")) .. "/" .. opt
   mkdir(dir)
   return dir
 end
