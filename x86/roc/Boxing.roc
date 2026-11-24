@@ -15,6 +15,7 @@
 ## | 0xFFFA | a string | its address |
 ## | 0xFFFB | an array | its address |
 ## | 0xFFFC | a plain object | its address |
+## | 0xFFFD | a function | its closure record's address |
 ##
 ## Every value has these bits wherever it is held, so a kind known before
 ## the program runs costs no conversion where two ways meet and the kind
@@ -34,6 +35,14 @@ Boxing :: [].{
 
 	object_tag : I64
 	object_tag = 0xFFFC
+
+	## A function's tag. Its payload is a closure record's address: 8 bytes
+	## holding the distance from them to the code a call through the value
+	## enters, 8 the distance from them to the text console.log writes
+	## (`[Function: f]`), 8 the count of captures, then each capture's cell's
+	## address, 8 bytes each (0 for a function known before the program runs).
+	function_tag : I64
+	function_tag = 0xFFFD
 
 	## How far a tag is shifted into a value's top bits.
 	tag_shift : U8

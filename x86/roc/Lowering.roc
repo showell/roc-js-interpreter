@@ -21,13 +21,21 @@
 ## arguments, the last first, and the callee copies each to its parameter's
 ## slot; the result comes back in `rax`.
 ##
-## **ONLY THE START OF A SCOPE MAKES A FUNCTION.** A function's
-## declarations are the first instructions of its code (a `MakeClosure` and a
-## `SetBoxed` each), so its name holds that function from the start, and a
-## closure may capture such names and nothing else. A variable a closure
-## captures that holds a value is refused, as is a function made anywhere
-## else (a function expression after the first statement), or a name a
-## function is assigned to.
+## **A FUNCTION KNOWN BEFORE THE PROGRAM RUNS TAKES NO BYTES.** A function
+## whose captures are all names of such functions (`statics_of`: fib, which
+## captures only itself) is known by its code alone, as `Function(code)`,
+## and called directly. Where it is used as a value (stored, passed,
+## returned) it becomes its closure record in the read-only segment, boxed
+## with `Boxing.function_tag`, and it is `escaped_codes`. Any other function is
+## made as it runs: `MakeClosure` takes a record from the heap and fills it
+## with the cells of the variables it captures (`Boxing.roc` has the
+## layout). A variable a closure captures, and that holds a value, lives in a
+## cell of 8 bytes on the heap, its slot holding the cell's address, as the
+## VM's box; its kind is `Value`. A call of a function known by its code is a
+## direct call, `rbx` holding the record when it has one; any other is a
+## call through the value, which enters the code at its value entry with
+## `rcx` the count of arguments. A function a value may hold takes `Value`
+## parameters, since no call shows what reaches it that way.
 import js.Ast
 import js.Bytecode
 import Assembly
@@ -44,6 +52,12 @@ Lowering :: [].{
 	program_items = |program| {
 		makers = makers_of(program)?
 		literals = literals_of(program)?
+		statics = statics_of(program, makers)
+		var $escaped_codes =
+			makers
+				.to_list()
+				.keep_if(|(made, _)| !statics.contains(made))
+				.map(|(made, _)| made)
 		var $returns = Dict.empty()
 		for index in 0..<program.codes.len() {
 			$returns = $returns.insert(index, Number)
@@ -53,11 +67,15 @@ Lowering :: [].{
 			var $items = Runtime.start_items(code_label(program.main))
 			var $found = $returns
 			var $called = Dict.empty()
+			var $escaped = $escaped_codes
 			var $first_refusal = Ok({})
 			for index in 0..<program.codes.len() {
 				context = {
 					program,
 					makers,
+					statics,
+					escaped_codes: $escaped_codes,
+					cells: celled_slots({ program, makers, statics }, index),
 					returns: $returns,
 					parameters: $parameters,
 					literals,
@@ -73,6 +91,11 @@ Lowering :: [].{
 						for call in lowered.calls {
 							$called = with_call_kinds($called, call)
 						}
+						for made in lowered.escaped {
+							if !$escaped.contains(made) {
+								$escaped = $escaped.append(made)
+							}
+						}
 					}
 					Err({ refused, calls }) => {
 						for call in calls {
@@ -84,14 +107,28 @@ Lowering :: [].{
 					}
 				}
 			}
-			if $found == $returns and $called == $parameters {
+			settled = $found == $returns and $called == $parameters
+			if settled and $escaped.len() == $escaped_codes.len() {
 				return match $first_refusal {
-					Ok({}) => Ok($items.concat(Runtime.items).concat(literal_statements(literals)))
+					Ok({}) =>
+						Ok(
+							$items
+								.concat(Runtime.items)
+								.concat(literal_statements(literals))
+								.concat(
+									closure_statements({
+										makers,
+										statics,
+										escaped_codes: $escaped_codes,
+									}),
+								),
+						)
 					Err(refused) => Err(refused)
 				}
 			}
 			$returns = $found
 			$parameters = $called
+			$escaped_codes = $escaped
 		}
 		Err(Refused("the kinds of the functions' parameters and results never settle"))
 	}
@@ -99,8 +136,9 @@ Lowering :: [].{
 
 ## What a slot or a place on the stack holds, known before the program runs.
 ## A value's kind (`Number` to `Value`, whose bits are a value's boxed bits,
-## `Boxing.roc`), or what takes no bytes: a function by its code, `console`,
-## its `log`, and a method looked up by name on a value.
+## `Boxing.roc`; `Closure(code)` a function value whose code is known), or
+## what takes no bytes: a function known before the program runs by its
+## code, `console`, its `log`, and a method looked up by name on a value.
 Kind : [
 	Number,
 	Boolean,
@@ -110,6 +148,7 @@ Kind : [
 	Array,
 	Object,
 	Value,
+	Closure(U64),
 	Function(U64),
 	Console,
 	Log,
@@ -128,12 +167,25 @@ Maker : {
 	parent : U64,
 	captures : List(U64),
 	name : Str,
+	form : [Ordinary, MakesInstances],
+}
+
+## What `held_function` reads: the program, where each code is made, and
+## the codes known before the program runs.
+Known : {
+	program : Bytecode.Program,
+	makers : Dict(U64, Maker),
+	statics : List(U64),
 }
 
 ## What lowering one function needs to know of the rest.
 Context : {
 	program : Bytecode.Program,
 	makers : Dict(U64, Maker),
+	statics : List(U64),
+	escaped_codes : List(U64),
+	# The slots of this code's frame that hold a cell's address.
+	cells : List(U64),
 	returns : Dict(U64, Kind),
 	parameters : Dict(U64, List(Kind)),
 	literals : Dict(Str, U64),
@@ -147,7 +199,7 @@ CallKinds : { code : U64, kinds : List(Kind) }
 is_value_kind : Kind -> Bool
 is_value_kind = |kind|
 	match kind {
-		Number | Boolean | Undefined | Null | String | Array | Object | Value => True
+		Number | Boolean | Undefined | Null | String | Array | Object | Value | Closure(_) => True
 		Function(_) | Console | Log | Method(_) => False
 	}
 
@@ -183,12 +235,17 @@ with_call_kinds = |called, { code, kinds }|
 	}
 
 ## The kind of a parameter of the function being lowered: what its calls
-## pass, or a number for a function no lowered call reaches.
+## pass, or `Value` for a function a value may hold, or that no lowered
+## call reaches.
 parameter_kind : Context, U64 -> Kind
 parameter_kind = |lowering, slot|
-	match lowering.parameters.get(lowering.index) {
-		Ok(kinds) => kinds.get(slot) ?? crash "Lowering.parameter_kind: a call passes each"
-		Err(_) => Number
+	if lowering.escaped_codes.contains(lowering.index) {
+		Value
+	} else {
+		match lowering.parameters.get(lowering.index) {
+			Ok(kinds) => kinds.get(slot) ?? crash "Lowering.parameter_kind: a call passes each"
+			Err(_) => Value
+		}
 	}
 
 ## Each text the program names (its strings, a template's pieces and the
@@ -204,6 +261,7 @@ literals_of = |program| {
 				PushText(text) => Named(text)
 				TemplatePart(text) => Named(text)
 				GetProperty(key, _) => Named(key)
+				MethodLookup(key, _) => Named(key)
 				SetProperty(key, _) => Named(key)
 				SetField(key) => Named(key)
 				_ => Unnamed
@@ -248,7 +306,7 @@ Site : {
 	lowering : Context,
 	code : Bytecode.Code,
 	at : U64,
-	functions : Dict(U64, U64),
+	skipped : List(U64),
 }
 
 ## What an instruction lowers to: its machine code, the state after it when
@@ -276,7 +334,12 @@ makers_of = |program| {
 					}
 					$makers = $makers.insert(
 						made,
-						{ parent, captures, name: definition.unbox().name },
+						{
+							parent,
+							captures,
+							name: definition.unbox().name,
+							form: definition.unbox().form,
+						},
 					)
 				}
 				_ => {}
@@ -318,42 +381,150 @@ declared_functions = |code| {
 	$found
 }
 
-## The function a captured slot of code `index` holds: the one its maker's
-## slot holds, declared there or captured there in turn.
-captured_function : Context, { slot : U64, capture : U64 } -> Try(U64, [Refused(Str)])
-captured_function = |lowering, { slot: _, capture }| {
-	maker = lowering.makers.get(lowering.index) ?? crash "Lowering.captured_function: its maker"
-	parent_slot = maker.captures.get(capture) ?? crash "Lowering.captured_function: a capture"
-	parent = lowering.program.codes.get(maker.parent) ?? crash "Lowering.captured_function: a code"
-	match declared_functions(parent).get(parent_slot) {
-		Ok(made) => Ok(made)
+## The function known before the program runs that a slot of `code`'s
+## frame holds: one declared at the code's start, or one its maker's slot
+## holds, for a captured slot, in turn.
+held_function : Known, { code : U64, slot : U64 } -> Try(U64, [Unheld])
+held_function = |known, { code, slot }| {
+	frame = known.program.codes.get(code) ?? crash "Lowering.held_function: a code"
+	match declared_functions(frame).get(slot) {
+		Ok(made) =>
+			if known.statics.contains(made) {
+				Ok(made)
+			} else {
+				Err(Unheld)
+			}
 		Err(_) => {
-			entry_capture = parent.entry.find_first(
+			captured = frame.entry.find_first(
 				|step|
 					match step {
-						CapturedBox({ slot, capture: _ }) => slot == parent_slot
+						CapturedBox({ slot: held, capture: _ }) => held == slot
 						_ => False
 					},
 			)
-			match entry_capture {
-				Ok(CapturedBox(captured)) => captured_function(
-					{ ..lowering, index: maker.parent },
-					captured,
-				)
-				_ => Err(captured_value_refusal(maker.name))
+			match (captured, known.makers.get(code)) {
+				(Ok(CapturedBox({ slot: _, capture })), Ok(maker)) => {
+					from = maker.captures.get(capture) ?? crash "Lowering.held_function: a capture"
+					held_function(known, { code: maker.parent, slot: from })
+				}
+				_ => Err(Unheld)
 			}
 		}
 	}
 }
 
-## The kinds when a function's code starts: its parameters hold numbers,
-## its declared functions and the functions it captures are ready, and the
+## The codes known before the program runs: every function that is no
+## class and whose captures are all functions known so, the most that
+## hold together (fib, which captures only itself, is one).
+statics_of : Bytecode.Program, Dict(U64, Maker) -> List(U64)
+statics_of = |program, makers| {
+	var $statics =
+		makers
+			.to_list()
+			.keep_if(|(_, maker)| maker.form == Ordinary)
+			.map(|(made, _)| made)
+	var $going = True
+	while $going {
+		known = { program, makers, statics: $statics }
+		kept = $statics.keep_if(
+			|made| {
+				maker = makers.get(made) ?? crash "Lowering.statics_of: a maker"
+				maker.captures.all(
+					|from|
+						match held_function(known, { code: maker.parent, slot: from }) {
+							Ok(_) => True
+							Err(Unheld) => False
+						},
+				)
+			},
+		)
+		$going = kept.len() != $statics.len()
+		$statics = kept
+	}
+	$statics
+}
+
+## The slots of code `index`'s frame that hold a cell: each a closure made
+## there captures, and each it captures itself, that holds no function
+## known before the program runs.
+celled_slots : Known, U64 -> List(U64)
+celled_slots = |known, index| {
+	code = known.program.codes.get(index) ?? crash "Lowering.celled_slots: a code"
+	unheld = |slot|
+		match held_function(known, { code: index, slot }) {
+			Ok(_) => False
+			Err(Unheld) => True
+		}
+	var $cells = []
+	for instruction in code.ops {
+		match instruction {
+			MakeClosure({ code: _, captures, definition: _ }) =>
+				for from in captures {
+					if unheld(from) and !$cells.contains(from) {
+						$cells = $cells.append(from)
+					}
+				}
+			_ => {}
+		}
+	}
+	for step in code.entry {
+		match step {
+			CapturedBox({ slot, capture: _ }) =>
+				if unheld(slot) and !$cells.contains(slot) {
+					$cells = $cells.append(slot)
+				}
+			_ => {}
+		}
+	}
+	$cells
+}
+
+## The text console.log writes for each function a value may hold, and the
+## closure record, in the read-only segment, of each known before the
+## program runs (`Boxing.function_tag`'s layout, with no captures).
+closure_statements : {
+	makers : Dict(U64, Maker),
+	statics : List(U64),
+	escaped_codes : List(U64),
+} -> List(Assembly.Statement)
+closure_statements = |{ makers, statics, escaped_codes }| {
+	var $out = []
+	for (made, maker) in makers.to_list() {
+		if escaped_codes.contains(made) {
+			text =
+				if maker.name == "" {
+					"[Function (anonymous)]"
+				} else {
+					"[Function: ${maker.name}]"
+				}
+			$out = $out.concat([Mark(function_text_label(made)), Data(Runtime.string_data(text))])
+			if statics.contains(made) {
+				$out = $out.concat([
+					Mark(closure_label(made)),
+					Distance(value_label(made)),
+					Distance(function_text_label(made)),
+					Data(List.repeat(0, 8)),
+				])
+			}
+		}
+	}
+	$out
+}
+
+## The kinds when a function's code starts: its parameters hold their
+## kinds, its declared functions known before the program runs and the
+## functions it captures are ready, its other captures hold values, and the
 ## rest are unready.
 start_state : Context, Bytecode.Code -> Try(State, [Refused(Str)])
 start_state = |lowering, code| {
 	parameters = match code.arguments {
 		Each(count) => count
 		Packed(_) => return Err(code_refusal(lowering, PatternedParameters))
+	}
+	known = {
+		program: lowering.program,
+		makers: lowering.makers,
+		statics: lowering.statics,
 	}
 	var $slots = List.repeat(Unready, code.frame_size)
 	for slot in 0..<parameters {
@@ -366,27 +537,60 @@ start_state = |lowering, code| {
 		match step {
 			FreshBox(_) => {}
 			FilledBox(slot) => {
+				kind =
+					if lowering.cells.contains(slot) {
+						Value
+					} else {
+						parameter_kind(lowering, slot)
+					}
 				$slots = $slots.set(
 					slot,
-					Ready(parameter_kind(lowering, slot)),
+					Ready(kind),
 				) ?? crash "Lowering.start_state: a boxed parameter has a slot"
 			}
-			CapturedBox(captured) => {
-				made = captured_function(lowering, captured)?
+			CapturedBox({ slot, capture: _ }) => {
+				kind = match held_function(known, { code: lowering.index, slot }) {
+					Ok(made) => Function(made)
+					Err(Unheld) => Value
+				}
 				$slots = $slots.set(
-					captured.slot,
-					Ready(Function(made)),
+					slot,
+					Ready(kind),
 				) ?? crash "Lowering.start_state: a capture has a slot"
 			}
 		}
 	}
 	for (slot, made) in declared_functions(code).to_list() {
-		$slots = $slots.set(
-			slot,
-			Ready(Function(made)),
-		) ?? crash "Lowering.start_state: a declaration has a slot"
+		if lowering.statics.contains(made) {
+			$slots = $slots.set(
+				slot,
+				Ready(Function(made)),
+			) ?? crash "Lowering.start_state: a declaration has a slot"
+		}
 	}
 	Ok({ slots: $slots, stack_kinds: [] })
+}
+
+## The places of the instructions a code starts with that declare its
+## functions known before the program runs: they make no code, since the
+## name holds the function from the start.
+skipped_places : Context, Bytecode.Code -> List(U64)
+skipped_places = |lowering, code| {
+	var $out = []
+	for (slot, made) in declared_functions(code).to_list() {
+		if lowering.statics.contains(made) {
+			# Each declaration is a `MakeClosure` then its `SetBoxed`.
+			at = code.ops.find_first_index(
+				|instruction|
+					match instruction {
+						SetBoxed(set) => set == slot
+						_ => False
+					},
+			) ?? crash "Lowering.skipped_places: a declaration's SetBoxed"
+			$out = $out.concat([at - 1, at])
+		}
+	}
+	$out
 }
 
 ## What one function does that the lowering refuses, and where.
@@ -413,13 +617,6 @@ code_refusal = |lowering, fault| {
 	Refused("${function_name(lowering)}: ${why}")
 }
 
-## The refusal of a function that captures a variable holding a value.
-captured_value_refusal : Str -> [Refused(Str)]
-captured_value_refusal = |name| {
-	what = "captures a variable that holds a value"
-	Refused("the function `${name}` ${what}, not a function declared beside it")
-}
-
 function_name : Context -> Str
 function_name = |lowering|
 	if lowering.index == lowering.program.main {
@@ -434,6 +631,22 @@ function_name = |lowering|
 code_label : U64 -> Str
 code_label = |index| "code_${index.to_str()}"
 
+## The entry of a call through a value, whose count of arguments is in `rcx`.
+value_label : U64 -> Str
+value_label = |index| "code_${index.to_str()}_value"
+
+## Where both entries meet, once the parameters are in their slots.
+start_label : U64 -> Str
+start_label = |index| "code_${index.to_str()}_start"
+
+## The closure record of a function known before the program runs.
+closure_label : U64 -> Str
+closure_label = |index| "closure_${index.to_str()}"
+
+## The text console.log writes for a function.
+function_text_label : U64 -> Str
+function_text_label = |index| "function_text_${index.to_str()}"
+
 ## The label of an instruction of the code being lowered.
 place_label : Context, U64 -> Str
 place_label = |lowering, at| "code_${lowering.index.to_str()}_${at.to_str()}"
@@ -444,6 +657,8 @@ CodeItems : {
 	statements : List(Assembly.Statement),
 	result : [Gives(Kind), GivesNothing],
 	calls : List(CallKinds),
+	# The functions known before the program runs that it uses as values.
+	escaped : List(U64),
 }
 
 ## One function's machine code: its entry, which makes its frame and
@@ -480,20 +695,16 @@ Dict(U64, State) -> Try(
 )
 code_walk = |lowering, heads| {
 	code = lowering.program.codes.get(lowering.index) ?? crash "Lowering.code_items: a code's index"
-	start = start_state(lowering, code)?
-	functions = declared_functions(code)
-	for instruction in code.ops {
-		match instruction {
-			MakeClosure({ code: _, captures, definition }) =>
-				for slot in captures {
-					match start.slots.get(slot) {
-						Ok(Ready(Function(_))) => {}
-						_ => return Err(captured_value_refusal(definition.unbox().name))
-					}
-				}
-			_ => {}
+	match lowering.makers.get(lowering.index) {
+		Ok({ form: MakesInstances, .. }) => {
+			named = function_name(lowering)
+			return Err(Refused("${named}: a class is not compiled yet"))
 		}
+		_ => {}
 	}
+	start = start_state(lowering, code)?
+	skipped = skipped_places(lowering, code)
+	var $escaped = []
 	var $body = []
 	var $pending = Dict.empty()
 	var $seen = Dict.empty()
@@ -522,18 +733,23 @@ code_walk = |lowering, heads| {
 				}
 				$seen = $seen.insert(at, state)
 				instruction = code.ops.get(at) ?? crash "Lowering.code_items: an instruction"
-				$calls = match call_kinds(lowering, { instruction, state }) {
+				site = { lowering, code, at, skipped }
+				valued =
+					if skipped.contains(at) {
+						{ statements: [], state, escaped: [] }
+					} else {
+						values_made(site, { instruction, state })
+					}
+				$escaped = $escaped.concat(valued.escaped)
+				$calls = match call_kinds(lowering, { instruction, state: valued.state }) {
 					Ok(call) => $calls.append(call)
 					Err(NoCall) => $calls
 				}
-				lowered = match instruction_items(
-					{ lowering, code, at, functions },
-					{ instruction, state },
-				) {
+				lowered = match instruction_items(site, { instruction, state: valued.state }) {
 					Ok(done) => done
 					Err(refused) => return Ok(Halted({ refused, calls: $calls }))
 				}
-				$body = $body.concat(lowered.statements)
+				$body = $body.concat(valued.statements).concat(lowered.statements)
 				$flowing = match lowered.falls {
 					Falls(next) => {
 						$deepest = U64.max($deepest, next.stack_kinds.len())
@@ -592,7 +808,14 @@ code_walk = |lowering, heads| {
 		return Err(code_refusal(lowering, FrameTooLarge))
 	}
 	statements = entry_items(lowering, { code, frame_bytes }).concat($body)
-	Ok(Walked({ statements, result: $result, calls: $calls }))
+	Ok(
+		Walked({
+			statements,
+			result: $result,
+			calls: $calls,
+			escaped: $escaped,
+		}),
+	)
 }
 
 ## The kinds of a call's arguments, when the instruction calls a declared
@@ -602,7 +825,7 @@ call_kinds = |lowering, { instruction, state }|
 	match instruction {
 		Call({ count, written: _, at: _ }) =>
 			match kind_below(state, count) {
-				Function(made) => {
+				Function(made) | Closure(made) => {
 					callee = lowering.program.codes.get(made) ?? crash "Lowering.call_kinds: a code"
 					kinds = state.stack_kinds.take_last(count)
 					if callee.arguments == Each(count) and kinds.all(is_value_kind) {
@@ -616,16 +839,22 @@ call_kinds = |lowering, { instruction, state }|
 		_ => Err(NoCall)
 	}
 
-## A function's entry: `rbp` saved and set, its frame made below it, and
-## each parameter copied from where the caller pushed it to its slot.
+## A function's entries: `rbp` saved and set, its frame made below it,
+## each cell it captures copied from its closure record (`rbx`) to its
+## slot, and each parameter copied from where the caller pushed it to its
+## slot. A function a value may hold has a second entry before it, for a
+## call through the value, which takes as many arguments as `rcx` says: a
+## parameter past them is `undefined`, an argument past the parameters
+## unread. Both go on to make the cells of its own variables a closure
+## captures.
 entry_items : Context, { code : Bytecode.Code, frame_bytes : U64 } -> List(Assembly.Statement)
 entry_items = |lowering, { code, frame_bytes }| {
+	index = lowering.index
 	parameters = match code.arguments {
 		Each(count) => count
 		Packed(_) => 0
 	}
-	var $items = [
-		Mark(code_label(lowering.index)),
+	prologue = [
 		Instruction(Push(Rbp)),
 		Instruction(MovRegReg({ to: Rbp, from: Rsp })),
 		Instruction(
@@ -638,19 +867,133 @@ entry_items = |lowering, { code, frame_bytes }| {
 		Emit.cmp(Rsp, R12),
 		Emit.jcc(B, Runtime.stack_overflow),
 	]
+	argument = |slot| Emit.mem(Rbp, (16 + 8 * slot).to_i64_wrap())
+	var $captured = []
+	var $cells = []
+	for step in code.entry {
+		match step {
+			CapturedBox({ slot, capture }) =>
+				if lowering.cells.contains(slot) {
+					$captured = $captured.concat([
+						Emit.load(Rax, Emit.mem(Rbx, (24 + 8 * capture).to_i64_wrap())),
+						Emit.store(slot_place(slot), Rax),
+					])
+				}
+			FreshBox(slot) =>
+				if lowering.cells.contains(slot) {
+					$cells = $cells.concat([
+						Emit.imm(Rsi, Boxing.undefined_bits),
+						Emit.call(Runtime.new_cell),
+						Emit.store(slot_place(slot), Rax),
+					])
+				}
+			FilledBox(slot) =>
+				if lowering.cells.contains(slot) {
+					$cells = $cells.concat([
+						Emit.load(Rsi, slot_place(slot)),
+						Emit.call(Runtime.new_cell),
+						Emit.store(slot_place(slot), Rax),
+					])
+				}
+		}
+	}
+	var $direct = []
+	var $counted = []
 	for slot in 0..<parameters {
-		with_top = Based({
-			base: Rbp,
-			index: NoIndex,
-			displacement: (16 + 8 * slot).to_i32_wrap(),
-		})
-		$items = $items.concat([
-			Instruction(MovRegMem({ to: Rax, from: with_top })),
-			Instruction(MovMemReg({ to: slot_place(slot), from: Rax })),
+		missing = "${value_label(index)}_missing_${slot.to_str()}"
+		got = "${value_label(index)}_got_${slot.to_str()}"
+		$direct = $direct.concat([
+			Emit.load(Rax, argument(slot)),
+			Emit.store(slot_place(slot), Rax),
+		])
+		$counted = $counted.concat([
+			Emit.cmp_imm(Rcx, slot.to_i64_wrap()),
+			Emit.jcc(Be, missing),
+			Emit.load(Rax, argument(slot)),
+			Emit.jmp(got),
+			Emit.mark(missing),
+			Emit.imm(Rax, Boxing.undefined_bits),
+			Emit.mark(got),
+			Emit.store(slot_place(slot), Rax),
 		])
 	}
-	$items
+	through_value =
+		if lowering.escaped_codes.contains(index) {
+			[Mark(value_label(index))]
+				.concat(prologue)
+				.concat($captured)
+				.concat($counted)
+				.append(Emit.jmp(start_label(index)))
+		} else {
+			[]
+		}
+	through_value
+		.append(Mark(code_label(index)))
+		.concat(prologue)
+		.concat($captured)
+		.concat($direct)
+		.append(Mark(start_label(index)))
+		.concat($cells)
 }
+
+## The functions known before the program runs among the values an
+## instruction takes from the top of the stack, made values: each one's
+## closure record, boxed, written in its place, which takes its kind.
+values_made : Site, { instruction : Bytecode.Op, state : State } -> Valued
+values_made = |site, { instruction, state }| {
+	depth = state.stack_kinds.len()
+	taken = U64.min(taken_count(instruction), depth)
+	var $items = []
+	var $kinds = state.stack_kinds
+	var $escaped = []
+	for down in 0..<taken {
+		place = depth - 1 - down
+		match $kinds.get(place) {
+			Ok(Function(made)) => {
+				$items = $items.concat([
+					Emit.address_of(Rax, closure_label(made)),
+					Emit.imm(Rcx, Boxing.tag_bits(Boxing.function_tag)),
+					Emit.plus(Rax, Rcx),
+					Emit.store(stack_place(site.code, place), Rax),
+				])
+				$kinds = $kinds.set(
+					place,
+					Closure(made),
+				) ?? crash "Lowering.values_made: a place on the stack"
+				$escaped = $escaped.append(made)
+			}
+			_ => {}
+		}
+	}
+	{
+		statements: $items,
+		state: { ..state, stack_kinds: $kinds },
+		escaped: $escaped,
+	}
+}
+
+## An instruction's values made: the code that makes them, the state
+## after, and the functions it made values of.
+Valued : {
+	statements : List(Assembly.Statement),
+	state : State,
+	escaped : List(U64),
+}
+
+## How many values on top of the stack an instruction takes as values (a
+## call its arguments, not what it calls).
+taken_count : Bytecode.Op -> U64
+taken_count = |instruction|
+	match instruction {
+		StoreLocal(_) | SetLocal(_) | SetBoxed(_) | Return | SetField(_) | TemplatePart(_) => 1
+		StoreBoxed(_) | SetProperty(_, _) | SetIndex(_) | Unary(_, _) => 1
+		JumpIfFalse(_) | SkipIfFalsy(_) | SkipIfTruthy(_) => 1
+		Binary(_, _) => 2
+		MakeArray(count) => count
+		Call({ count, written: _, at: _ }) => count
+		CallMethod({ name: _, site: { count, written: _, at: _ } }) => count
+		_ => 0
+	}
 
 ## The state at a place two ways reach: the same stack, and each slot ready
 ## with one kind, or unready on either way.
@@ -780,10 +1123,18 @@ written_slot = |site, { state, slot }| {
 		Ok(Ready(Function(_))) => return refusal(site, "a function's name is assigned")
 		_ => {}
 	}
-	kind = kind_below(state, 0)
-	if !is_value_kind(kind) {
+	given = kind_below(state, 0)
+	if !is_value_kind(given) {
 		return refusal(site, "a variable is given a function, `console` or a method")
 	}
+	# A cell is shared with the closures that capture it, whose writes no
+	# walk of this code sees.
+	kind =
+		if site.lowering.cells.contains(slot) {
+			Value
+		} else {
+			given
+		}
 	slots = state.slots.set(slot, Ready(kind)) ?? crash "Lowering.written_slot: a slot of the frame"
 	Ok({ ..state, slots })
 }
@@ -1210,7 +1561,7 @@ kind_text = |kind|
 		Object => "object"
 		Value => "value of a kind not known before it runs"
 		Method(name) => "method `${name}`"
-		Function(_) => "function"
+		Function(_) | Closure(_) => "function"
 		Console => "console"
 		Log => "console.log"
 	}
@@ -1312,14 +1663,42 @@ unary_items = |site, { state, operator }| {
 	}
 }
 
-## A call of a declared function: its arguments pushed, the last first, the
-## call, and its result in the callee's place.
+## A call: of a function known by its code, directly, `rbx` holding its
+## closure record when it has one; of any other value, through it.
 call_items : Site, { state : State, count : U64 } -> Try(Lowered, [Refused(Str)])
 call_items = |site, { state, count }| {
-	made = match kind_below(state, count) {
-		Function(index) => index
-		kind => return refusal(site, "a call of ${kind_phrase(kind)}")
+	callee_place = stack_place(site.code, state.stack_kinds.len() - count - 1)
+	match kind_below(state, count) {
+		Function(made) => direct_call_items(site, { state, count, made, record_statements: [] })
+		Closure(made) => {
+			codes = site.lowering.program.codes
+			callee = codes.get(made) ?? crash "Lowering.call_items: a function's code"
+			if callee.arguments == Each(count) {
+				record_statements = [
+					Emit.load(Rbx, callee_place),
+					Emit.shl(Rbx, 16),
+					Emit.shr(Rbx, 16),
+				]
+				direct_call_items(site, { state, count, made, record_statements })
+			} else {
+				value_call_items(site, { state, count, taken: count + 1 })
+			}
+		}
+		Value => value_call_items(site, { state, count, taken: count + 1 })
+		kind => refusal(site, "a call of ${kind_phrase(kind)}")
 	}
+}
+
+## A direct call of the function `made`: its arguments pushed, the last
+## first, the call, and its result in the callee's place.
+direct_call_items : Site,
+{
+	state : State,
+	count : U64,
+	made : U64,
+	record_statements : List(Assembly.Statement),
+} -> Try(Lowered, [Refused(Str)])
+direct_call_items = |site, { state, count, made, record_statements }| {
 	callee = site.lowering.program.codes.get(made) ?? crash "Lowering.call_items: a function's code"
 	parameters = match callee.arguments {
 		Each(given) => given
@@ -1334,28 +1713,10 @@ call_items = |site, { state, count }| {
 		return refusal(site, "a call with ${given} to ${taken}")
 	}
 	base = state.stack_kinds.len() - count - 1
-	var $items = []
-	for back in 0..<count {
-		argument = count - 1 - back
-		if !is_value_kind(kind_below(state, back)) {
-			return refusal(site, "a call with a function, `console` or a method as an argument")
-		}
-		$items = $items.concat([
-			Instruction(MovRegMem({ to: Rax, from: stack_place(site.code, base + 1 + argument) })),
-			Instruction(Push(Rax)),
-		])
-	}
-	$items = $items.append(CallTo(code_label(made)))
+	pushed = arguments_pushed(site, { state, count })?
+	var $items = record_statements.concat(pushed).append(CallTo(code_label(made)))
 	if count > 0 {
-		$items = $items.append(
-			Instruction(
-				AluImm({
-					operation: Add,
-					to: Rsp,
-					value: (8 * count).to_i32_wrap(),
-				}),
-			),
-		)
+		$items = $items.append(Emit.plus_imm(Rsp, (8 * count).to_i64_wrap()))
 	}
 	result = site.lowering.returns.get(made) ?? crash "Lowering.call_items: a result"
 	Ok(
@@ -1364,6 +1725,173 @@ call_items = |site, { state, count }| {
 			with_top(without_top(state, count + 1), result),
 		),
 	)
+}
+
+## The `count` arguments on top of the stack pushed, the last first.
+arguments_pushed : Site,
+{
+	state : State,
+	count : U64,
+} -> Try(List(Assembly.Statement), [Refused(Str)])
+arguments_pushed = |site, { state, count }| {
+	base = state.stack_kinds.len() - count
+	var $items = []
+	for back in 0..<count {
+		argument = count - 1 - back
+		if !is_value_kind(kind_below(state, back)) {
+			return refusal(site, "a call with a function, `console` or a method as an argument")
+		}
+		$items = $items.concat([
+			Emit.load(Rax, stack_place(site.code, base + argument)),
+			Emit.save(Rax),
+		])
+	}
+	Ok($items)
+}
+
+## A call through the value below the `count` arguments on top of the
+## stack: stopped unless it is a function, else its record in `rbx`, the
+## arguments pushed, their count in `rcx`, and a call of its value entry.
+## The result, a `Value`, takes the place of the `taken` values on top (the
+## callee and the arguments, and a method call's receiver).
+value_call_items : Site,
+{
+	state : State,
+	count : U64,
+	taken : U64,
+} -> Try(Lowered, [Refused(Str)])
+value_call_items = |site, { state, count, taken }| {
+	depth = state.stack_kinds.len()
+	pushed = arguments_pushed(site, { state, count })?
+	var $items = [
+		Emit.load(Rax, stack_place(site.code, depth - count - 1)),
+		Emit.call(Runtime.check_function),
+		Emit.shl(Rax, 16),
+		Emit.shr(Rax, 16),
+		Emit.mov(Rbx, Rax),
+	]
+		.concat(pushed)
+		.concat([
+			Emit.load(Rax, Emit.mem(Rbx, 0)),
+			Emit.plus(Rax, Rbx),
+			Emit.imm(Rcx, count.to_i64_wrap()),
+			Instruction(CallReg(Rax)),
+		])
+	if count > 0 {
+		$items = $items.append(Emit.plus_imm(Rsp, (8 * count).to_i64_wrap()))
+	}
+	result_place = stack_place(site.code, depth - taken)
+	Ok(
+		falling(
+			$items.append(Emit.store(result_place, Rax)),
+			with_top(without_top(state, taken), Value),
+		),
+	)
+}
+
+## A closure made as the program runs: its record taken from the heap, the
+## distances to its value entry and its text, and the address of each cell
+## it captures (0 for a function known before the program runs), boxed at
+## `place`.
+record_items : Site,
+{
+	made : U64,
+	captures : List(U64),
+	place : X86.Mem,
+} -> List(Assembly.Statement)
+record_items = |site, { made, captures, place }| {
+	count = captures.len()
+	var $items = [
+		Emit.imm(Rdi, (24 + 8 * count).to_i64_wrap()),
+		Emit.call(Runtime.allocate),
+		Emit.address_of(Rcx, value_label(made)),
+		Emit.minus(Rcx, Rax),
+		Emit.store(Emit.mem(Rax, 0), Rcx),
+		Emit.address_of(Rcx, function_text_label(made)),
+		Emit.minus(Rcx, Rax),
+		Emit.minus_imm(Rcx, 8),
+		Emit.store(Emit.mem(Rax, 8), Rcx),
+		Emit.imm(Rcx, count.to_i64_wrap()),
+		Emit.store(Emit.mem(Rax, 16), Rcx),
+	]
+	for (capture, from) in captures.map_with_index(|from, capture| (capture, from)) {
+		held =
+			if site.lowering.cells.contains(from) {
+				Emit.load(Rcx, slot_place(from))
+			} else {
+				Emit.zero(Rcx)
+			}
+		field = Emit.mem(Rax, (24 + 8 * capture).to_i64_wrap())
+		$items = $items.concat([held, Emit.store(field, Rcx)])
+	}
+	$items.concat([
+		Emit.imm(Rcx, Boxing.tag_bits(Boxing.function_tag)),
+		Emit.plus(Rax, Rcx),
+		Emit.store(place, Rax),
+	])
+}
+
+## A cell's value pushed, or a plain slot's.
+boxed_load_items : Site, { state : State, slot : U64 } -> List(Assembly.Statement)
+boxed_load_items = |site, { state, slot }|
+	if site.lowering.cells.contains(slot) {
+		[
+			Emit.load(Rax, slot_place(slot)),
+			Emit.load(Rax, Emit.mem(Rax, 0)),
+			Emit.store(stack_place(site.code, state.stack_kinds.len()), Rax),
+		]
+	} else {
+		load_items(site, { state, slot })
+	}
+
+## The value on top of the stack stored in a cell, or in a plain slot.
+boxed_store_items : Site, { state : State, slot : U64 } -> List(Assembly.Statement)
+boxed_store_items = |site, { state, slot }|
+	if site.lowering.cells.contains(slot) {
+		[
+			Emit.load(Rcx, slot_place(slot)),
+			Emit.load(Rax, stack_place(site.code, state.stack_kinds.len() - 1)),
+			Emit.store(Emit.mem(Rcx, 0), Rax),
+		]
+	} else {
+		store_items(site, { state, slot })
+	}
+
+## `++` or `--` of a cell's value, checked a number: the cell stepped, and
+## the old value (postfix) or the new (prefix) pushed.
+cell_update_items : Site,
+{
+	state : State,
+	slot : U64,
+	step : Bytecode.Update,
+} -> Try(Lowered, [Refused(Str)])
+cell_update_items = |site, { state, slot, step }| {
+	_ = slot_kind(site, { state, slot, name: "a variable" })?
+	top = stack_place(site.code, state.stack_kinds.len())
+	old = [
+		Emit.load(Rax, slot_place(slot)),
+		Emit.load(Rax, Emit.mem(Rax, 0)),
+		Emit.call(Runtime.check_number),
+	]
+	stepped = [
+		Emit.to_xmm(Xmm0, Rax),
+		Emit.imm(Rax, step.delta.to_bits().to_i64_wrap()),
+		Emit.to_xmm(Xmm1, Rax),
+		Instruction(
+			Sse({
+				operation: Addsd,
+				to: Xmm0,
+				from: Xmm1,
+			}),
+		),
+		Emit.load(Rcx, slot_place(slot)),
+		Instruction(MovsdStore({ to: Emit.mem(Rcx, 0), from: Xmm0 })),
+	]
+	items = match step.fixity {
+		Postfix => old.append(Emit.store(top, Rax)).concat(stepped)
+		Prefix => old.concat(stepped).append(Instruction(MovsdStore({ to: top, from: Xmm0 })))
+	}
+	Ok(falling(items, with_top(state, Number)))
 }
 
 ## `console.log` of the values on top of the stack: each written as node
@@ -1522,7 +2050,7 @@ instruction_items = |site, { instruction, state }| {
 	depth = state.stack_kinds.len()
 	top_place = |down| stack_place(site.code, depth - 1 - down)
 	next_place = stack_place(site.code, depth)
-	if site.at < 2 * site.functions.len() {
+	if site.skipped.contains(site.at) {
 		return Ok(falling([], state))
 	}
 	match instruction {
@@ -1781,11 +2309,11 @@ instruction_items = |site, { instruction, state }| {
 		}
 		LoadBoxed({ slot, name, at: _ }) => {
 			kind = slot_kind(site, { state, slot, name: "`${name}`" })?
-			Ok(falling(load_items(site, { state, slot }), with_top(state, kind)))
+			Ok(falling(boxed_load_items(site, { state, slot }), with_top(state, kind)))
 		}
 		PeekBoxed(slot) => {
 			kind = slot_kind(site, { state, slot, name: "a variable" })?
-			Ok(falling(load_items(site, { state, slot }), with_top(state, kind)))
+			Ok(falling(boxed_load_items(site, { state, slot }), with_top(state, kind)))
 		}
 		StoreLocal(slot) => {
 			after = written_slot(site, { state, slot })?
@@ -1793,14 +2321,14 @@ instruction_items = |site, { instruction, state }| {
 		}
 		SetLocal(slot) | SetBoxed(slot) => {
 			after = written_slot(site, { state, slot })?
-			Ok(falling(store_items(site, { state, slot }), without_top(after, 1)))
+			Ok(falling(boxed_store_items(site, { state, slot }), without_top(after, 1)))
 		}
 		StoreBoxed({ slot, name, kind, at: _ }) =>
 			match kind {
 				Fixed => refusal(site, "the constant `${name}` is assigned, which throws in node")
 				Mutable => {
 					after = written_slot(site, { state, slot })?
-					Ok(falling(store_items(site, { state, slot }), after))
+					Ok(falling(boxed_store_items(site, { state, slot }), after))
 				}
 			}
 		NewBox(slot) =>
@@ -1811,16 +2339,42 @@ instruction_items = |site, { instruction, state }| {
 						slot,
 						Unready,
 					) ?? crash "Lowering.instruction_items: a slot of the frame"
-					Ok(falling([], { ..state, slots }))
+					made =
+						if site.lowering.cells.contains(slot) {
+							[
+								Emit.imm(Rsi, Boxing.undefined_bits),
+								Emit.call(Runtime.new_cell),
+								Emit.store(slot_place(slot), Rax),
+							]
+						} else {
+							[]
+						}
+					Ok(falling(made, { ..state, slots }))
 				}
 			}
-		CopyBox(_) => Ok(falling([], state))
+		CopyBox(slot) =>
+			if site.lowering.cells.contains(slot) {
+				copied = [
+					Emit.load(Rax, slot_place(slot)),
+					Emit.load(Rsi, Emit.mem(Rax, 0)),
+					Emit.call(Runtime.new_cell),
+					Emit.store(slot_place(slot), Rax),
+				]
+				Ok(falling(copied, state))
+			} else {
+				Ok(falling([], state))
+			}
 		LoadBuiltin(place) => builtin_items(site, { state, place })
 		UpdateLocal({ slot, step }) => update_items(site, { state, slot, step })
 		UpdateBoxed({ slot, name, kind, step }) =>
 			match kind {
 				Fixed => refusal(site, "the constant `${name}` is stepped, which throws in node")
-				Mutable => update_items(site, { state, slot, step })
+				Mutable =>
+					if site.lowering.cells.contains(slot) {
+						cell_update_items(site, { state, slot, step })
+					} else {
+						update_items(site, { state, slot, step })
+					}
 			}
 		AppendLocal({ slot, at: _ }) => {
 			held = slot_kind(site, { state, slot, name: "a variable" })?
@@ -1894,6 +2448,18 @@ instruction_items = |site, { instruction, state }| {
 				(Console, "log") => Ok(falling([], with_top(state, Log)))
 				(Array, "push") | (Array, "pop") | (Value, "push") | (Value, "pop") =>
 					Ok(falling([], with_top(state, Method(name))))
+				(Object, _) | (Value, _) =>
+					Ok(
+						falling(
+							[
+								Emit.load(Rdi, top_place(0)),
+								Emit.address_of(Rsi, text_label(site, name)),
+								Emit.call(Runtime.get_property),
+								Emit.store(next_place, Rax),
+							],
+							with_top(state, Value),
+						),
+					)
 				(kind, _) => refusal(
 					site,
 					"the method `${name}` of ${kind_phrase(kind)} is not compiled yet",
@@ -1903,6 +2469,7 @@ instruction_items = |site, { instruction, state }| {
 			match kind_below(state, count) {
 				Log => log_items(site, { state, count })
 				Method(name) => array_method_items(site, { state, name, count })
+				Value => value_call_items(site, { state, count, taken: count + 2 })
 				kind => refusal(site, "a method call of ${kind_phrase(kind)} is not compiled yet")
 			}
 		Call({ count, written: _, at: _ }) => call_items(site, { state, count })
@@ -1933,10 +2500,19 @@ instruction_items = |site, { instruction, state }| {
 				result: GivesNothing,
 			})
 		}
-		MakeClosure({ code: _, captures: _, definition }) => refusal(
-			site,
-			"the function `${definition.unbox().name}` is not declared at the start of its scope",
-		)
+		MakeClosure({ code: made, captures, definition }) =>
+			if definition.unbox().form == MakesInstances {
+				refusal(site, "a class is not compiled yet")
+			} else if site.lowering.statics.contains(made) {
+				Ok(falling([], with_top(state, Function(made))))
+			} else {
+				Ok(
+					falling(
+						record_items(site, { made, captures, place: next_place }),
+						with_top(state, Closure(made)),
+					),
+				)
+			}
 		MissingName({ name, at: _ }) => refusal(
 			site,
 			"`${name}` is declared nowhere, which throws in node",

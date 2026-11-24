@@ -123,6 +123,8 @@ X86 :: [].{
 		Jmp(I32),
 		Jcc({ condition : X86.Condition, offset : I32 }),
 		Call(I32),
+		# A call of the address the register holds (`call r64`).
+		CallReg(X86.Register),
 		Ret,
 		Syscall,
 		MovsdRegReg({ to : X86.Xmm, from : X86.Xmm }),
@@ -335,6 +337,14 @@ X86 :: [].{
 			Call(offset) => X86.append_little_endian(
 				out.append(0xE8),
 				{ value: offset.to_i64(), size: 4 },
+			)
+			CallReg(reg) => append_encoded(
+				out,
+				{ ..integer_layout({
+					opcode: [0xFF],
+					reg: 2,
+					operand: Direct(register_number(reg)),
+				}), wide: Narrow },
 			)
 			Ret => out.append(0xC3)
 			Syscall => out.concat([0x0F, 0x05])
@@ -685,6 +695,8 @@ X86 :: [].{
 	expect hex_of(Jcc({ condition: G, offset: -6 })) == "0f 8f fa ff ff ff"
 	expect hex_of(Call(0)) == "e8 00 00 00 00"
 	expect hex_of(Ret) == "c3"
+	expect hex_of(CallReg(Rax)) == "ff d0"
+	expect hex_of(CallReg(R11)) == "41 ff d3"
 	expect hex_of(Syscall) == "0f 05"
 	expect hex_of(MovsdRegReg({ to: Xmm0, from: Xmm1 })) == "f2 0f 10 c1"
 	expect hex_of(MovsdRegReg({ to: Xmm8, from: Xmm1 })) == "f2 44 0f 10 c1"

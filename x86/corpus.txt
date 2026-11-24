@@ -4,6 +4,8 @@
 03-let-const.js
 04-if-while.js
 05-for.js
+07-counter.js
+14-arrow-functions.js
 19-printing-nested.js
 22-hoisting.js
 25-shared-references.js

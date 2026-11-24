@@ -20,7 +20,7 @@
 use("./executables.shale")
 
 const WHO = "x86/hello.shale"
-const EXPECTS = 109
+const EXPECTS = 112
 const TEXT = "Hello, world!\n"
 const EXPECTED_OUTPUT = "Hello, world!\n"
 const EXPECTED_CODE = 0

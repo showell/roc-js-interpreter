@@ -139,6 +139,16 @@ Runtime :: [].{
 	check_array : Str
 	check_array = "runtime_check_array"
 
+	## The routine that stops the program unless the value in `rax` is a
+	## function. It changes `rcx` alone.
+	check_function : Str
+	check_function = "runtime_check_function"
+
+	## The routine that makes a variable's cell, 8 bytes holding `rsi`: its
+	## address in `rax`. It changes `rax` and `rdi` alone.
+	new_cell : Str
+	new_cell = "runtime_new_cell"
+
 	## The texts the runtime writes, each under its label.
 	Text : [Space, Newline]
 
@@ -315,6 +325,17 @@ texts = [
 		"x86: a string made of an array or an object is not compiled yet\n",
 	),
 	(
+		"runtime_text_text_of_function",
+		"x86: a string made of a function, its source's text, is not compiled yet\n",
+	),
+	(
+		"runtime_text_not_a_function",
+		Str.concat(
+			"x86: a call of a value that is not a function,",
+			" which throws in node, is not compiled yet\n",
+		),
+	),
+	(
 		"runtime_text_add_not_compiled",
 		"x86: `+` of values neither of which is a string, nor both numbers, is not compiled yet\n",
 	),
@@ -482,6 +503,8 @@ write_value_items = {
 		Emit.jcc(E, "runtime_write_inspected"),
 		Emit.cmp_imm(Rcx, Boxing.object_tag),
 		Emit.jcc(E, "runtime_write_inspected"),
+		Emit.cmp_imm(Rcx, Boxing.function_tag),
+		Emit.jcc(E, "runtime_write_inspected"),
 	]
 		.concat(constant({ bits: Boxing.undefined_bits, label: "runtime_text_undefined" }))
 		.concat(constant({ bits: Boxing.null_bits, label: "runtime_text_null" }))
@@ -564,12 +587,16 @@ string_items = {
 			Emit.jcc(B, "runtime_text_of_number"),
 			Emit.cmp_imm(Rcx, Boxing.string_tag),
 			Emit.jcc(E, "runtime_text_of_string"),
+			Emit.cmp_imm(Rcx, Boxing.function_tag),
+			Emit.jcc(E, "runtime_text_of_function"),
 		])
 		.concat(constant({ bits: Boxing.undefined_bits, label: "runtime_text_undefined" }))
 		.concat(constant({ bits: Boxing.null_bits, label: "runtime_text_null" }))
 		.concat(constant({ bits: Boxing.false_bits, label: "runtime_text_false" }))
 		.concat(constant({ bits: Boxing.true_bits, label: "runtime_text_true" }))
 		.concat(stopping_items("runtime_text_text_of_object"))
+		.append(Emit.mark("runtime_text_of_function"))
+		.concat(stopping_items("runtime_text_text_of_function"))
 		.concat(given("runtime_text_undefined"))
 		.concat(given("runtime_text_null"))
 		.concat(given("runtime_text_false"))
@@ -803,7 +830,31 @@ operator_items = {
 		])
 		.concat(answer({ label: "runtime_truthy_yes", value: 1 }))
 		.concat(answer({ label: "runtime_truthy_no", value: 0 }))
-	[add, check, equal, compare, truthy].join()
+	check_function = [Emit.mark(Runtime.check_function)]
+		.concat(tag_load_items(Rax))
+		.concat([
+			Emit.cmp_imm(Rcx, Boxing.function_tag),
+			Emit.jcc(Ne, "runtime_not_a_function_stop"),
+			Emit.ret,
+			Emit.mark("runtime_not_a_function_stop"),
+		])
+		.concat(stopping_items("runtime_text_not_a_function"))
+	cell = [
+		Emit.mark(Runtime.new_cell),
+		Emit.imm(Rdi, 8),
+		Emit.call(Runtime.allocate),
+		Emit.store(Emit.mem(Rax, 0), Rsi),
+		Emit.ret,
+	]
+	[
+		add,
+		check,
+		equal,
+		compare,
+		truthy,
+		check_function,
+		cell,
+	].join()
 }
 
 ## `runtime_get_property`: a string's or an array's `length`.
@@ -1430,6 +1481,8 @@ inspect_items = {
 			Emit.jcc(E, "runtime_inspect_array"),
 			Emit.cmp_imm(Rcx, Boxing.object_tag),
 			Emit.jcc(E, "runtime_inspect_object"),
+			Emit.cmp_imm(Rcx, Boxing.function_tag),
+			Emit.jcc(E, "runtime_inspect_function"),
 			Emit.jmp("runtime_text_of"),
 			Emit.mark("runtime_inspect_number"),
 			Emit.mov(Rax, Rdi),
@@ -1445,6 +1498,15 @@ inspect_items = {
 			Emit.mark("runtime_inspect_object"),
 			Emit.imm(Rdx, 1),
 			Emit.jmp("runtime_inspect_list"),
+			# A function's text is its record's, 8 bytes in, by its distance.
+			Emit.mark("runtime_inspect_function"),
+		])
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.load(Rax, Emit.mem(Rdi, 8)),
+			Emit.plus(Rax, Rdi),
+			Emit.plus_imm(Rax, 8),
+			Emit.ret,
 		])
 	escape_scan =
 		escapes

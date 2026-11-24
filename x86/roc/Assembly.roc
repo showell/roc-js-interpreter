@@ -23,6 +23,10 @@ Assembly :: [].{
 
 		## Bytes placed as they are: a string, a table.
 		Data(List(U8)),
+
+		## 8 bytes holding the label's address less their own, so a record
+		## in the read-only segment can name code with no address fixed.
+		Distance(Str),
 	]
 
 	## The code for `items`, or the first label one names that none marks,
@@ -32,6 +36,7 @@ Assembly :: [].{
 		var $bytes = []
 		var $marks = Dict.empty()
 		var $fixups = []
+		var $distances = []
 		for item in items {
 			match item {
 				Instruction(instruction) => {
@@ -59,6 +64,10 @@ Assembly :: [].{
 					$bytes = X86.append_instruction($bytes, Lea({ to, from: Rip(0) }))
 					$fixups = $fixups.append({ end: $bytes.len(), label })
 				}
+				Distance(label) => {
+					$distances = $distances.append({ start: $bytes.len(), label })
+					$bytes = $bytes.concat(List.repeat(0, 8))
+				}
 				Data(data) => {
 					$bytes = $bytes.concat(data)
 				}
@@ -76,6 +85,24 @@ Assembly :: [].{
 					)
 				}
 				Err(_) => return Err(UnknownLabel(fixup.label))
+			}
+		}
+		for distance in $distances {
+			match $marks.get(distance.label) {
+				Ok(target) => {
+					field = X86.append_little_endian(
+						[],
+						{ value: target.to_i64_wrap() - distance.start.to_i64_wrap(), size: 8 },
+					)
+					for i in 0..<8 {
+						byte = field.get(i) ?? crash "Assembly.assemble: a distance has eight bytes"
+						$bytes = $bytes.set(
+							distance.start + i,
+							byte,
+						) ?? crash "Assembly.assemble: the distance lies inside the code"
+					}
+				}
+				Err(_) => return Err(UnknownLabel(distance.label))
 			}
 		}
 		Ok($bytes)
@@ -106,6 +133,13 @@ Assembly :: [].{
 		Mark("here"),
 		JmpTo("here"),
 	]).map_ok(X86.hex_text) == Ok("e9 fb ff ff ff")
+	expect Assembly.assemble([
+		Mark("m"),
+		Instruction(Ret),
+		Distance("m"),
+		Distance("n"),
+		Mark("n"),
+	]).map_ok(X86.hex_text) == Ok("c3 ff ff ff ff ff ff ff ff 08 00 00 00 00 00 00 00")
 	expect Assembly.assemble([JmpTo("nowhere")]) == Err(UnknownLabel("nowhere"))
 	expect Assembly.assemble([
 		Mark("a"),
