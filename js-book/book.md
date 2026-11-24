@@ -271,11 +271,7 @@ A collection is due when the free list is empty and the heap has reached its thr
 
 Between two instructions every value the program holds is in the machine. The one exception is a builtin that runs a callback, such as `filter` or `sort`: what it keeps across the callback waits on the stack, where the collections inside the callback see it. A live value that names a freed cell stops the run, since it means a root was missed.
 
-## The rules and the host
-
-This chapter covers the rest of the parts around the loop: the two modules every run shares, the host that carries the effects, and the page.
-
-### ValueRules and Events
+## The shared rules
 
 Two modules serve everything that runs a program.
 
@@ -283,7 +279,24 @@ Two modules serve everything that runs a program.
 
 **`Events`** holds the queue of callbacks and its virtual clock (`b69660c4`). A timer's callback, a click, the canvas's next `frame(t)` and a collection `onCollect` hears are each an event, due at a time in milliseconds, run earliest first, and two at one time in the order they were queued. The clock reads 0 while the program runs and moves to each callback's time as it runs, so a program's output is the same on every run and the same as node's.
 
-### The host and its effects
+## A canvas in the browser
+
+### What a program sees
+
+In [the playground](https://roc.lynrummy.com/js/), a program is JavaScript from the subset plus a deliberately small API for one 400 by 400 canvas. It is a toy's API, sized for sketches, games of one screen and demonstrations:
+
+- **Drawing:** `background`, `fill`, `stroke`, `line`, `rect`, `circle`, `ellipse`, `polygon` and `text`, named after p5.js's but a small set of their own, with colors as CSS strings.
+- **A turtle:** `forward`, `back`, `turn`, `penUp`, `penDown` and `goto`.
+- **Input:** `mouseX()`, `mouseY()` and `keyIsDown(key)`, read when called, and `onClick(handler)`.
+- **Time:** `setTimeout`, `setInterval` and their clears, and a `function frame(t)`, which the page calls 30 times a second.
+- **The memory view's hook:** `onCollect(handler)`, which hears each garbage collection.
+- **`console.log`,** which writes under the canvas.
+
+That is the whole of it: a program draws, listens and waits, and the page's DOM, the network and other files stay out of its reach. The playground's "click dots" sample uses most of it:
+
+{{file js/canvas/7-click-dots.js}}
+
+### How an effect travels
 
 The interpreter reaches the world through a host, `Canvas.Host`, a record of four effectful functions:
 
@@ -310,6 +323,21 @@ digraph {
 - **The page's** host (`JsApp.roc`, on the platform in `js/wasm/`) calls into the page's JavaScript while the Roc call runs.
 - **The recording host,** `js-canvas` (`JsCanvas.roc`), writes every effect and every read as a line, for the golden logs.
 - **`js-vm`'s** host prints each log as it is made.
+
+A frame on the page runs from the browser's timer to the paint:
+
+One frame on the page
+```dot
+digraph {
+  rankdir=TB;
+  node [shape=box, style=rounded];
+  tick [label="js_runner.js\nevery 1/30 s"];
+  vm [label="Vm.tick!\nclicks, timers, frame(t)"];
+  emit [label="emit!\na line per effect"];
+  paint [label="js_painter.js\n2D canvas"];
+  tick -> vm -> emit -> paint;
+}
+```
 
 ### The page
 
