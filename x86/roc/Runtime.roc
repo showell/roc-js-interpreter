@@ -10,7 +10,9 @@
 ## runtime's state (the output buffer's fill, then the buffer), `r14` the
 ## heap's end and `r15` the next free byte of it. A routine may change every
 ## other general register but `rbx` and `rbp`, and `xmm0` and `xmm1`; it
-## takes its arguments in `rdi`, `rsi` and `rdx` and answers in `rax`.
+## takes its arguments in `rdi`, `rsi` and `rdx` and answers in `rax`. The
+## routines that call a function (`map` and the rest) change `rbx` too,
+## the closure record a call passes, and every register a function may.
 ##
 ## A number is written as node writes it when it is an integer of at most
 ## 2^53 in size, or NaN, an infinity or -0. Any other number is not written
