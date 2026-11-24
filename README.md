@@ -26,7 +26,7 @@ Both moved here from [roc-apps](https://github.com/showell/roc-apps) with their 
 
 ## Checking it
 
-    shale check.shale          # the Roc recipes, the roots, roc fmt, roc check, the oracle, the canvas samples and x86's hello world
+    shale check.shale          # the Roc recipes, the roots, roc fmt, roc check, js/'s expects, the oracle, the canvas samples, the bytecode dump and x86's hello world
     shale check.shale js=1     # the controls' allocations, in the release and the dev build
     shale js/build.shale       # the playground, built and checked, into the dev channel's /js/
     shale js-book/book.shale   # the book, built and checked, into the dev channel's /js-book/

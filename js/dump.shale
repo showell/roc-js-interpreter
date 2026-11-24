@@ -1,0 +1,44 @@
+-- budget: steps=20000000
+-- This script holds the bytecode dumper (js/roc/JsDump.roc) to one
+-- program's dump, exactly: js/dump/loop.js, compiled by Parser.program_of and
+-- Compile.program as js-vm compiles it, must print js/dump/loop.txt byte for
+-- byte, and exit 0. From the repository's root:
+--
+--   shale js/dump.shale            build js-dump on the dev backend, then compare
+--   shale js/dump.shale freeze=1   write js/dump/loop.txt anew from what it prints now
+--
+-- The program's loop body is the book's line `o.total = o.total + a[i];`
+-- (its Memory strategy chapter), with `o` in slot 0, `a` in 1 and `i` in 2,
+-- so the nine instructions the book gives for it are held here: a change to
+-- the compiler that moves them moves this dump, and the commit that
+-- re-freezes it says why.
+
+const WHO = "js/dump.shale"
+const WANT_DUMP = "js-dump: the bytecode dumper, built here"
+const PROGRAM = "js/dump/loop.js"
+const EXPECTED = "js/dump/loop.txt"
+const FREEZE = arg("freeze", false)
+
+function main()
+  local exe = built_roc(WHO, "js/roc/JsDump.roc", "js-dump", "dev")
+  local r = run({exe, read(PROGRAM)}, {timeout_ms = 60000, whole = 1000000, want = WANT_DUMP})
+  if r.ended ~= "exit" or r.code ~= 0 then fail(WHO .. ": js-dump ended " .. r.ended .. " " .. get(r, "code", "") .. ": " .. r.out) end
+  if FREEZE then
+    replace(EXPECTED, r.out)
+    print("js/dump: froze " .. EXPECTED .. ", " .. #lines(trim(r.out)) .. " lines")
+    return nil
+  end
+  local want = lines(read(EXPECTED))
+  local got = lines(r.out)
+  local n = #want
+  if #got > n then n = #got end
+  for i = 1, n do
+    local w = get(want, i, "(nothing)")
+    local g = get(got, i, "(nothing)")
+    if w ~= g then fail(WHO .. ": " .. PROGRAM .. "'s dump differs from " .. EXPECTED .. " at line " .. i .. ": printed " .. json_write(g) .. ", held " .. json_write(w)) end
+  end
+  print("js/dump: " .. PROGRAM .. "'s bytecode, " .. #lines(trim(r.out)) .. " lines, held exactly to " .. EXPECTED)
+  return nil
+end
+
+main()

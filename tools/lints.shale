@@ -94,16 +94,19 @@ const HELD = {
   ["js/find_calls_nested_three_deep/nested"] = 15,
   ["js/find_names_that_disagree_with_their_types/no_value"] = 1,
   ["js/find_names_that_differ_across_lookalike_modules/twin_name"] = 12,
-  ["js/roc/find_names_and_docs_that_say_too_little/abbreviation"] = 28,
+  -- 30: the 28 at the move, and js/roc/JsDump.roc's IterStart and
+  -- IterNext, Bytecode.Op's own tag names, which its printer must match.
+  ["js/roc/find_names_and_docs_that_say_too_little/abbreviation"] = 30,
   ["js/roc/find_names_and_docs_that_say_too_little/module_doc"] = 1,
   ["js/find_functions_and_parameters_that_dont_earn_their_keep/single"] = 20,
   ["js/find_functions_and_parameters_that_dont_earn_their_keep/fixed"] = 2,
   ["js/find_functions_and_parameters_that_dont_earn_their_keep/constant"] = 1,
-  ["js/find_functions_and_parameters_that_dont_earn_their_keep/dead"] = 2,
+  -- JsVm.roc's, JsCanvas.roc's and JsDump.roc's `main!`, which Roc's
+  -- default platform calls and the recipe doesn't know of (x86's below).
+  ["js/find_functions_and_parameters_that_dont_earn_their_keep/dead"] = 3,
   -- x86/roc/Hello.roc's `main!`, which Roc's default platform calls and the
-  -- recipe doesn't know of: the finding js's two are too, JsVm.roc's and
-  -- JsCanvas.roc's `main!`. It goes when the recipe learns a headerless
-  -- app's entry.
+  -- recipe doesn't know of: the finding js's three are too. It goes when
+  -- the recipe learns a headerless app's entry.
   ["x86/find_functions_and_parameters_that_dont_earn_their_keep/dead"] = 1,
 }
 

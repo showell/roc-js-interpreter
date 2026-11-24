@@ -532,6 +532,7 @@ running).** Each write's cost, at three sizes, in CPU time, so rough:
     shale js/bench.shale       # both builds, then time js/bench/'s programs
     shale js/heaps.shale       # js-vm --opt=speed, then each program's cells, live cells, collections and peak memory
     shale js/canvas.shale      # js-canvas, then hold every canvas sample to its log
+    shale js/dump.shale        # js-dump, then hold js/dump/loop.js's bytecode to js/dump/loop.txt
     shale js/build.shale       # build the page into the dev channel, :9210/js/
 
 Each script but the last takes its commands from tools/roc_build.shale
@@ -559,6 +560,13 @@ program in `js/tests/refused/` names in its first line (`// refused:
 fails unless every program passes.
 
 `js/canvas.shale` is a tier of `check.shale` too.
+
+`js/dump.shale` is one as well. `js-dump "<program>"` (`JsDump.roc`) prints
+the bytecode `Compile.program` makes for a program, an instruction a line,
+each function's code headed by its frame size, how its arguments arrive and
+what its entry does; it runs nothing. The script holds one program's dump
+exactly, the loop whose body the book's Memory strategy chapter walks
+through, and `freeze=1` writes it anew.
 
 `js/build.shale` builds `JsApp.roc` into a wasm32 archive, links it with
 Zig 0.16 and `js/wasm/host.zig` into `js.wasm`, writes `js_samples.js` from

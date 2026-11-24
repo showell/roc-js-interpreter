@@ -1,0 +1,36 @@
+code 0 (main): frame 3, arguments Each(0), entry []
+0  NewObject
+1  PushNumber(0)
+2  SetField("total")
+3  SetLocal(0)
+4  PushNumber(1)
+5  PushNumber(2)
+6  PushNumber(3)
+7  MakeArray(3)
+8  SetLocal(1)
+9  PushNumber(0)
+10  SetLocal(2)
+11  LoadLocal(2)
+12  LoadLocal(1)
+13  GetProperty("length")
+14  Binary(Less)
+15  JumpIfFalse(12)
+16  LoadLocal(0)
+17  LoadLocal(0)
+18  GetProperty("total")
+19  LoadLocal(1)
+20  LoadLocal(2)
+21  GetIndex
+22  Binary(Add)
+23  SetProperty("total")
+24  Pop
+25  UpdateLocal(2, 1, Postfix)
+26  Pop
+27  Loop(17)
+28  LoadBuiltin(0)
+29  MethodLookup("log")
+30  LoadLocal(0)
+31  GetProperty("total")
+32  CallMethod("log", 1)
+33  Pop
+34  Finish
