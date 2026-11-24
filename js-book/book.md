@@ -1,10 +1,10 @@
 # A JavaScript Interpreter in Roc
 
-A small book about roc-apps' `js/` project: a bytecode VM for a subset of JavaScript, written in Roc, and what building it taught about Roc's values, its two backends and its build times.
+A small book about [roc-js-interpreter](https://github.com/showell/roc-js-interpreter): a bytecode VM for a subset of JavaScript, written in Roc, and what building it taught about Roc's values, its two backends and its build times.
 
 ## Introduction
 
-The `js/` project in [roc-apps](https://github.com/showell/roc-apps) is an interpreter for a subset of JavaScript, written in [Roc](https://www.roc-lang.org/). It runs as a command-line program, `js-vm`, and in a browser playground at [roc.lynrummy.com/js/](https://roc.lynrummy.com/js/), where a program draws on a canvas as it runs and a memory view shows its heap over time.
+The `js/` folder of roc-js-interpreter holds an interpreter for a subset of JavaScript, written in [Roc](https://www.roc-lang.org/). It runs as a command-line program, `js-vm`, and in a browser playground at [roc.lynrummy.com/js/](https://roc.lynrummy.com/js/), where a program draws on a canvas as it runs and a memory view shows its heap over time.
 
 This book is for a reader who knows programming and is new to this codebase, and above all for one curious about writing a language's runtime in a language that has only values. AI coding agents (Claude) wrote the code, with human supervision, over two days, 2026-11-23 and 2026-11-24.
 
@@ -22,7 +22,7 @@ Every program in the subset is real JavaScript, so node is a free oracle. `js/or
 
 ### Where the numbers come from
 
-Each number in this book comes from a commit message in roc-apps, cited by its short hash, from `js/README.md`, or from another file of the repository, named where it is used. Code is quoted from the repository as it stands when the book is built.
+The project began as a folder of [roc-apps](https://github.com/showell/roc-apps) and moved to its own repository with its history on 2026-11-24, so a commit from before then may name a file that only roc-apps holds. Each number in this book comes from a commit message, cited by its short hash (a commit of roc-js-interpreter, or one of roc-apps' linked there), from `js/README.md`, or from another file of the repository, named where it is used. Code is quoted from the repository as it stands when the book is built.
 
 {{chapter How it got here}} is the project's short history. The design starts at {{chapter The pipeline and the machine}}.
 
@@ -277,7 +277,7 @@ roc-apps' `CLAUDE.md` (section 9) and `js/README.md` give each build its job. Sc
 
 ## Build times
 
-RC1's release builds were the project's slowest loop. The walker's release build grew with the language: 65 s when the controls first landed (`84263a4b`), 686 s after the language gaps (`f0837ff4`), and 1,052 s for `js-run` at roc-apps' commit tagged `rc1-slow-release-build`, for about 10,000 lines of Roc, against under a second on dev (the tag's message). roc-apps' commit [`762c7d3a`](https://github.com/showell/roc-apps/commit/762c7d3a), from before this repository had its own, gives the JavaScript tier's release build as 11 to 17 minutes and puts most of the time in RC1's SpecConstr pass.
+RC1's release builds were the project's slowest loop. The walker's release build grew with the language: 65 s when the controls first landed (`84263a4b`), 686 s after the language gaps (`f0837ff4`), and 1,052 s for `js-run` at roc-apps' commit tagged `rc1-slow-release-build`, for about 10,000 lines of Roc, against under a second on dev (the tag's message). roc-apps' commit [`762c7d3a`](https://github.com/showell/roc-apps/commit/762c7d3a), on the tier's gate while it was roc-apps', gives the JavaScript tier's release build as 11 to 17 minutes and puts most of the time in RC1's SpecConstr pass.
 
 The VM's release build was 670 s in its first round (`29cb46ec`), when it still imported the walker's module for the value rules. After the value rules moved into a module of their own and the VM dropped its import of the walker (`d8d6b7fe`), it was 84 s (`15686d94`, `d7ce2f2c`), while `js-run` still took 481 s. The drop came after the split, and the commits leave the cause unstated. Later figures are 110 s after the collector (`f9188b2f`) and 91 s in `js/README.md`'s status line.
 
