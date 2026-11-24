@@ -135,13 +135,30 @@ A variable that a closure may capture lives in a box: a heap cell, `Variable`, t
 
 So everything a program holds is data: the stack, the frames and the cells. That is what lets a collector find it all.
 
-## The collector, the rules and the host
+## The garbage collector
 
-This chapter covers the parts around the loop: the collector that frees the heap's cells, the two modules every run shares, the host that carries the effects, and the page.
+### What it does
 
-### The collector and its roots
+`Collector.roc` is the VM's garbage collector, a precise mark and sweep. The VM names its roots, `marked` follows every reference from them through the cells, and `swept` turns each unmarked cell into a `Freed` cell linked into the free list, which `Heap.allocated` takes from before it grows the heap. The collector leaves every live cell where it is: a JavaScript reference is a cell's index, and a live cell keeps its index, so every reference stays valid across a collection.
 
-`Collector.roc` is a precise mark and sweep that keeps every live cell where it is. The VM names its roots, `marked` follows every reference from them through the cells, and `swept` turns each unmarked cell into a `Freed` cell linked into the free list, which `Heap.allocated` takes from before it grows the heap. A live cell keeps its place, so a reference stays the index it was.
+The sweep is where memory comes back:
+
+{{lines js/roc/Collector.roc from "swept : " to "{ cells: $cells, free: $free, live: $live }"}}
+
+Writing `Freed` over a garbage cell drops the cell that was there, and Roc's reference counting returns what it held (an object's properties, an array's items, a closure's boxes) to the allocator at that write. The heap's list keeps its length; its freed places are taken again before it grows. That is how the programs in `js/heaps/` went from peaks of 40 to 164 MB to about 4 MB each (`62110109`).
+
+### Around the copy cliff
+
+The collector is shaped around Roc's copy cliff, where a write to a list that something else still refers to copies the whole list first (`docs/roc-notes.md` in roc-apps, "Speed and copying"):
+
+- **The marks are a list of their own.** `marked` reads the cells and writes only its marks and its stack of cells waiting to be visited, each in place, so every list it writes is its own. A mark bit inside each cell would make the first mark copy the heap.
+- **The sweep owns the cells.** `collected` takes the cells out of the machine with `lent` before it calls `swept`, so each `set` in the sweep is the list's only reference and writes in place:
+
+{{function js/roc/Vm.roc collected}}
+
+- **The waiting stack reuses its places.** A visited cell's place is written over by the next one pushed, so the stack grows only to the mark's deepest point.
+
+### Its roots, and when it runs
 
 The roots are the machine's data:
 
@@ -152,6 +169,10 @@ A collection is due when the free list is empty and the heap has reached its thr
 {{function js/roc/Vm.roc is_collection_due}}
 
 Between two instructions every value the program holds is in the machine. The one exception is a builtin that runs a callback, such as `filter` or `sort`: what it keeps across the callback waits on the stack, where the collections inside the callback see it. A live value that names a freed cell stops the run, since it means a root was missed.
+
+## The rules and the host
+
+This chapter covers the rest of the parts around the loop: the two modules every run shares, the host that carries the effects, and the page.
 
 ### ValueRules and Events
 
