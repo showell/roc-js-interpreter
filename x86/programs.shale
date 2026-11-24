@@ -117,6 +117,7 @@ function corpus_check(exe, dir)
   local all = js_files("js/tests")
   for p in all do
     local why = held_to_node(exe, dir, p)
+    yield()
     local name = basename(p)
     if why == nil then
       push(matched, name)
@@ -149,10 +150,12 @@ function main()
   for p in held do
     local why = held_to_node(exe, dir, p)
     if why ~= nil then push(wrong, p .. ": " .. why) end
+    yield()
   end
   for p in refused do
     local why = held_to_refusal(exe, dir, p)
     if why ~= nil then push(wrong, p .. ": " .. why) end
+    yield()
   end
   if #wrong > 0 then fail(WHO .. ": " .. #wrong .. " of " .. (#held + #refused) .. " programs failed:\n" .. join(wrong, "\n")) end
   local corpus = corpus_check(exe, dir)

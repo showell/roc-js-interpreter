@@ -74,10 +74,14 @@ Lowering :: [].{
 							$called = with_call_kinds($called, call)
 						}
 					}
-					Err(refused) =>
+					Err({ refused, calls }) => {
+						for call in calls {
+							$called = with_call_kinds($called, call)
+						}
 						if $first_refusal == Ok({}) {
 							$first_refusal = Err(refused)
 						}
+					}
 				}
 			}
 			if $found == $returns and $called == $parameters {
@@ -445,25 +449,33 @@ CodeItems : {
 ## One function's machine code: its entry, which makes its frame and
 ## copies its arguments to their slots, then each instruction's. A loop
 ## whose body gives a variable another kind than it had at the loop's head
-## widens the head to `Value` and lowers the function again.
-code_items : Context -> Try(CodeItems, [Refused(Str)])
+## widens the head to `Value` and lowers the function again. A function
+## refused still gives the calls it made before the refusal, so the
+## functions it calls learn their parameters' kinds.
+code_items : Context -> Try(CodeItems, { refused : [Refused(Str)], calls : List(CallKinds) })
 code_items = |lowering| {
 	var $heads = Dict.empty()
 	for _ in 0..<16 {
-		match code_walk(lowering, $heads)? {
-			Walked(done) => return Ok(done)
-			Widened({ at, state }) => {
+		match code_walk(lowering, $heads) {
+			Ok(Walked(done)) => return Ok(done)
+			Ok(Widened({ at, state })) => {
 				$heads = $heads.insert(at, state)
 			}
+			Ok(Halted(halted)) => return Err(halted)
+			Err(refused) => return Err({ refused, calls: [] })
 		}
 	}
-	Err(code_refusal(lowering, LoopChangesKinds(0)))
+	Err({ refused: code_refusal(lowering, LoopChangesKinds(0)), calls: [] })
 }
 
 ## One pass of `code_items` with the loop heads widened so far.
 code_walk : Context,
 Dict(U64, State) -> Try(
-	[Walked(CodeItems), Widened({ at : U64, state : State })],
+	[
+		Walked(CodeItems),
+		Widened({ at : U64, state : State }),
+		Halted({ refused : [Refused(Str)], calls : List(CallKinds) }),
+	],
 	[Refused(Str)],
 )
 code_walk = |lowering, heads| {
@@ -514,10 +526,13 @@ code_walk = |lowering, heads| {
 					Ok(call) => $calls.append(call)
 					Err(NoCall) => $calls
 				}
-				lowered = instruction_items(
+				lowered = match instruction_items(
 					{ lowering, code, at, functions },
 					{ instruction, state },
-				)?
+				) {
+					Ok(done) => done
+					Err(refused) => return Ok(Halted({ refused, calls: $calls }))
+				}
 				$body = $body.concat(lowered.statements)
 				$flowing = match lowered.falls {
 					Falls(next) => {
@@ -1052,7 +1067,18 @@ binary_items = |site, { state, operator }| {
 				),
 			)
 		}
-		(Remainder, _) => refusal(site, "`%` is not compiled yet")
+		(Remainder, _) if is_numeric(kinds.0) and is_numeric(kinds.1) =>
+			Ok(
+				falling(
+					[
+						Emit.load(Rdi, left),
+						Emit.load(Rsi, right),
+						Emit.call(Runtime.remainder),
+						Emit.store(left, Rax),
+					],
+					with_top(without_top(state, 2), Number),
+				),
+			)
 		(Power, _) => refusal(site, "`**` is not compiled yet")
 		_ => {
 			named = Str.inspect(operator)
@@ -1652,6 +1678,46 @@ instruction_items = |site, { instruction, state }| {
 				}
 				kind => refusal(site, "an index of ${kind_phrase(kind)} written")
 			}
+		IterStart(_) =>
+			match kind_below(state, 0) {
+				Array | Value =>
+					Ok(
+						falling(
+							[Emit.load(Rax, top_place(0)), Emit.call(Runtime.check_array)],
+							with_top(without_top(state, 1), Array),
+						),
+					)
+				kind => refusal(site, "a `for ... of` over ${kind_phrase(kind)}")
+			}
+		IterNext({ slot, exit }) => {
+			target = forward(site, exit)
+			stepped = [
+				Emit.load(Rdi, slot_place(slot)),
+				Emit.load(Rsi, slot_place(slot + 1)),
+				Emit.call(Runtime.next_item),
+				Emit.test(Rdx, Rdx),
+				Emit.jcc(E, place_label(site.lowering, target)),
+				Emit.store(next_place, Rax),
+				Instruction(MovsdLoad({ to: Xmm0, from: slot_place(slot + 1) })),
+				# 1.0, as a double's bits.
+				Emit.imm(Rax, 0x3FF0000000000000),
+				Emit.to_xmm(Xmm1, Rax),
+				Instruction(
+					Sse({
+						operation: Addsd,
+						to: Xmm0,
+						from: Xmm1,
+					}),
+				),
+				Instruction(MovsdStore({ to: slot_place(slot + 1), from: Xmm0 })),
+			]
+			Ok({
+				statements: stepped,
+				falls: Falls(with_top(state, Value)),
+				branch: Branch({ target, state }),
+				result: GivesNothing,
+			})
+		}
 		PushUndefined => Ok(
 			falling(
 				constant_items({ bits: Boxing.undefined_bits.to_u64_wrap(), to: next_place }),

@@ -1,6 +1,8 @@
 # The programs of js/tests/ whose executables print what node prints,
 # held exactly by x86/programs.shale.
 01-hello.js
+03-let-const.js
+04-if-while.js
 05-for.js
 19-printing-nested.js
 22-hoisting.js

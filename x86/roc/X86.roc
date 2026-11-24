@@ -95,6 +95,11 @@ X86 :: [].{
 		# rdx:rax divided by the register, unsigned: the quotient in rax, the
 		# remainder in rdx.
 		Div(X86.Register),
+		# rdx:rax divided by the register, signed: the quotient in rax, the
+		# remainder, with the dividend's sign, in rdx.
+		Idiv(X86.Register),
+		# rax's sign copied through rdx, for a signed divide.
+		Cqo,
 		Neg(X86.Register),
 		# The byte register set to 1 when the condition holds, else to 0.
 		Setcc({ condition : X86.Condition, to : X86.ByteRegister }),
@@ -244,6 +249,15 @@ X86 :: [].{
 					operand: Direct(register_number(reg)),
 				}),
 			)
+			Idiv(reg) => append_encoded(
+				out,
+				integer_layout({
+					opcode: [0xF7],
+					reg: 7,
+					operand: Direct(register_number(reg)),
+				}),
+			)
+			Cqo => out.concat([0x48, 0x99])
 			Neg(reg) => append_encoded(
 				out,
 				integer_layout({
@@ -606,6 +620,9 @@ X86 :: [].{
 	expect hex_of(Imul({ to: R8, from: R15 })) == "4d 0f af c7"
 	expect hex_of(Div(R8)) == "49 f7 f0"
 	expect hex_of(Div(Rcx)) == "48 f7 f1"
+	expect hex_of(Idiv(R9)) == "49 f7 f9"
+	expect hex_of(Idiv(Rcx)) == "48 f7 f9"
+	expect hex_of(Cqo) == "48 99"
 	expect hex_of(Neg(Rax)) == "48 f7 d8"
 	expect hex_of(Neg(R11)) == "49 f7 db"
 	expect hex_of(Setcc({ condition: E, to: Al })) == "0f 94 c0"

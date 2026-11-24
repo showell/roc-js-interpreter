@@ -123,6 +123,22 @@ Runtime :: [].{
 	pop : Str
 	pop = "runtime_pop"
 
+	## The routine that gives `rdi % rsi` of two whole numbers of at most
+	## 2^53 in size, and stops for any other.
+	remainder : Str
+	remainder = "runtime_remainder"
+
+	## The routine that gives a `for ... of`'s next item: of the array `rdi`
+	## at the place `rsi` (a number), the item in `rax` and 1 in `rdx`, or 0
+	## in `rdx` past the end.
+	next_item : Str
+	next_item = "runtime_next_item"
+
+	## The routine that stops the program unless the value in `rax` is an
+	## array. It changes `rcx` alone.
+	check_array : Str
+	check_array = "runtime_check_array"
+
 	## The texts the runtime writes, each under its label.
 	Text : [Space, Newline]
 
@@ -182,6 +198,7 @@ Runtime :: [].{
 		property_items,
 		container_items,
 		inspect_items,
+		loop_items,
 	]
 		.join()
 		.concat(text_statements)
@@ -249,6 +266,14 @@ texts = [
 	("runtime_text_no_heap", "x86: the heap could not be mapped\n"),
 	("runtime_text_length", "length"),
 	("runtime_text_zero", "0"),
+	(
+		"runtime_text_remainder",
+		"x86: `%` of numbers that are not whole numbers of at most 2^53 is not compiled yet\n",
+	),
+	(
+		"runtime_text_not_iterable",
+		"x86: a `for ... of` over a value that is not an array is not compiled yet\n",
+	),
 	("runtime_text_empty_array", "[]"),
 	("runtime_text_empty_object", "{}"),
 	("runtime_text_deep_array", "[Array]"),
@@ -1878,4 +1903,90 @@ list_items = {
 		stopping_items("runtime_text_columns"),
 	]
 		.join()
+}
+
+## The statements that leave the number in `reg`, as a whole number of at
+## most 2^53 in size, in `to`, or stop the program as `%` does. They
+## change `rcx`.
+whole_number_items : { reg : X86.Register, to : X86.Register } -> List(Assembly.Statement)
+whole_number_items = |{ reg, to }| {
+	label = "runtime_remainder_stop"
+	[
+		Emit.to_xmm(Xmm0, reg),
+		Instruction(Cvttsd2si({ to, from: Xmm0 })),
+		Instruction(Cvtsi2sd({ to: Xmm1, from: to })),
+		Instruction(Ucomisd({ left: Xmm0, right: Xmm1 })),
+		Emit.jcc(P, label),
+		Emit.jcc(Ne, label),
+		Emit.imm(Rcx, 9007199254740992),
+		Emit.cmp(to, Rcx),
+		Emit.jcc(G, label),
+		Emit.imm(Rcx, -9007199254740992),
+		Emit.cmp(to, Rcx),
+		Emit.jcc(L, label),
+	]
+}
+
+## `runtime_remainder`, by `idiv`: the remainder has the dividend's sign,
+## and a zero one is -0 when the dividend is negative; `% 0` is NaN.
+## `runtime_next_item` and `runtime_check_array`, for `for ... of`.
+loop_items : List(Assembly.Statement)
+loop_items = {
+	remainder = [Emit.mark(Runtime.remainder)]
+		.concat(unless_number_items({ reg: Rdi, label: "runtime_not_a_number_stop" }))
+		.concat(unless_number_items({ reg: Rsi, label: "runtime_not_a_number_stop" }))
+		.concat(whole_number_items({ reg: Rdi, to: R8 }))
+		.concat(whole_number_items({ reg: Rsi, to: R9 }))
+		.concat([
+			Emit.test(R9, R9),
+			Emit.jcc(E, "runtime_remainder_not_a_number"),
+			Emit.mov(Rax, R8),
+			Instruction(Cqo),
+			Instruction(Idiv(R9)),
+			Emit.test(Rdx, Rdx),
+			Emit.jcc(E, "runtime_remainder_zero"),
+			Instruction(Cvtsi2sd({ to: Xmm0, from: Rdx })),
+			Instruction(MovqFromXmm({ to: Rax, from: Xmm0 })),
+			Emit.ret,
+			Emit.mark("runtime_remainder_zero"),
+			Emit.zero(Rax),
+			Emit.test(Rdi, Rdi),
+			Emit.jcc(Ns, "runtime_remainder_done"),
+			Emit.imm(Rax, (0x8000000000000000).to_i64_wrap()),
+			Emit.mark("runtime_remainder_done"),
+			Emit.ret,
+			Emit.mark("runtime_remainder_not_a_number"),
+			Emit.imm(Rax, 0x7FF8000000000000),
+			Emit.ret,
+			Emit.mark("runtime_remainder_stop"),
+		])
+		.concat(stopping_items("runtime_text_remainder"))
+	next_item = [Emit.mark(Runtime.next_item)]
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.to_xmm(Xmm0, Rsi),
+			Instruction(Cvttsd2si({ to: Rcx, from: Xmm0 })),
+			Emit.load(Rdx, Emit.mem(Rdi, 0)),
+			Emit.cmp(Rcx, Rdx),
+			Emit.jcc(Ae, "runtime_next_item_none"),
+		])
+		.concat(item_address_items)
+		.concat([
+			Emit.load(Rax, Emit.mem(R8, 0)),
+			Emit.imm(Rdx, 1),
+			Emit.ret,
+			Emit.mark("runtime_next_item_none"),
+			Emit.zero(Rdx),
+			Emit.ret,
+		])
+	check_array = [Emit.mark(Runtime.check_array)]
+		.concat(tag_load_items(Rax))
+		.concat([
+			Emit.cmp_imm(Rcx, Boxing.array_tag),
+			Emit.jcc(Ne, "runtime_not_iterable"),
+			Emit.ret,
+			Emit.mark("runtime_not_iterable"),
+		])
+		.concat(stopping_items("runtime_text_not_iterable"))
+	[remainder, next_item, check_array].join()
 }
