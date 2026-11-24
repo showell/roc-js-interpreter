@@ -277,11 +277,33 @@ roc-apps' `CLAUDE.md` (section 9) and `js/README.md` give each build its job. Sc
 
 ## Build times
 
-RC1's release builds were the project's slowest loop. The walker's release build grew with the language: 65 s when the controls first landed (`84263a4b`), 686 s after the language gaps (`f0837ff4`), and 1,052 s for `js-run` at roc-apps' commit tagged `rc1-slow-release-build`, for about 10,000 lines of Roc, against under a second on dev (the tag's message). roc-apps' commit [`762c7d3a`](https://github.com/showell/roc-apps/commit/762c7d3a), on the tier's gate while it was roc-apps', gives the JavaScript tier's release build as 11 to 17 minutes and puts most of the time in RC1's SpecConstr pass.
+RC1's release builds were the project's slowest loop, against under a second for a dev build of the same code (the message of roc-apps' tag `rc1-slow-release-build`). The walker's release build grew with the language:
 
-The VM's release build was 670 s in its first round (`29cb46ec`), when it still imported the walker's module for the value rules. After the value rules moved into a module of their own and the VM dropped its import of the walker (`d8d6b7fe`), it was 84 s (`15686d94`, `d7ce2f2c`), while `js-run` still took 481 s. The drop came after the split, and the commits leave the cause unstated. Later figures are 110 s after the collector (`f9188b2f`) and 91 s in `js/README.md`'s status line.
+| the walker's release build | time | source |
+|---|---|---|
+| when the controls first landed | 65 s | `84263a4b` |
+| after the language gaps | 686 s | `f0837ff4` |
+| `js-run`, about 10,000 lines of Roc | 1,052 s | roc-apps' tag `rc1-slow-release-build` |
+| the JavaScript tier, most of it in RC1's SpecConstr pass | 11 to 17 min | roc-apps' [`762c7d3a`](https://github.com/showell/roc-apps/commit/762c7d3a) |
 
-The interpreter works RC1's release pipeline harder than most Roc projects do. Jack Scully profiled the compiler on this code at roc-apps' [`762c7d3a`](https://github.com/showell/roc-apps/commit/762c7d3a) and opened three pull requests against RC1's SpecConstr pass: [#13408](https://github.com/roc-lang/roc/pull/13408) puts cheap checks ahead of its inlining queries, [#13409](https://github.com/roc-lang/roc/pull/13409) restructures the walk those queries run, and [#13410](https://github.com/roc-lang/roc/pull/13410) stops a recursive function from unrolling into its own body. On his machine, `js-run`'s release build took 271 s before them; each alone brought it to 166 s, 63 s and 83 s, and #13410 also ran `fib.js` 12% and `loops.js` 14% faster (the pull requests' descriptions). He put the three together at about 12 times faster for this repository's code specifically (Zulip, #off topic > LLVM). They are expected to merge after Roc 0.10, so every build time above is RC1's own.
+The VM's first round still imported the walker's module for the value rules. After the value rules moved into a module of their own and the VM dropped that import (`d8d6b7fe`), its build fell to an eighth, while `js-run` still took 481 s. The commits leave the cause of the drop unstated.
+
+| the VM's release build | time | source |
+|---|---|---|
+| the first round, importing the walker | 670 s | `29cb46ec` |
+| after the import was dropped | 84 s | `15686d94`, `d7ce2f2c` |
+| after the collector | 110 s | `f9188b2f` |
+| today | 91 s | `js/README.md`'s status line |
+
+The interpreter works RC1's release pipeline harder than most Roc projects do. Jack Scully profiled the compiler on this code at roc-apps' [`762c7d3a`](https://github.com/showell/roc-apps/commit/762c7d3a) and opened three pull requests against RC1's SpecConstr pass. Each is measured alone, on his machine, against `js-run`'s 271 s release build before them (the pull requests' descriptions):
+
+| pull request | what it changes | `js-run`'s release build |
+|---|---|---|
+| [#13408](https://github.com/roc-lang/roc/pull/13408) | puts cheap checks ahead of the pass's inlining queries | 166 s |
+| [#13409](https://github.com/roc-lang/roc/pull/13409) | restructures the walk those queries run | 63 s |
+| [#13410](https://github.com/roc-lang/roc/pull/13410) | stops a recursive function from unrolling into its own body; `fib.js` runs 12% faster and `loops.js` 14% | 83 s |
+
+He put the three together at about 12 times faster for this repository's code specifically (Zulip, #off topic > LLVM). They are expected to merge after Roc 0.10, so every build time above is RC1's own.
 
 ## How it is tested
 
