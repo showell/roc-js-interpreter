@@ -29,7 +29,13 @@
 
 const WANT_RUN = "js-vm: the interpreter under test, built here"
 const WANT_NODE = "js-oracle: node is the subset's oracle"
-const RUN_MS = 20000
+-- Each program, under node and under js-vm, may use RUN_CPU_MS of CPU: a
+-- budget of CPU, not of wall time, holds on a busy box, where a program's
+-- wall time grows with the load. One over it stops the run, naming the
+-- program (`budget cpu`). RUN_MS is the wall-clock backstop for a program
+-- that hangs without using CPU, far above any program's time.
+const RUN_CPU_MS = 20000
+const RUN_MS = 300000
 
 const ONLY = arg("only", "")
 const COLLECT = arg("collect", "doubling")
@@ -106,11 +112,11 @@ function first_difference(want, got)
   return "the same lines"
 end
 
--- js-vm on one program's text.
-function js_run(exe, src)
+-- js-vm on one program's text; `name` names it in a stop on the CPU budget.
+function js_run(exe, src, name)
   local argv = {exe, src}
   for a in COLLECT_ARGUMENTS do push(argv, a) end
-  return run(argv, {timeout_ms = RUN_MS, whole = 4000000, want = WANT_RUN})
+  return run(argv, {timeout_ms = RUN_MS, cpu_budget_ms = RUN_CPU_MS, stage = "js-vm " .. name, whole = 4000000, want = WANT_RUN})
 end
 
 function grade_oracle(exe)
@@ -120,8 +126,8 @@ function grade_oracle(exe)
   for f in glob("js/tests/*.js") do
     if ONLY == "" or starts_with(basename(f), ONLY) then
       n = n + 1
-      local node = run({"node", real(f)}, {timeout_ms = RUN_MS, whole = 4000000, want = WANT_NODE})
-      local mine = js_run(exe, read(f))
+      local node = run({"node", real(f)}, {timeout_ms = RUN_MS, cpu_budget_ms = RUN_CPU_MS, stage = "node " .. basename(f), whole = 4000000, want = WANT_NODE})
+      local mine = js_run(exe, read(f), basename(f))
       node.out = uncaught_as_one_line(node.out, real(f))
       local want = transcript(node)
       local got = transcript(mine)
@@ -148,7 +154,7 @@ function grade_refused(exe)
       local first = lines(src)[1]
       local m = re_find(first, "^// refused: (.+)$")
       if m == nil then fail("js/oracle.shale: " .. f .. " has no first line `// refused: <text>`") end
-      local mine = js_run(exe, src)
+      local mine = js_run(exe, src, "refused/" .. basename(f))
       local said = lines(trim(mine.out))
       local last = get(said, #said, "")
       if mine.ended == "exit" and mine.code == 1 and starts_with(last, "js: ") and contains(last, m.group) then
