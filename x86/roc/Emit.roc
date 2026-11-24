@@ -45,6 +45,9 @@ Emit :: [].{
 	byte_load : X86.Register, X86.Mem -> Assembly.Statement
 	byte_load = |to, from| Instruction(MovzxByteLoad({ to, from }))
 
+	byte_store : X86.Mem, X86.ByteRegister -> Assembly.Statement
+	byte_store = |to, from| Instruction(MovByteStore({ to, from }))
+
 	lea : X86.Register, X86.Mem -> Assembly.Statement
 	lea = |to, from| Instruction(Lea({ to, from }))
 

@@ -1,0 +1,9 @@
+# The programs of js/tests/ whose executables print what node prints,
+# held exactly by x86/programs.shale.
+01-hello.js
+05-for.js
+19-printing-nested.js
+22-hoisting.js
+25-shared-references.js
+29-linked-list.js
+31-matrix.js

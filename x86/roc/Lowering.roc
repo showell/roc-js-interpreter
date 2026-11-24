@@ -819,7 +819,7 @@ truth_items = |site, state| {
 					Emit.test(Rax, Rax),
 				])
 			} else {
-				refusal(site, "a test of a ${kind_text(kind)}")
+				refusal(site, "a test of ${kind_phrase(kind)}")
 			}
 	}
 }
@@ -1011,7 +1011,7 @@ binary_items = |site, { state, operator }| {
 					)
 				Err(Unadded) => refusal(
 					site,
-					"`+` of a ${kind_text(kinds.0)} and a ${kind_text(kinds.1)} isn't compiled yet",
+					"`+` of ${kind_phrase(kinds.0)} and ${kind_phrase(kinds.1)} isn't compiled",
 				)
 			}
 		(Subtract, _)
@@ -1056,7 +1056,7 @@ binary_items = |site, { state, operator }| {
 		(Power, _) => refusal(site, "`**` is not compiled yet")
 		_ => {
 			named = Str.inspect(operator)
-			operands = "a ${kind_text(kinds.0)} and a ${kind_text(kinds.1)}"
+			operands = "${kind_phrase(kinds.0)} and ${kind_phrase(kinds.1)}"
 			refusal(site, "`${named}` of ${operands} is not compiled yet")
 		}
 	}
@@ -1114,7 +1114,7 @@ dynamic_equality_items = |site, { state, operator, kinds }| {
 	right = stack_place(site.code, state.stack_kinds.len() - 1)
 	(one, other) = kinds
 	if !is_value_kind(one) or !is_value_kind(other) {
-		return refusal(site, "`===` of a ${kind_text(one)} and a ${kind_text(other)}")
+		return refusal(site, "`===` of ${kind_phrase(one)} and ${kind_phrase(other)}")
 	}
 	flipped = match operator {
 		StrictNotEqual => [
@@ -1162,6 +1162,14 @@ count_text = |count, noun|
 		"1 ${noun}"
 	} else {
 		"${count.to_str()} ${noun}s"
+	}
+
+## A kind's words with their article: `a number`, `an array`.
+kind_phrase : Kind -> Str
+kind_phrase = |kind|
+	match kind {
+		Array | Object | Undefined => "an ${kind_text(kind)}"
+		_ => "a ${kind_text(kind)}"
 	}
 
 kind_text : Kind -> Str
@@ -1273,7 +1281,7 @@ unary_items = |site, { state, operator }| {
 		}
 		(_, kind) => refusal(
 			site,
-			"`${Str.inspect(operator)}` of a ${kind_text(kind)} is not compiled yet",
+			"`${Str.inspect(operator)}` of ${kind_phrase(kind)} is not compiled yet",
 		)
 	}
 }
@@ -1284,7 +1292,7 @@ call_items : Site, { state : State, count : U64 } -> Try(Lowered, [Refused(Str)]
 call_items = |site, { state, count }| {
 	made = match kind_below(state, count) {
 		Function(index) => index
-		kind => return refusal(site, "a call of a ${kind_text(kind)}")
+		kind => return refusal(site, "a call of ${kind_phrase(kind)}")
 	}
 	callee = site.lowering.program.codes.get(made) ?? crash "Lowering.call_items: a function's code"
 	parameters = match callee.arguments {
@@ -1352,7 +1360,7 @@ log_items = |site, { state, count }| {
 				Instruction(MovRegMem({ to: Rdi, from: place })),
 				CallTo(Runtime.write_value),
 			]
-			kind => return refusal(site, "console.log of a ${kind_text(kind)} is not compiled yet")
+			kind => return refusal(site, "console.log of ${kind_phrase(kind)} is not compiled yet")
 		}
 		$items = $items.concat(written)
 	}
@@ -1403,6 +1411,46 @@ test_jump_items = |site, { state, skip, condition, kept }| {
 	})
 }
 
+## An array's `push` of each argument in turn, its answer the length
+## after the last, or its `pop`: the receiver lies below the method looked
+## up, and the answer takes its place.
+array_method_items : Site,
+{
+	state : State,
+	name : Str,
+	count : U64,
+} -> Try(Lowered, [Refused(Str)])
+array_method_items = |site, { state, name, count }| {
+	receiver = stack_place(site.code, state.stack_kinds.len() - count - 2)
+	base = state.stack_kinds.len() - count
+	after = |kind| with_top(without_top(state, count + 2), kind)
+	match (name, count) {
+		("push", given) if given > 0 => {
+			var $pushed = []
+			for item in 0..<given {
+				$pushed = $pushed.concat([
+					Emit.load(Rdi, receiver),
+					Emit.load(Rsi, stack_place(site.code, base + item)),
+					Emit.call(Runtime.push),
+				])
+			}
+			Ok(falling($pushed.append(Emit.store(receiver, Rax)), after(Number)))
+		}
+		("pop", 0) =>
+			Ok(
+				falling(
+					[
+						Emit.load(Rdi, receiver),
+						Emit.call(Runtime.pop),
+						Emit.store(receiver, Rax),
+					],
+					after(Value),
+				),
+			)
+		_ => refusal(site, "`${name}` with ${count_text(count, "argument")} is not compiled yet")
+	}
+}
+
 ## `s += e` where either isn't a number: `runtime_add` of the two, stored
 ## in the slot and left on the stack.
 appended_items : Site,
@@ -1417,7 +1465,7 @@ appended_items = |site, { state, slot, held }| {
 		Ok(added) => added
 		Err(Unadded) => return refusal(
 			site,
-			"`+=` of a ${kind_text(held)} and a ${kind_text(kind_below(state, 0))}",
+			"`+=` of ${kind_phrase(held)} and ${kind_phrase(kind_below(state, 0))}",
 		)
 	}
 	slots = state.slots.set(
@@ -1497,7 +1545,7 @@ instruction_items = |site, { instruction, state }| {
 					),
 				)
 			} else {
-				refusal(site, "a template's substitution of a ${kind_text(kind_below(state, 0))}")
+				refusal(site, "a template's substitution of ${kind_phrase(kind_below(state, 0))}")
 			}
 		GetProperty(key, _) => {
 			kind = kind_below(state, 0)
@@ -1518,9 +1566,92 @@ instruction_items = |site, { instruction, state }| {
 							with_top(without_top(state, 1), given),
 						),
 					)
-				_ => refusal(site, "the property `${key}` of a ${kind_text(kind)}")
+				_ => refusal(site, "the property `${key}` of ${kind_phrase(kind)}")
 			}
 		}
+		MakeArray(count) => {
+			base = depth - count
+			var $filled = []
+			for item in 0..<count {
+				$filled = $filled.concat([
+					Emit.load(Rcx, stack_place(site.code, base + item)),
+					Emit.store(Emit.mem(Rdx, (8 * item).to_i64_wrap()), Rcx),
+				])
+			}
+			made = [Emit.imm(Rdi, count.to_i64_wrap()), Emit.call(Runtime.new_array)]
+				.concat($filled)
+				.append(Emit.store(stack_place(site.code, base), Rax))
+			Ok(falling(made, with_top(without_top(state, count), Array)))
+		}
+		NewObject => Ok(
+			falling(
+				[Emit.call(Runtime.new_object), Emit.store(next_place, Rax)],
+				with_top(state, Object),
+			),
+		)
+		SetField(key) => Ok(
+			falling(
+				[
+					Emit.load(Rdi, top_place(1)),
+					Emit.address_of(Rsi, text_label(site, key)),
+					Emit.load(Rdx, top_place(0)),
+					Emit.call(Runtime.set_property),
+				],
+				without_top(state, 1),
+			),
+		)
+		SetProperty(key, _) =>
+			match kind_below(state, 1) {
+				Object | Value => {
+					value = kind_below(state, 0)
+					Ok(
+						falling(
+							[
+								Emit.load(Rdi, top_place(1)),
+								Emit.address_of(Rsi, text_label(site, key)),
+								Emit.load(Rdx, top_place(0)),
+								Emit.call(Runtime.set_property),
+							].concat(copy_items({ from: top_place(0), to: top_place(1) })),
+							with_top(without_top(state, 2), value),
+						),
+					)
+				}
+				kind => refusal(site, "the property `${key}` of ${kind_phrase(kind)} written")
+			}
+		GetIndex(_) =>
+			match kind_below(state, 1) {
+				Array | String | Object | Value =>
+					Ok(
+						falling(
+							[
+								Emit.load(Rdi, top_place(1)),
+								Emit.load(Rsi, top_place(0)),
+								Emit.call(Runtime.get_index),
+								Emit.store(top_place(1), Rax),
+							],
+							with_top(without_top(state, 2), Value),
+						),
+					)
+				kind => refusal(site, "an index of ${kind_phrase(kind)}")
+			}
+		SetIndex(_) =>
+			match kind_below(state, 2) {
+				Array | Object | Value => {
+					value = kind_below(state, 0)
+					Ok(
+						falling(
+							[
+								Emit.load(Rdi, top_place(2)),
+								Emit.load(Rsi, top_place(1)),
+								Emit.load(Rdx, top_place(0)),
+								Emit.call(Runtime.set_index),
+							].concat(copy_items({ from: top_place(0), to: top_place(2) })),
+							with_top(without_top(state, 3), value),
+						),
+					)
+				}
+				kind => refusal(site, "an index of ${kind_phrase(kind)} written")
+			}
 		PushUndefined => Ok(
 			falling(
 				constant_items({ bits: Boxing.undefined_bits.to_u64_wrap(), to: next_place }),
@@ -1695,21 +1826,24 @@ instruction_items = |site, { instruction, state }| {
 		MethodLookup(name, _) =>
 			match (kind_below(state, 0), name) {
 				(Console, "log") => Ok(falling([], with_top(state, Log)))
+				(Array, "push") | (Array, "pop") | (Value, "push") | (Value, "pop") =>
+					Ok(falling([], with_top(state, Method(name))))
 				(kind, _) => refusal(
 					site,
-					"the method `${name}` of a ${kind_text(kind)} is not compiled yet",
+					"the method `${name}` of ${kind_phrase(kind)} is not compiled yet",
 				)
 			}
 		CallMethod({ name: _, site: { count, written: _, at: _ } }) =>
 			match kind_below(state, count) {
 				Log => log_items(site, { state, count })
-				kind => refusal(site, "a method call of a ${kind_text(kind)} is not compiled yet")
+				Method(name) => array_method_items(site, { state, name, count })
+				kind => refusal(site, "a method call of ${kind_phrase(kind)} is not compiled yet")
 			}
 		Call({ count, written: _, at: _ }) => call_items(site, { state, count })
 		Return => {
 			kind = kind_below(state, 0)
 			if !is_value_kind(kind) {
-				return refusal(site, "a function returns a ${kind_text(kind)}")
+				return refusal(site, "a function returns ${kind_phrase(kind)}")
 			}
 			items = [
 				Instruction(MovRegMem({ to: Rax, from: top_place(0) })),

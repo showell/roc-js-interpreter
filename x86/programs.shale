@@ -1,4 +1,4 @@
--- budget: steps=40000000
+-- budget: steps=120000000
 -- x86/programs.shale: the x86-64 backend's programs, each held to node or to
 -- its refusal. From the repository's root:
 --
@@ -12,13 +12,25 @@
 --     come to: `// refused: <text>`, a line js-x86 prints as it exits 1
 --     without writing an executable, or `// stops: <text>`, a line the
 --     executable it writes prints as it exits 1 (a number console.log can't
---     write yet), where node would print the number.
+--     write yet), where node would print the number;
+--   - each program of the interpreter's corpus, js/tests/, is compiled and
+--     run the same way, and the ones that print what node prints must be
+--     exactly those x86/corpus.txt lists, one a line: a program that stops
+--     matching fails, and so does one that starts to, until the list (and
+--     the commit that moves it) says so.
 -- Nothing is skipped: the run fails unless every program passes, and a
 -- folder with no program in it fails too.
+--
+--   shale x86/programs.shale corpus=report
+--
+-- prints each corpus program's verdict and the reasons the rest fail,
+-- grouped, and holds nothing.
 
 use("./executables.shale")
 
 const WHO = "x86/programs.shale"
+const CORPUS = "x86/corpus.txt"
+const REPORT = arg("corpus", "held") == "report"
 
 function js_files(dir)
   local out = {}
@@ -75,6 +87,59 @@ function held_to_refusal(exe, dir, js_path)
   return nil
 end
 
+-- The reason a corpus program fails, with the function and the instruction
+-- taken out, so programs that fail alike group.
+function reason_group(why)
+  local r = re_replace(why, "^js-x86 exited 1: js-x86: refused: ", "refused: ")
+  r = re_replace(r, "^refused: (the program|the function `[^`]*`)(, instruction [0-9]+)?: ", "refused: ")
+  r = re_replace(r, "^js-x86 exited 1: js-x86: ", "front end: ")
+  if starts_with(r, "node exited ") then r = "node exits nonzero (an error the program doesn't catch)" end
+  if starts_with(r, "the executable ended exit 1: ") then
+    local said = lines(sub(r, #"the executable ended exit 1: " + 1))
+    r = "stops: " .. said[#said]
+  end
+  if starts_with(r, "it printed ") then r = "prints otherwise than node" end
+  return r
+end
+
+-- The corpus's verdicts against CORPUS: a list of what is wrong, empty when
+-- the programs that match node are those it lists.
+function corpus_check(exe, dir)
+  local listed = {}
+  for l in lines(read(CORPUS)) do
+    if trim(l) ~= "" and not starts_with(l, "#") then push(listed, trim(l)) end
+  end
+  local listed_set = set_of(listed)
+  local wrong = {}
+  local matched = {}
+  local groups = {}
+  local names = {}
+  local all = js_files("js/tests")
+  for p in all do
+    local why = held_to_node(exe, dir, p)
+    local name = basename(p)
+    if why == nil then
+      push(matched, name)
+      if not has_key(listed_set, name) then push(wrong, p .. ": it matches node, and " .. CORPUS .. " doesn't list it") end
+    else
+      local g = reason_group(why)
+      push_at(groups, g, name)
+      if has_key(listed_set, name) then push(wrong, p .. ": " .. why) end
+    end
+  end
+  for name in listed do
+    if not exists("js/tests/" .. name) then push(wrong, CORPUS .. " lists " .. name .. ", which js/tests/ doesn't hold") end
+  end
+  if REPORT then
+    print("corpus: " .. #matched .. " of " .. #all .. " match node: " .. join(matched, " "))
+    local rows = {}
+    for g in keys(groups) do push(rows, {n = #groups[g], g = g}) end
+    sort(rows, "n", "desc")
+    for row in rows do print(row.n .. "  " .. row.g .. ": " .. join(groups[row.g], " ")) end
+  end
+  return {wrong = wrong, matched = #matched, all = #all}
+end
+
 function main()
   local exe = built_roc(WHO, "x86/roc/JsToX86.roc", "js-x86", "dev")
   local dir = executables_dir()
@@ -90,7 +155,9 @@ function main()
     if why ~= nil then push(wrong, p .. ": " .. why) end
   end
   if #wrong > 0 then fail(WHO .. ": " .. #wrong .. " of " .. (#held + #refused) .. " programs failed:\n" .. join(wrong, "\n")) end
-  print("x86/programs: " .. #held .. " programs printed what node prints, and " .. #refused .. " came to their refusals")
+  local corpus = corpus_check(exe, dir)
+  if #corpus.wrong > 0 and not REPORT then fail(WHO .. ": the corpus differs from " .. CORPUS .. ":\n" .. join(corpus.wrong, "\n")) end
+  print("x86/programs: " .. #held .. " programs printed what node prints, " .. #refused .. " came to their refusals, and " .. corpus.matched .. " of the corpus's " .. corpus.all .. " match node, held exactly to " .. CORPUS)
 end
 
 main()
