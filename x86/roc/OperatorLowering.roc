@@ -319,6 +319,98 @@ OperatorLowering :: [].{
 		}
 	}
 
+	## An ordering of the two values on top that may be numbers, followed by a
+	## `JumpIfFalse`, as one: both values dropped, and the jump taken to the
+	## `JumpIfFalse`'s target when the ordering is false. Two numbers take a
+	## `ucomisd` and a jump on its flags, with no boolean made and tested; a
+	## value that turns out not to be a number takes `runtime_compare`, its
+	## answer tested in place of the boolean. `Lowering` fuses the two only
+	## where no other way reaches the `JumpIfFalse`.
+	ordered_jump_items : LoweringBasics.Site,
+	{
+		state : LoweringBasics.State,
+		operator : Ast.BinaryOperator,
+		skip : U64,
+	} -> LoweringBasics.Lowered
+	ordered_jump_items = |site, { state, operator, skip }| {
+		left = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 2)
+		right = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 1)
+		kinds = (LoweringBasics.kind_below(state, 1), LoweringBasics.kind_below(state, 0))
+		target = site.at + 2 + skip
+		label = LoweringBasics.place_label(site.context, target)
+		# The flags of a `ucomisd` leave CF and ZF clear only when the first is
+		# the greater and neither is a NaN, so `a < b` is false when `b > a`
+		# isn't (`jbe`), and `a <= b` when `b >= a` isn't (`jb`); a NaN sets
+		# CF, so every ordering with one is false.
+		{ first, second, falsy } = match operator {
+			Less => {
+				first: right,
+				second: left,
+				falsy: Be,
+			}
+			LessOrEqual => {
+				first: right,
+				second: left,
+				falsy: B,
+			}
+			Greater => {
+				first: left,
+				second: right,
+				falsy: Be,
+			}
+			_ => {
+				first: left,
+				second: right,
+				falsy: B,
+			}
+		}
+		compared = [
+			Instruction(MovsdLoad({ to: Xmm0, from: first })),
+			Instruction(MovsdLoad({ to: Xmm1, from: second })),
+			Instruction(Ucomisd({ left: Xmm0, right: Xmm1 })),
+			Emit.jcc(falsy, label),
+		]
+		# `runtime_compare` answers 0 for less, 1 equal, 2 greater, 3 unordered.
+		answered = match operator {
+			Less => [Emit.cmp_imm(Rax, 0), Emit.jcc(Ne, label)]
+			LessOrEqual => [Emit.cmp_imm(Rax, 1), Emit.jcc(A, label)]
+			Greater => [Emit.cmp_imm(Rax, 2), Emit.jcc(Ne, label)]
+			_ => [
+				Emit.minus_imm(Rax, 1),
+				Emit.cmp_imm(Rax, 1),
+				Emit.jcc(A, label),
+			]
+		}
+		called = [
+			Emit.load(Rdi, left),
+			Emit.load(Rsi, right),
+			Emit.call(Runtime.compare),
+		]
+			.concat(answered)
+		statements =
+			if kinds == (Number, Number) {
+				compared
+			} else {
+				numbers_first_items(
+					site,
+					{
+						kinds,
+						left,
+						right,
+						fast_items: compared,
+						slow_items: called,
+					},
+				)
+			}
+		after = LoweringBasics.without_top(state, 2)
+		{
+			statements,
+			falls: Falls(after),
+			branch: Branch({ target, state: after }),
+			result: GivesNothing,
+		}
+	}
+
 	## `===` or `!==` of two values whose kinds aren't both numbers or both
 	## booleans: settled here when their kinds are known to differ, and by
 	## `runtime_strict_equal` otherwise.
