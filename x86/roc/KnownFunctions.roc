@@ -145,7 +145,8 @@ KnownFunctions :: [].{
 								Ok(_) => True
 								Err(Unheld) =>
 									match captured_slot(code, capture) {
-										Ok(slot) => numbers.contains(slot) and !passes_on(code, slot)
+										Ok(slot) =>
+											numbers.contains(slot) and !passes_on(code, slot)
 										Err(_) => False
 									}
 							},

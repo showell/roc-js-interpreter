@@ -193,6 +193,10 @@ texts = [
 		"x86: an index of this kind of value, or of this kind, is not compiled yet\n",
 	),
 	(
+		"runtime_text_numbers_read_not_compiled",
+		"x86: an array of numbers read where it has no item is not compiled yet\n",
+	),
+	(
 		"runtime_text_array_hole",
 		"x86: an array written past its end, leaving holes, is not compiled yet\n",
 	),

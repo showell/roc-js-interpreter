@@ -40,8 +40,33 @@
 ## code at its value entry with `rcx` the count of arguments. A function a
 ## value may hold takes `Value` parameters, since no call shows what reaches
 ## it that way.
+##
+## **NUMBER-ONLY ARRAYS.** An array literal whose items are all known
+## numbers, or that is empty, is made `Numbers`: an array that holds only
+## numbers for good, so an item read of it is a known `Number`, with no tag
+## to test where it is used. The rule that keeps that true is conservative,
+## and every instruction is held to it as it is lowered
+## (`numbers_escaping`): a `Numbers` value may be read for its `length`,
+## read by a number index, written at a number index with a known number,
+## given `push` of known numbers, printed by console.log, moved between the
+## frame's own slots (never a cell, which a closure may write through) and
+## the stack, dropped, and passed to a function called directly, by its
+## code, whose parameter then holds it. Any other instruction that reaches
+## one (stores it in an object, an array or a cell, returns it, calls a
+## method or an operator on it, passes it through a value), a meeting of
+## two ways where only one holds it, and a call that passes it to a
+## parameter whose settled kind is not `Numbers` or of a function a value
+## may hold (`numbers_escape`) is a refusal. Any refusal at all lowers the
+## whole program again with no `Numbers` (`program_items`), so the rule
+## can only take code to the fast way, never refuse a program. An item read
+## that finds no item (past the end, or an index that is no whole number)
+## would be `undefined` in node, which is no number: the executable stops
+## there with a line saying so, as for the other things only the value
+## decides.
 import js.Ast
 import js.Bytecode
+import js.Compile
+import js.Parser
 import js.ValueRules
 import Assembly
 import Boxing
@@ -63,111 +88,153 @@ Lowering :: [].{
 	## The program's machine code, its entry first, or what in it can't be
 	## lowered yet.
 	program_items : Bytecode.Program -> Try(List(Assembly.Statement), [Refused(Str)])
-	program_items = |program| {
-		makers = KnownFunctions.makers_of(program)?
-		literals = literals_of(program)?
-		statics = KnownFunctions.statics_of(program, makers)
-		var $escaped_codes =
-			makers
-				.to_list()
-				.keep_if(|(made, _)| !statics.contains(made))
-				.map(|(made, _)| made)
-		var $returns = Dict.empty()
-		for index in 0..<program.codes.len() {
-			$returns = $returns.insert(index, Number)
+	program_items = |program|
+		match items_with_numbers(program, True) {
+			Ok(items) => Ok(items)
+			# Any refusal with arrays of numbers on may be one of an array of
+			# numbers escaping, so the program is lowered again without them,
+			# and that answer, a refusal or the code, is the program's.
+			Err(_) => items_with_numbers(program, False)
 		}
-		var $parameters = Dict.empty()
-		known = { program, makers, statics }
-		trying = program.codes.any(
-			|code|
-				code.ops.any(
-					|instruction|
-						match instruction {
-							EnterTry(_) => True
-							_ => False
-						},
-				),
-		)
-		for _ in 0..<most_passes {
-			var $items = Runtime.start_items(LoweringBasics.code_label(program.main))
-			var $found = $returns
-			var $called = Dict.empty()
-			var $escaped = $escaped_codes
-			var $first_refusal = Ok({})
-			for index in 0..<program.codes.len() {
-				context = {
-					program,
-					makers,
-					statics,
-					escaped_codes: $escaped_codes,
-					cells: KnownFunctions.celled_slots(known, index),
-					numbers: KnownFunctions.constant_numbers(known, index),
-					trying,
-					returns: $returns,
-					parameters: $parameters,
-					literals,
-					index,
-				}
-				match code_items(context) {
-					Ok(lowered) => {
-						$items = $items.concat(lowered.statements)
-						$found = match lowered.result {
-							Gives(kind) => $found.insert(index, kind)
-							GivesNothing => $found
-						}
-						for call in lowered.calls {
-							$called = with_call_kinds($called, call)
-						}
-						for made in lowered.escaped {
-							if !$escaped.contains(made) {
-								$escaped = $escaped.append(made)
-							}
-						}
-					}
-					Err({ refused, calls }) => {
-						for call in calls {
-							$called = with_call_kinds($called, call)
-						}
-						# A refusal may come of a kind not settled yet (a call's
-						# result taken as a number on the first pass), so the
-						# function's result is widened for the next pass to see
-						# what follows it.
-						$found = $found.insert(index, Value)
-						if $first_refusal == Ok({}) {
-							$first_refusal = Err(refused)
-						}
-					}
-				}
-			}
-			settled = $found == $returns and $called == $parameters
-			if settled and $escaped.len() == $escaped_codes.len() {
-				return match $first_refusal {
-					Ok({}) =>
-						Ok(
-							Forwarding.forward_loads(
-								$items
-									.concat(RuntimeCode.items)
-									.concat(literal_statements(literals))
-									.concat(
-										KnownFunctions.closure_statements({
-											program,
-											makers,
-											statics,
-											escaped_codes: $escaped_codes,
-										}),
-									),
-							),
-						)
-					Err(refused) => Err(refused)
-				}
-			}
-			$returns = $found
-			$parameters = $called
-			$escaped_codes = $escaped
-		}
-		Err(Refused("the kinds of the functions' parameters and results never settle"))
-	}
 }
+
+## The program's machine code, with array literals of numbers made
+## `Numbers` (`numbers_arrays`) or not.
+items_with_numbers : Bytecode.Program, Bool -> Try(List(Assembly.Statement), [Refused(Str)])
+items_with_numbers = |program, numbers_arrays| {
+	makers = KnownFunctions.makers_of(program)?
+	literals = literals_of(program)?
+	statics = KnownFunctions.statics_of(program, makers)
+	var $escaped_codes =
+		makers
+			.to_list()
+			.keep_if(|(made, _)| !statics.contains(made))
+			.map(|(made, _)| made)
+	var $returns = Dict.empty()
+	for index in 0..<program.codes.len() {
+		$returns = $returns.insert(index, Number)
+	}
+	var $parameters = Dict.empty()
+	known = { program, makers, statics }
+	trying = program.codes.any(
+		|code|
+			code.ops.any(
+				|instruction|
+					match instruction {
+						EnterTry(_) => True
+						_ => False
+					},
+			),
+	)
+	for _ in 0..<most_passes {
+		var $items = Runtime.start_items(LoweringBasics.code_label(program.main))
+		var $found = $returns
+		var $called = Dict.empty()
+		var $escaped = $escaped_codes
+		var $first_refusal = Ok({})
+		var $calls = []
+		for index in 0..<program.codes.len() {
+			context = {
+				program,
+				makers,
+				statics,
+				escaped_codes: $escaped_codes,
+				cells: KnownFunctions.celled_slots(known, index),
+				numbers: KnownFunctions.constant_numbers(known, index),
+				trying,
+				numbers_arrays,
+				returns: $returns,
+				parameters: $parameters,
+				literals,
+				index,
+			}
+			match code_items(context) {
+				Ok(lowered) => {
+					$items = $items.concat(lowered.statements)
+					$found = match lowered.result {
+						Gives(kind) => $found.insert(index, kind)
+						GivesNothing => $found
+					}
+					for call in lowered.calls {
+						$called = with_call_kinds($called, call)
+					}
+					$calls = $calls.concat(lowered.calls)
+					for made in lowered.escaped {
+						if !$escaped.contains(made) {
+							$escaped = $escaped.append(made)
+						}
+					}
+				}
+				Err({ refused, calls }) => {
+					for call in calls {
+						$called = with_call_kinds($called, call)
+					}
+					# A refusal may come of a kind not settled yet (a call's
+					# result taken as a number on the first pass), so the
+					# function's result is widened for the next pass to see
+					# what follows it.
+					$found = $found.insert(index, Value)
+					if $first_refusal == Ok({}) {
+						$first_refusal = Err(refused)
+					}
+				}
+			}
+		}
+		settled = $found == $returns and $called == $parameters
+		if settled and $escaped.len() == $escaped_codes.len() {
+			escaping = numbers_escape({
+				calls: $calls,
+				parameters: $parameters,
+				escaped: $escaped_codes,
+			})
+			if escaping {
+				return Err(Refused(numbers_escape_text))
+			}
+			return match $first_refusal {
+				Ok({}) =>
+					Ok(
+						Forwarding.forward_loads(
+							$items
+								.concat(RuntimeCode.items)
+								.concat(literal_statements(literals))
+								.concat(
+									KnownFunctions.closure_statements({
+										program,
+										makers,
+										statics,
+										escaped_codes: $escaped_codes,
+									}),
+								),
+						),
+					)
+				Err(refused) => Err(refused)
+			}
+		}
+		$returns = $found
+		$parameters = $called
+		$escaped_codes = $escaped
+	}
+	Err(Refused("the kinds of the functions' parameters and results never settle"))
+}
+
+## Whether a call passes an array of numbers where its function's parameter
+## may hold another value: its settled kind isn't `Numbers`, or a value may
+## hold the function, so calls no walk sees reach it.
+numbers_escape : {
+	calls : List(LoweringBasics.CallKinds),
+	parameters : Dict(U64, List(LoweringBasics.Kind)),
+	escaped : List(U64),
+} -> Bool
+numbers_escape = |{ calls, parameters, escaped }|
+	calls.any(
+		|{ code, kinds }| {
+			settled = parameters.get(code) ?? []
+			kept = |at| !escaped.contains(code) and settled.get(at) == Ok(Numbers)
+			kinds
+				.map_with_index(|kind, at| (kind, at))
+				.any(|(kind, at)| kind == Numbers and !kept(at))
+		},
+	)
 
 ## The most passes over every function before the kinds of their parameters
 ## and results must have settled: a program that needs more is refused, so
@@ -884,6 +951,74 @@ Valued : {
 	escaped : List(U64),
 }
 
+## Whether the instruction may let an array of numbers (`Numbers`) reach
+## code that could store something else in it, or read it as another kind:
+## the rule of `NUMBER-ONLY ARRAYS`, in the module's header. An instruction
+## that reaches no `Numbers` is never one.
+numbers_escaping : LoweringBasics.Site,
+{
+	instruction : Bytecode.Op,
+	state : LoweringBasics.State,
+} -> Bool
+numbers_escaping = |site, { instruction, state }| {
+	kinds = state.stack_kinds
+	below = |down| LoweringBasics.kind_below(state, down)
+	within = |reach| kinds.drop_first(kinds.len() - U64.min(reach, kinds.len())).contains(Numbers)
+	held = |slot| state.slots.get(slot) == Ok(Ready(Numbers))
+	all_numbers = |count| kinds.drop_first(kinds.len() - count).all(|kind| kind == Number)
+	takes_each = |made, count|
+		match site.context.program.codes.get(made) {
+			Ok(callee) => callee.arguments == Each(count)
+			Err(_) => False
+		}
+	match instruction {
+		LoadLocal(_) | Pop | PushNumber(_) | PushText(_) | PushBoolean(_) => False
+		PushNull | PushUndefined | LoadBoxed(_) | PeekBoxed(_) | LoadBuiltin(_) => False
+		Jump(_) | Loop(_) => False
+		StoreLocal(slot) | SetLocal(slot) =>
+			below(0) == Numbers and site.context.cells.contains(slot)
+		Binary(_, _) => within(2)
+		Unary(_, _) | JumpIfFalse(_) => within(1)
+		GetProperty(key, _) => below(0) == Numbers and key != "length"
+		MethodLookup(name, _) => below(0) == Numbers and name != "push"
+		GetIndex(_) => below(0) == Numbers or (below(1) == Numbers and below(0) != Number)
+		SetIndex(_) =>
+			if below(2) == Numbers {
+				below(1) != Number or below(0) != Number
+			} else {
+				within(2)
+			}
+		# console.log only reads what it prints.
+		CallMethod({ name: _, site: { count, written: _, at: _ } }) if below(count) == Log => False
+		CallMethod({ name: _, site: { count, written: _, at: _ } }) =>
+			if below(count) == Method("push") and below(count + 1) == Numbers {
+				!all_numbers(count)
+			} else {
+				within(count + 2)
+			}
+		# A direct call's arguments meet its parameters' kinds, which
+		# `numbers_escape` holds once they settle.
+		Call({ count, written: _, at: _ }) =>
+			match below(count) {
+				Function(made) | Closure(made) if takes_each(made, count) => False
+				_ => within(count + 1)
+			}
+		UpdateLocal({ slot, step: _ }) | AppendLocal({ slot, at: _ }) => held(slot)
+		IterNext({ slot, exit: _ }) => held(slot)
+		_ => within(kinds.len())
+	}
+}
+
+## An array's kind as the inline reads and writes take it: an array of
+## numbers is an array there.
+array_kind : LoweringBasics.Kind -> LoweringBasics.Kind
+array_kind = |kind|
+	if kind == Numbers {
+		Array
+	} else {
+		kind
+	}
+
 ## How many values on top of the stack an instruction takes as values (a
 ## call its arguments, not what it calls).
 taken_count : Bytecode.Op -> U64
@@ -918,6 +1053,9 @@ meeting_state = |context, { at, one, other }| {
 		other.stack_kinds,
 		|a, b| (a, b),
 	) {
+		if (a == Numbers or b == Numbers) and a != b {
+			return Err(code_refusal(context, TwoStacks(at)))
+		}
 		match LoweringBasics.met_kind(a, b) {
 			Ok(kind) => {
 				$stack_kinds = $stack_kinds.append(kind)
@@ -932,6 +1070,8 @@ meeting_state = |context, { at, one, other }| {
 		|a, b| (a, b),
 	) {
 		slot = match (a, b) {
+			(Ready(left), Ready(right)) if left != right and [left, right].contains(Numbers) =>
+				return Err(code_refusal(context, TwoSlotKinds(at)))
 			(Ready(left), Ready(right)) =>
 				match LoweringBasics.met_kind(left, right) {
 					Ok(kind) => Ready(kind)
@@ -957,6 +1097,9 @@ instruction_items = |site, { instruction, state }| {
 	next_place = LoweringBasics.stack_place(site.code, depth)
 	if site.skipped.contains(site.at) {
 		return Ok(LoweringBasics.falling([], state))
+	}
+	if numbers_escaping(site, { instruction, state }) {
+		return LoweringBasics.refusal(site, "an array of numbers may escape here")
 	}
 	match instruction {
 		PushNumber(number) => Ok(
@@ -1028,7 +1171,7 @@ instruction_items = |site, { instruction, state }| {
 		GetProperty(key, _) => {
 			kind = LoweringBasics.kind_below(state, 0)
 			given = match (kind, key) {
-				(String, "length") | (Array, "length") => Number
+				(String, "length") | (Array, "length") | (Numbers, "length") => Number
 				_ => Value
 			}
 			called = [
@@ -1039,14 +1182,14 @@ instruction_items = |site, { instruction, state }| {
 			]
 			# Of `undefined` or `null`, the runtime throws node's TypeError.
 			match kind {
-				String | Array | Object | Value | Null | Undefined =>
+				String | Array | Numbers | Object | Value | Null | Undefined =>
 					Ok(
 						LoweringBasics.falling(
 							if key == "length" {
 								IndexLowering.length_items(
 									site,
 									{
-										kind,
+										kind: array_kind(kind),
 										place: top_place(0),
 										slow_items: called,
 									},
@@ -1068,10 +1211,19 @@ instruction_items = |site, { instruction, state }| {
 			base = depth - count
 			made = LoweringBasics.arguments_array_items(site, { base, count })
 				.append(Emit.store(LoweringBasics.stack_place(site.code, base), Rax))
+			items = state.stack_kinds.drop_first(base)
+			numbers = site.context.numbers_arrays and items.all(|kind| kind == Number)
 			Ok(
 				LoweringBasics.falling(
 					made,
-					LoweringBasics.with_top(LoweringBasics.without_top(state, count), Array),
+					LoweringBasics.with_top(
+						LoweringBasics.without_top(state, count),
+						if numbers {
+							Numbers
+						} else {
+							Array
+						},
+					),
 				),
 			)
 		}
@@ -1174,6 +1326,21 @@ instruction_items = |site, { instruction, state }| {
 					"the property `${key}` of ${LoweringBasics.kind_phrase(kind)} written",
 				)
 			}
+		GetIndex(_) if LoweringBasics.kind_below(state, 1) == Numbers =>
+			Ok(
+				LoweringBasics.falling(
+					IndexLowering.item_read_items(
+						site,
+						{
+							kinds: (Array, LoweringBasics.kind_below(state, 0)),
+							receiver: top_place(1),
+							index: top_place(0),
+							slow_items: [Emit.jmp(Runtime.numbers_read_not_compiled)],
+						},
+					),
+					LoweringBasics.with_top(LoweringBasics.without_top(state, 2), Number),
+				),
+			)
 		GetIndex(_) =>
 			match LoweringBasics.kind_below(state, 1) {
 				Array | String | Object | Value | Null | Undefined => {
@@ -1208,7 +1375,7 @@ instruction_items = |site, { instruction, state }| {
 			}
 		SetIndex(_) =>
 			match LoweringBasics.kind_below(state, 2) {
-				Array | Object | Value | Null | Undefined => {
+				Array | Numbers | Object | Value | Null | Undefined => {
 					value = LoweringBasics.kind_below(state, 0)
 					called = [
 						Emit.load(Rdi, top_place(2)),
@@ -1222,7 +1389,7 @@ instruction_items = |site, { instruction, state }| {
 								site,
 								{
 									kinds: (
-										LoweringBasics.kind_below(state, 2),
+										array_kind(LoweringBasics.kind_below(state, 2)),
 										LoweringBasics.kind_below(state, 1),
 									),
 									receiver: top_place(2),
@@ -1655,6 +1822,8 @@ instruction_items = |site, { instruction, state }| {
 				(Console, "log") => Ok(
 					LoweringBasics.falling([], LoweringBasics.with_top(state, Log)),
 				)
+				(Numbers, "push") =>
+					Ok(LoweringBasics.falling([], LoweringBasics.with_top(state, Method(name))))
 				(Array, _) | (Value, _) if BuiltinLowering.array_methods.contains(name) =>
 					Ok(LoweringBasics.falling([], LoweringBasics.with_top(state, Method(name))))
 				(Array, _) if BuiltinLowering.iterator_methods.contains(name) =>
@@ -1839,3 +2008,87 @@ instruction_name = |instruction| {
 		Err(_) => text
 	}
 }
+
+## Whether lowering a program keeps an array of numbers as `Numbers`: its
+## code with them is longer or shorter than its code without, for the
+## expects.
+keeps_numbers : List(Str) -> Bool
+keeps_numbers = |source_lines| {
+	src = Str.join_with(source_lines, "\n")
+	tree = Parser.program_of(src, Core) ?? crash "Lowering.keeps_numbers: a program that parses"
+	program = match Compile.program(tree) {
+		Ok(compiled) => compiled
+		Err(_) => crash "Lowering.keeps_numbers: a program that compiles"
+	}
+	plain = items_with_numbers(program, False) ?? crash "Lowering.keeps_numbers: it lowers"
+	match items_with_numbers(program, True) {
+		Ok(items) => items.len() != plain.len()
+		Err(_) => False
+	}
+}
+
+# An array of number literals, pushed and written with numbers, passed to a
+# function called directly and read there: kept.
+expect keeps_numbers([
+	"function sum(a) {",
+	"  let t = 0; let i = 0;",
+	"  while (i < a.length) { t = t + a[i]; i = i + 1; }",
+	"  return t;",
+	"}",
+	"function main() {",
+	"  const a = [1, 2]; a.push(3); a[0] = 5;",
+	"  console.log(sum(a), a);",
+	"}",
+	"main();",
+])
+
+# An empty array grown by a function's pushes: kept.
+expect keeps_numbers([
+	"function grow(a) { a.push(1); a.push(2); }",
+	"function main() { const a = []; grow(a); console.log(a[0] + a[1]); }",
+	"main();",
+])
+
+# A string pushed: not kept.
+expect !keeps_numbers(
+	["function main() { const a = [1, 2]; a.push(\"x\"); console.log(a[0]); }", "main();"],
+)
+
+# A write of a value of unknown kind: not kept.
+expect !keeps_numbers([
+	"function main() {",
+	"  const o = { k: 1 }; const a = [1]; a[0] = o.k;",
+	"  console.log(a[0]);",
+	"}",
+	"main();",
+])
+
+# Stored in an object, where code could store anything in it: not kept.
+expect !keeps_numbers([
+	"function main() {",
+	"  const a = [1]; const o = { a }; o.a.push(\"x\");",
+	"  console.log(a[0]);",
+	"}",
+	"main();",
+])
+
+# Passed to a function that is also given an array of strings: not kept.
+expect !keeps_numbers([
+	"function first(a) { return a[0]; }",
+	"function main() { console.log(first([1]), first([\"x\"])); }",
+	"main();",
+])
+
+# Captured by a closure, which could write through its cell: not kept.
+expect !keeps_numbers([
+	"function main() {",
+	"  const a = [1]; const f = () => a.push(\"x\"); f();",
+	"  console.log(a[0]);",
+	"}",
+	"main();",
+])
+
+## A refusal's words when an array of numbers reaches a parameter that
+## may hold another value.
+numbers_escape_text : Str
+numbers_escape_text = "an array of numbers is passed where a parameter may hold another value"

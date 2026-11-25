@@ -32,6 +32,9 @@ LoweringBasics :: [].{
 		Null,
 		String,
 		Array,
+		# An array that holds only numbers for good (`Lowering`'s
+		# `NUMBER-ONLY ARRAYS`): its items read as numbers.
+		Numbers,
 		Object,
 		Value,
 		Closure(U64),
@@ -87,6 +90,8 @@ LoweringBasics :: [].{
 		# Whether the program has a `try` anywhere, which keeps every value of
 		# every frame in the frame (`Registers.roc`).
 		trying : Bool,
+		# Whether an array literal of numbers is made `Numbers`.
+		numbers_arrays : Bool,
 		returns : Dict(U64, LoweringBasics.Kind),
 		parameters : Dict(U64, List(LoweringBasics.Kind)),
 		literals : Dict(Str, U64),
@@ -101,7 +106,7 @@ LoweringBasics :: [].{
 	is_value_kind = |kind|
 		match kind {
 			Number | Boolean | Undefined | Null => True
-			String | Array | Object | Value | Closure(_) => True
+			String | Array | Numbers | Object | Value | Closure(_) => True
 			Function(_) | Console | Log | Method(_) => False
 			ErrorClass(_) | CollectionClass(_) | TimerFunction(_) => False
 			Static(_) | StaticMethod(_) => False
@@ -513,7 +518,7 @@ LoweringBasics :: [].{
 	kind_phrase : LoweringBasics.Kind -> Str
 	kind_phrase = |kind|
 		match kind {
-			Array | Object | Undefined => "an ${LoweringBasics.kind_noun(kind)}"
+			Array | Numbers | Object | Undefined => "an ${LoweringBasics.kind_noun(kind)}"
 			_ => "a ${LoweringBasics.kind_noun(kind)}"
 		}
 
@@ -527,6 +532,7 @@ LoweringBasics :: [].{
 			Null => "null"
 			String => "string"
 			Array => "array"
+			Numbers => "array of numbers"
 			Object => "object"
 			Value => "value of a kind not known before it runs"
 			Method(name) => "method `${name}`"

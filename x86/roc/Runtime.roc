@@ -125,6 +125,10 @@ Runtime :: [].{
 	set_index : Str
 	set_index = "runtime_set_index"
 
+	## The stop of an item read of an array of numbers that finds no item.
+	numbers_read_not_compiled : Str
+	numbers_read_not_compiled = "runtime_numbers_read_not_compiled"
+
 	## The routine that pushes `rsi` onto the array `rdi`, its new length
 	## (a number) in `rax`.
 	push : Str
@@ -1707,6 +1711,10 @@ container_items = {
 		.concat(RuntimeBuilders.unboxed_items(Rsi))
 		.concat([Emit.jmp("runtime_get_entry"), Emit.mark("runtime_index_not_compiled")])
 		.concat(RuntimeBuilders.stopping_items("runtime_text_index_not_compiled"))
+		# An item read of an array of numbers that finds no item
+		# (`Lowering`'s `NUMBER-ONLY ARRAYS`): its code goes on with a number.
+		.concat([Emit.mark(Runtime.numbers_read_not_compiled)])
+		.concat(RuntimeBuilders.stopping_items("runtime_text_numbers_read_not_compiled"))
 		.concat(keyed_error_items({ label: "runtime_get_index_nullish", setting: 0 }))
 	set_index = [Emit.mark(Runtime.set_index)]
 		.concat(RuntimeBuilders.nullish_jump_items("runtime_set_index_nullish"))
