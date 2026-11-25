@@ -441,7 +441,11 @@ Runtime :: [].{
 		Emit.call(main),
 	]
 
-	## Every routine, then every text under its label.
+	## Every routine, then every text under its label. The groups after
+	## `spread_items` (the array methods, inspect, the collections and the
+	## timers) are bound for modules of their own, so each sits at the end in
+	## the order they leave it, last first, and none of the moves shifts a
+	## byte.
 	items : List(Assembly.Statement)
 	items = [
 		allocate_items,
@@ -453,18 +457,18 @@ Runtime :: [].{
 		operator_items,
 		property_items,
 		container_items,
-		inspect_items,
 		loop_items,
-		callback_items,
-		slice_items,
 		language_items,
 		exception_items,
 		builtin_items,
-		search_items,
-		sort_items,
 		string_method_items,
 		spread_items,
+		callback_items,
+		slice_items,
+		search_items,
+		sort_items,
 		edit_items,
+		inspect_items,
 		collection_items,
 		timer_items,
 	]
