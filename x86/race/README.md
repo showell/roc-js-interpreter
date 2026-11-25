@@ -7,8 +7,9 @@ The code here was written by AI coding agents (Claude), with human supervision.
 The race is between the program compiled by js-x86 and the same program under node. From the repository's root:
 
     shale x86/race.shale
+    shale x86/race.shale budget=1000   # the same race with a 1-second budget, for working on speed
 
-It builds js-x86 on the dev backend, writes the executable, runs it and then node, niced and never at the same time, and checks each answer against verify.js exactly, the whole number included. Each contestant gets one line: F(n) reached, its digits, the elapsed time the program measured, PASS or FAIL, whether the answer is BigInt's, and the time after the verdict (the run's wall time less its elapsed: chiefly building and printing the whole number). `check.shale` doesn't run it, since it takes about a minute and its numbers are timings. The script is `x86/race.shale`, beside `x86/bench.shale`, because a Shale library can be named only from beside a script's own file or below it.
+`budget=` (milliseconds, 20000 unset) writes a copy of `fib_race.js` with `BUDGET_MS` changed, under the build mount, and both contestants run that copy; each run may take the budget and a minute more. It builds js-x86 on the dev backend, writes the executable, runs it and then node, niced and never at the same time, and checks each answer against verify.js exactly, the whole number included. Each contestant gets one line: F(n) reached, its digits, the elapsed time the program measured, PASS or FAIL, whether the answer is BigInt's, and the time after the verdict (the run's wall time less its elapsed: chiefly building and printing the whole number). `check.shale` doesn't run it, since it takes about a minute and its numbers are timings. The script is `x86/race.shale`, beside `x86/bench.shale`, because a Shale library can be named only from beside a script's own file or below it.
 
 One run before the fixes below, on one 2-core box on 2026-11-25, node v22.23.2, load average 0.35 (the race before its F(100) check was added):
 
@@ -37,4 +38,22 @@ The 20-second race after both, the same box and day, load average 0.84:
     compiled: F(179933), 37604 digits, elapsed 19969 ms, PASS, verified; after the verdict 71 ms (wall 20040 ms)
     node: F(358271), 74874 digits, elapsed 19964 ms, PASS, verified; after the verdict 47 ms (wall 20011 ms)
 
-The compiled program did about 1.9 times its earlier work, and node now does about four times the compiled program's work, down from seven. fib's times were unchanged (x86/fib.shale: 20 ms for fib(22) and fib(30)). What is left is a guess, not measured: every value still moves through the frame in memory, one instruction at a time, where node keeps the loop in registers with small integers (milestone 6's register allocation and specialization).
+The compiled program did about 1.9 times its earlier work, and node now does about four times the compiled program's work, down from seven. fib's times were unchanged (x86/fib.shale: 20 ms for fib(22) and fib(30)). What was left was a guess, not measured: every value still moves through the frame in memory, one instruction at a time, where node keeps the loop in registers with small integers (milestone 6's register allocation and specialization).
+
+## Measured again, and two more fixes (2026-11-25, 1-second copies)
+
+Reading `addInto`'s machine code again, one limb of the first loop (the usual way: `i < a.length`, both items numbers) runs about 262 instructions, roughly half of them loads or stores at `rbp`, and no runtime calls. By part: each `.length` about 15 (the tag tested, the count made a double), each ordering 14 (a boolean made with `setcc`, tagged and stored, and then 4 more to load it and test it), each item read about 25 and the write 30 (the index tested whole and in range, then one load or store), each `+` of values 12 to 15, and every variable read a load and a store onto the bytecode's stack before its user loads it again. `s` is a `Value`, since it comes from `a[i] + b[i]`, whose items may be anything; `i` and `carry` are known numbers already. `BASE` is read from its cell and its tag tested each time. An ideal loop is about 12 to 15 instructions with 3 memory operations: two item loads, two `addsd`s, a compare and a subtract, the store, the step of `i` and the loop's test, with `i`, the lengths and the items' addresses in registers.
+
+The fixes, each measured as the median of 5 runs of the 1-second race, alternated with master's executable (the box was busy with other work, so the absolute numbers moved between sessions; the ratios are what to read):
+
+3. **An ordering and the `JumpIfFalse` after it, lowered as one** (`OperatorLowering.ordered_jump_items`), when no other way reaches the `JumpIfFalse`: one `ucomisd` and one jump on its flags, no boolean made. This saves about 36 of the 262 instructions a limb: F(36,932) to F(37,908), about 1.05 times the work.
+4. **Loads forwarded from registers** (`x86/roc/Forwarding.roc`): over the whole program, a load from the frame of a value a register already holds becomes a register move, or nothing. It forgets what it knows at any jump, call, arithmetic, store elsewhere, or label something names. With 3: F(30,076) to F(34,193), about 1.3 times the work.
+
+That instructions saved bought less than their share is a guess: the loop seems to wait on its chains through memory (each value stored and loaded back) more than on its count of instructions. The register moves of fix 4 shorten those chains. fib's times were unchanged (x86/fib.shale: 20 ms for fib(22) and fib(30)).
+
+The 20-second race after both, the same box and day, load average 0.96:
+
+    compiled: F(194187), 40583 digits, elapsed 19952 ms, PASS, verified; after the verdict 101 ms (wall 20053 ms)
+    node: F(349559), 73054 digits, elapsed 19960 ms, PASS, verified; after the verdict 57 ms (wall 20017 ms)
+
+The compiled program did about 1.16 times its earlier work, and node now does about 3.2 times the compiled program's work, down from four. What is left, measured above but not yet fixed: the bytecode's stack is still memory (a variable read is copied there before use), `s` is still a `Value`, and `.length` is read twice a limb.
