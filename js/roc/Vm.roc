@@ -127,6 +127,14 @@ Vm :: [].{
 	## When the next collection is due, and how many have run.
 	Collecting : { schedule : Vm.Schedule, collections : U64 }
 
+	## When the next collection is due, asked before each instruction:
+	## `Doubling(at)`, once no cell is free and the heap holds `at` cells,
+	## twice what the last collection kept and never under
+	## `Collector.least_threshold`, so a cell costs amortized O(1); or
+	## `EveryAllocation`, once the heap's length or its first free cell
+	## differs from what the last collection left.
+	Schedule : [Doubling(U64), EveryAllocation({ length : U64, free : Heap.Free })]
+
 	## The steps and the effects what is running may take, and what that is,
 	## for the message that says one ran out: the program, or the callback the
 	## queue runs.
@@ -182,14 +190,6 @@ Vm :: [].{
 	## fault, or stopped by a throw nothing caught, written as the line node
 	## prints first.
 	Standing : [Running, Faulted(Str), Uncaught(Str)]
-
-	## When the next collection is due, asked before each instruction:
-	## `Doubling(at)`, once no cell is free and the heap holds `at` cells,
-	## twice what the last collection kept and never under
-	## `Collector.least_threshold`, so a cell costs amortized O(1); or
-	## `EveryAllocation`, once the heap's length or its first free cell
-	## differs from what the last collection left.
-	Schedule : [Doubling(U64), EveryAllocation({ length : U64, free : Heap.Free })]
 
 	## How a run ended, with what it counted: its steps, the heap's length,
 	## the cells its roots reach at the end, and the collections it ran.
@@ -369,17 +369,6 @@ first_frame_queued = |machine, program| {
 	}
 }
 
-# Whom a budget's message names as running past it.
-budgeted_text : Vm.Budgeted -> Str
-budgeted_text = |budgeted|
-	match budgeted {
-		TheProgram => "the program"
-		FrameCall => "frame(t)"
-		TimerCallback => "a timer's callback"
-		ClickHandler => "the click handler"
-		CollectHandler => "the collect handler"
-	}
-
 # ---- the loop --------------------------------------------------------------
 
 # The machine run on until it stops, or until fewer than `floor` callers
@@ -540,6 +529,23 @@ instance_tested = |machine, name| {
 	}
 	replaced(machine, 2, Boolean(is_instance))
 }
+
+missing_name : Vm.Machine, Str, Ast.Where -> Vm.Machine
+missing_name = |machine, name, at| {
+	{ cells, machine: rest } = lent(machine)
+	with_got(rest, ValueRules.missing_name_got(shell(cells, rest), name, at), rest.top)
+}
+
+# Whom a budget's message names as running past it.
+budgeted_text : Vm.Budgeted -> Str
+budgeted_text = |budgeted|
+	match budgeted {
+		TheProgram => "the program"
+		FrameCall => "frame(t)"
+		TimerCallback => "a timer's callback"
+		ClickHandler => "the click handler"
+		CollectHandler => "the collect handler"
+	}
 
 code_of : Bytecode.Program, U64 -> Bytecode.Code
 code_of = |program, code| program.codes.get(code) ?? crash "Vm.code_of: a closure names code the program has"
@@ -775,6 +781,40 @@ roots = |machine| {
 	$ids
 }
 
+# ---- the value rules, lent the cells ---------------------------------------
+
+# What a value rule reads and writes of the machine: the cells, the free
+# cells it allocates from, and a status the rule may set to a fault or a
+# throw.
+shell : List(Heap.Cell), Vm.Machine -> ValueRules.Machine
+shell = |cells, rest| { cells: cells, free: rest.free, status: Running }
+
+# The machine with a rule's cells and free cells put back.
+with_rules : Vm.Machine, ValueRules.Machine -> Vm.Machine
+with_rules = |machine, rules| { ..machine, cells: rules.cells, free: rules.free }
+
+# The machine without its cells, which a borrowed rule takes: kept apart,
+# the cells have one owner while the rule writes them.
+Lent : { cells : List(Heap.Cell), machine : Vm.Machine }
+
+lent : Vm.Machine -> Lent
+lent = |machine| {
+	cells = machine.cells
+	{ cells: cells, machine: { ..machine, cells: [] } }
+}
+
+# The machine after a borrowed rule: its cells back, and its value in
+# `place` on the stack, or its fault or throw taken on.
+with_got : Vm.Machine, ValueRules.Got, U64 -> Vm.Machine
+with_got = |machine, got, place| {
+	{ machine: ruled, value } = got
+	match ruled.status {
+		Running => with_result(with_rules(machine, ruled), place, value)
+		Faulted(why) => { ..with_rules(machine, ruled), status: Faulted(why) }
+		Thrown(boxed) => { ..with_rules(machine, ruled), status: Thrown(boxed) }
+	}
+}
+
 # ---- boxes -----------------------------------------------------------------
 
 box_of : Vm.Machine, U64 -> U64
@@ -838,46 +878,6 @@ box_copied = |machine, slot| {
 	}
 	{ machine: made, id } = placed(machine, cell)
 	with_slot(made, slot, Reference(id))
-}
-
-# ---- the value rules, lent the cells ---------------------------------------
-
-# What a value rule reads and writes of the machine: the cells, the free
-# cells it allocates from, and a status the rule may set to a fault or a
-# throw.
-shell : List(Heap.Cell), Vm.Machine -> ValueRules.Machine
-shell = |cells, rest| { cells: cells, free: rest.free, status: Running }
-
-# The machine with a rule's cells and free cells put back.
-with_rules : Vm.Machine, ValueRules.Machine -> Vm.Machine
-with_rules = |machine, rules| { ..machine, cells: rules.cells, free: rules.free }
-
-# The machine without its cells, which a borrowed rule takes: kept apart,
-# the cells have one owner while the rule writes them.
-Lent : { cells : List(Heap.Cell), machine : Vm.Machine }
-
-lent : Vm.Machine -> Lent
-lent = |machine| {
-	cells = machine.cells
-	{ cells: cells, machine: { ..machine, cells: [] } }
-}
-
-# The machine after a borrowed rule: its cells back, and its value in
-# `place` on the stack, or its fault or throw taken on.
-with_got : Vm.Machine, ValueRules.Got, U64 -> Vm.Machine
-with_got = |machine, got, place| {
-	{ machine: ruled, value } = got
-	match ruled.status {
-		Running => with_result(with_rules(machine, ruled), place, value)
-		Faulted(why) => { ..with_rules(machine, ruled), status: Faulted(why) }
-		Thrown(boxed) => { ..with_rules(machine, ruled), status: Thrown(boxed) }
-	}
-}
-
-missing_name : Vm.Machine, Str, Ast.Where -> Vm.Machine
-missing_name = |machine, name, at| {
-	{ cells, machine: rest } = lent(machine)
-	with_got(rest, ValueRules.missing_name_got(shell(cells, rest), name, at), rest.top)
 }
 
 # ---- operators -------------------------------------------------------------
