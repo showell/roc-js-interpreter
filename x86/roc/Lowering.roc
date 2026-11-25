@@ -43,6 +43,7 @@ import Assembly
 import Boxing
 import Emit
 import Runtime
+import RuntimeCode
 import X86
 
 Lowering :: [].{
@@ -119,7 +120,7 @@ Lowering :: [].{
 					Ok({}) =>
 						Ok(
 							$items
-								.concat(Runtime.items)
+								.concat(RuntimeCode.items)
 								.concat(literal_statements(literals))
 								.concat(
 									closure_statements({
