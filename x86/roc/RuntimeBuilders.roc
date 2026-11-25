@@ -91,6 +91,13 @@ RuntimeBuilders :: [].{
 		displacement: 0,
 	})
 
+	## The byte `r8` of the string at `base` loaded into `reg`.
+	text_byte_item : { reg : X86.Register, base : X86.Register } -> Assembly.Statement
+	text_byte_item = |{ reg, base }| Emit.byte_load(
+		reg,
+		Emit.mem_index({ base, index: R8, displacement: 8 }),
+	)
+
 	## A double's bits, as an immediate takes them.
 	double_bits : F64 -> I64
 	double_bits = |value| value.to_bits().to_i64_wrap()
