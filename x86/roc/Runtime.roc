@@ -267,6 +267,12 @@ Runtime :: [].{
 	math_routine : Str -> Str
 	math_routine = |name| "runtime_math_${name}"
 
+	## The routine of `Date.now()`: the milliseconds since the epoch, whole,
+	## as a number's bits in `rax`, from the kernel's real-time clock. It
+	## changes `rcx`, `rdx`, `rsi`, `rdi`, `r8`, `r11` and `xmm0` too.
+	date_now : Str
+	date_now = "runtime_date_now"
+
 	## The functions of `Math` the runtime has a routine for.
 	math_functions : List(Str)
 	math_functions = ["floor", "ceil", "round", "trunc", "abs", "sign", "sqrt", "max", "min"]

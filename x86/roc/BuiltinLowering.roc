@@ -505,6 +505,20 @@ BuiltinLowering :: [].{
 	static_names : List(Str)
 	static_names = ["Math", "Object", "String", "Array"]
 
+	## `Date`, which the front end declares nowhere (the VM has none), read
+	## where its property follows: `Date.now()` is compiled, and every other
+	## use of it refused, so a program that runs here runs alike in node.
+	date_items : LoweringBasics.Site,
+	{
+		state : LoweringBasics.State,
+	} -> Try(LoweringBasics.Lowered, [Refused(Str)])
+	date_items = |site, { state }|
+		match site.code.ops.get(site.at + 1) {
+			Ok(MethodLookup(_, _)) | Ok(GetProperty(_, _)) =>
+				Ok(LoweringBasics.falling([], LoweringBasics.with_top(state, Static("Date"))))
+			_ => LoweringBasics.refusal(site, "`Date` is compiled only as `Date.now()`")
+		}
+
 	## The functions a builtin object holds, compiled or refused by name when
 	## called.
 	static_members : Str -> List(Str)
@@ -514,6 +528,7 @@ BuiltinLowering :: [].{
 			"Object" => ["keys", "values", "entries"]
 			"String" => ["fromCharCode"]
 			"Array" => ["isArray", "from", "of"]
+			"Date" => ["now"]
 			_ => []
 		}
 
@@ -535,6 +550,10 @@ BuiltinLowering :: [].{
 			# The doubles nearest pi and e.
 			("Math", "PI") => constant(0x400921FB54442D18)
 			("Math", "E") => constant(0x4005BF0A8B145769)
+			("Date", _) if key != "now" => LoweringBasics.refusal(
+				site,
+				"`Date.${key}` is not compiled yet: of `Date`, only `Date.now()` is",
+			)
 			_ if static_members(owner).contains(key) =>
 				Ok(
 					LoweringBasics.falling(
@@ -651,6 +670,12 @@ BuiltinLowering :: [].{
 					Emit.store(receiver, Rax),
 				]
 				Ok(LoweringBasics.falling(called, after(Array)))
+			}
+			# The milliseconds since the epoch, whole; any argument is unread,
+			# as in node.
+			("Date", "now") => {
+				called = [Emit.call(Runtime.date_now), Emit.store(receiver, Rax)]
+				Ok(LoweringBasics.falling(called, after(Number)))
 			}
 			("String", "fromCharCode") => {
 				called = LoweringBasics.arguments_array_items(site, { base, count })

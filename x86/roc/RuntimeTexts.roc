@@ -164,6 +164,7 @@ texts = [
 		"runtime_text_not_destructurable",
 		"x86: an object pattern of null or undefined, which throws in node, is not compiled yet\n",
 	),
+	("runtime_text_clock", "x86: the kernel's clock could not be read for `Date.now()`\n"),
 	("runtime_text_type_number", "number"),
 	("runtime_text_type_string", "string"),
 	("runtime_text_type_boolean", "boolean"),

@@ -475,6 +475,33 @@ builtin_items = {
 			Emit.mark("runtime_object_listing_stop"),
 		])
 		.concat(RuntimeBuilders.stopping_items("runtime_text_object_keys"))
+	# The kernel's real-time clock read into 16 bytes at `rsp` (syscall 228,
+	# the clock 0), the seconds then the nanoseconds; the milliseconds are
+	# whole, as node's, the nanoseconds' part divided down.
+	date_now = [
+		Emit.mark(Runtime.date_now),
+		Emit.minus_imm(Rsp, 16),
+		Emit.imm(Rax, 228),
+		Emit.zero(Rdi),
+		Emit.mov(Rsi, Rsp),
+		Emit.syscall,
+		Emit.test(Rax, Rax),
+		Emit.jcc(Ne, "runtime_date_now_stop"),
+		Emit.load(R8, Emit.mem(Rsp, 0)),
+		Emit.imm(Rcx, 1000),
+		Instruction(Imul({ to: R8, from: Rcx })),
+		Emit.load(Rax, Emit.mem(Rsp, 8)),
+		Emit.zero(Rdx),
+		Emit.imm(Rcx, 1000000),
+		Instruction(Div(Rcx)),
+		Emit.plus(Rax, R8),
+		Emit.plus_imm(Rsp, 16),
+		Instruction(Cvtsi2sd({ to: Xmm0, from: Rax })),
+		Instruction(MovqFromXmm({ to: Rax, from: Xmm0 })),
+		Emit.ret,
+		Emit.mark("runtime_date_now_stop"),
+	]
+		.concat(RuntimeBuilders.stopping_items("runtime_text_clock"))
 	[
 		signed_zero_items,
 		trunc,
@@ -494,6 +521,7 @@ builtin_items = {
 			greater: B,
 			joined: Or,
 		}),
+		date_now,
 		error_text,
 		text_of_boxed,
 		listing,

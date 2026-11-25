@@ -1597,6 +1597,7 @@ instruction_items = |site, { instruction, state }| {
 					),
 				)
 			}
+		MissingName({ name: "Date", at: _ }) => BuiltinLowering.date_items(site, { state: state })
 		MissingName({ name, at: _ }) => LoweringBasics.refusal(
 			site,
 			"`${name}` is declared nowhere, which throws in node",
