@@ -19,6 +19,7 @@ import Lexer
 import NumberText
 import ParserBasics
 import Resolve
+import ScopeLayout
 
 Parser :: [].{
 	program_of : Str, Ast.Library -> Try(Ast.Program, Lexer.Fault)
@@ -43,7 +44,7 @@ Parser :: [].{
 			Resolve.program(
 				{
 					statements: $statements,
-					scoping: Scoped(Parser.scope_names([], $statements)?),
+					scoping: Scoped(ScopeLayout.scope_names([], $statements)?),
 					capture: if $parser.functions > 0 {
 						Captures
 					} else {
@@ -53,66 +54,6 @@ Parser :: [].{
 				library,
 			),
 		)
-	}
-
-	# The names a scope holds, in order: `first` (a call's parameters), then
-	# each function and each `let` and `const` that `statements` declare. A
-	# function may share its name with a parameter or another function, the
-	# later made winning; a `let` or a `const` shares its name with nothing,
-	# as JavaScript refuses.
-	scope_names : List(Str), List(Ast.Statement) -> Try(List(Str), Lexer.Fault)
-	scope_names = |leading_names, statements| {
-		var $names = leading_names
-		var $lexical = []
-		for listed in statements {
-			match listed {
-				FunctionDeclaration(boxed, _) => {
-					definition = boxed.unbox()
-					if $lexical.contains(definition.name) {
-						return Err(
-							ParserBasics.fault_at(
-								definition.at,
-								Parser.redeclared_message(definition.name),
-							),
-						)
-					}
-					if !$names.contains(definition.name) {
-						$names = $names.append(definition.name)
-					}
-				}
-				Declare(_, declarations) => {
-					for d in declarations {
-						for name in Ast.pattern_names(d.pattern) {
-							if $names.contains(name) {
-								return Err(
-									ParserBasics.fault_at(d.at, Parser.redeclared_message(name)),
-								)
-							}
-							$names = $names.append(name)
-							$lexical = $lexical.append(name)
-						}
-					}
-				}
-				_ => {}
-			}
-		}
-		Ok($names)
-	}
-
-	redeclared_message : Str -> Str
-	redeclared_message = |name| "SyntaxError: Identifier '${name}' has already been declared"
-
-	# The first name `names` holds twice, if one is.
-	repeated_name : List(Str) -> Try(Str, [NoneRepeated])
-	repeated_name = |names| {
-		var $seen = []
-		for name in names {
-			if $seen.contains(name) {
-				return Ok(name)
-			}
-			$seen = $seen.append(name)
-		}
-		Err(NoneRepeated)
 	}
 
 	# ---- statements ------------------------------------------------------------
@@ -322,7 +263,7 @@ Parser :: [].{
 			value: Switch({
 				discriminant: discriminant.value,
 				cases: $cases,
-				scoping: Parser.scoping_of($statements)?,
+				scoping: ScopeLayout.scoping_of($statements)?,
 				capture: ParserBasics.capture_since($at, before),
 			}),
 		})
@@ -374,8 +315,8 @@ Parser :: [].{
 			bound = Parser.pattern(ParserBasics.advance(onward), Declaring)?
 			closed = ParserBasics.expect_punct(bound.parser, ")")?
 			names = Ast.pattern_names(bound.value)
-			match Parser.repeated_name(names) {
-				Ok(name) => return Err(ParserBasics.fault_at(site, Parser.redeclared_message(name)))
+			match ScopeLayout.repeated_name(names) {
+				Ok(name) => return Err(ParserBasics.fault_at(site, ScopeLayout.redeclared_message(name)))
 				Err(NoneRepeated) => {}
 			}
 			body = Parser.block(closed)?
@@ -383,7 +324,7 @@ Parser :: [].{
 				Scoped(declared) => {
 					for name in names {
 						if declared.contains(name) {
-							return Err(ParserBasics.fault_at(site, Parser.redeclared_message(name)))
+							return Err(ParserBasics.fault_at(site, ScopeLayout.redeclared_message(name)))
 						}
 					}
 				}
@@ -506,26 +447,10 @@ Parser :: [].{
 			parser: ParserBasics.advance($onward),
 			value: {
 				statements: $statements,
-				scoping: Parser.scoping_of($statements)?,
+				scoping: ScopeLayout.scoping_of($statements)?,
 				capture: ParserBasics.capture_since($onward, before),
 			},
 		})
-	}
-
-	scoping_of : List(Ast.Statement) -> Try(Ast.Scoping, Lexer.Fault)
-	scoping_of = |statements| {
-		declares = statements.any(
-			|listed| match listed {
-				Declare(_, _) => True
-				FunctionDeclaration(_, _) => True
-				_ => False
-			},
-		)
-		if declares {
-			Ok(Scoped(Parser.scope_names([], statements)?))
-		} else {
-			Ok(Unscoped)
-		}
 	}
 
 	declaration : ParserBasics.State,
@@ -555,11 +480,11 @@ Parser :: [].{
 				parsed_expression = Parser.assignment(ParserBasics.advance(bound.parser))?
 				$out = $out.append({
 					pattern: bound.value,
-					init: Initialized(Parser.named_for(parsed_expression.value, bound.value)),
+					init: Initialized(ScopeLayout.named_for(parsed_expression.value, bound.value)),
 					at: site,
 				})
 				$onward = parsed_expression.parser
-			} else if !Parser.is_leaf(bound.value) {
+			} else if !ScopeLayout.is_leaf(bound.value) {
 				return Err(
 					ParserBasics.fault_here(
 						bound.parser,
@@ -583,35 +508,6 @@ Parser :: [].{
 			}
 		}
 		Ok({ parser: $onward, value: $out })
-	}
-
-	# A function literal written with no name of its own takes the name it is
-	# bound to, as JavaScript names `const f = () => 1` "f".
-	with_name_given : Ast.Expression, Str -> Ast.Expression
-	with_name_given = |tree, name| match tree {
-		Function(boxed) => {
-			definition = boxed.unbox()
-			if definition.name == "" {
-				Function(Box.box({ ..definition, name: name }))
-			} else {
-				tree
-			}
-		}
-		_ => tree
-	}
-
-	# A function literal bound by a pattern that is a plain name takes the
-	# name, as `with_name_given` gives it.
-	named_for : Ast.Expression, Ast.Pattern -> Ast.Expression
-	named_for = |tree, bound| match bound {
-		Leaf(ToName(name, _, _)) => Parser.with_name_given(tree, name)
-		_ => tree
-	}
-
-	is_leaf : Ast.Pattern -> Bool
-	is_leaf = |bound| match bound {
-		Leaf(_) => True
-		_ => False
 	}
 
 	# ---- patterns --------------------------------------------------------------
@@ -697,7 +593,7 @@ Parser :: [].{
 		while !ParserBasics.is_punct($onward, "}") {
 			if ParserBasics.is_punct($onward, "...") {
 				parsed = Parser.pattern(ParserBasics.advance($onward), mode)?
-				if !Parser.is_leaf(parsed.value) {
+				if !ScopeLayout.is_leaf(parsed.value) {
 					return Err(
 						ParserBasics.fault_here(
 							ParserBasics.advance($onward),
@@ -771,7 +667,7 @@ Parser :: [].{
 	default_after = |parser, bound|
 		if ParserBasics.is_punct(parser, "=") {
 			parsed = Parser.assignment(ParserBasics.advance(parser))?
-			Ok({ parser: parsed.parser, value: Defaulted(Parser.named_for(parsed.value, bound)) })
+			Ok({ parser: parsed.parser, value: Defaulted(ScopeLayout.named_for(parsed.value, bound)) })
 		} else {
 			Ok({ parser: parser, value: NoDefault })
 		}
@@ -849,7 +745,7 @@ Parser :: [].{
 				body = { ..looped, parser: ParserBasics.outside(looped.parser, q4) }
 				loop = {
 					labels: [],
-					names: Parser.scope_names([], [init.value])?,
+					names: ScopeLayout.scope_names([], [init.value])?,
 					init: init.value,
 					test: test.value,
 					update: update.value,
@@ -870,8 +766,8 @@ Parser :: [].{
 		site = ParserBasics.here(parser)
 		bound = Parser.pattern(parser, Declaring)?
 		names = Ast.pattern_names(bound.value)
-		match Parser.repeated_name(names) {
-			Ok(name) => return Err(ParserBasics.fault_at(site, Parser.redeclared_message(name)))
+		match ScopeLayout.repeated_name(names) {
+			Ok(name) => return Err(ParserBasics.fault_at(site, ScopeLayout.redeclared_message(name)))
 			Err(NoneRepeated) => {}
 		}
 		parsed_expression = Parser.assignment(ParserBasics.advance(bound.parser))?
@@ -1418,7 +1314,7 @@ Parser :: [].{
 			name: "",
 			parameters: ["this"],
 			binding: Plain,
-			names: Parser.scope_names(["this"], install_statements)?,
+			names: ScopeLayout.scope_names(["this"], install_statements)?,
 			statements: install_statements,
 			capture: if body.methods.is_empty() {
 				CapturesNothing
@@ -1670,7 +1566,7 @@ Parser :: [].{
 			name: name,
 			parameters: parameters.names,
 			binding: parameters.binding,
-			names: Parser.scope_names(parameters.names, parsed_block.value.statements)?,
+			names: ScopeLayout.scope_names(parameters.names, parsed_block.value.statements)?,
 			statements: parsed_block.value.statements,
 			capture: ParserBasics.capture_since(parsed_block.parser, before),
 			form: Ordinary,
@@ -1834,7 +1730,7 @@ Parser :: [].{
 					target = Parser.target_here(left.parser, { tree: left.value, at: site })?
 					right = Parser.assignment(ParserBasics.advance(left.parser))?
 					value = match target {
-						ToName(text, _, _) => Parser.with_name_given(right.value, text)
+						ToName(text, _, _) => ScopeLayout.with_name_given(right.value, text)
 						_ => right.value
 					}
 					Ok({ parser: right.parser, value: Assign(target, operator, value, site) })
@@ -2438,7 +2334,7 @@ Parser :: [].{
 			parsed_value = Parser.assignment(ParserBasics.advance(after))?
 			Ok({
 				parser: parsed_value.parser,
-				value: { key: key, value: Parser.with_name_given(parsed_value.value, key) },
+				value: { key: key, value: ScopeLayout.with_name_given(parsed_value.value, key) },
 			})
 		} else if ParserBasics.is_punct(after, "(") {
 			# `this` in an object's method is not a class's instance.
