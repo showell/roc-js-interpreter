@@ -734,7 +734,7 @@ closure_called! = |host, program, machine, { environment, arguments, at }| {
 	floor = $machine.depth + 1
 	calling = { count: arguments.len(), result_at: result_at, naming: Shown, at: at }
 	if $machine.depth >= max_callback_depth {
-		Machine.with_error($machine, RangeError, "Maximum call stack size exceeded", at)
+		Instructions.stack_exceeded($machine, at)
 	} else {
 		entered = Instructions.closure_entered(program, $machine, { environment: environment, calling: calling })
 		if entered.depth >= floor {
@@ -756,7 +756,7 @@ call_function! = |host, program, machine, { callee, arguments, at }| {
 	}
 	floor = $machine.depth + 1
 	if $machine.depth >= max_callback_depth {
-		Machine.with_error($machine, RangeError, "Maximum call stack size exceeded", at)
+		Instructions.stack_exceeded($machine, at)
 	} else {
 		entered = called!(host, program, $machine, { count: arguments.len(), result_at: result_at, naming: Shown, at: at })
 		if entered.depth >= floor {

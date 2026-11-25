@@ -663,9 +663,9 @@ Instructions :: [].{
 
 	Calling : { count : U64, result_at : U64, naming : Instructions.Naming, at : Ast.Where }
 
-	# The deepest call the VM makes before it throws a RangeError.
-	max_depth : U64
-	max_depth = ValueRules.max_depth
+	# The machine after a call too deep, as node throws it: a RangeError.
+	stack_exceeded : Machine.Machine, Ast.Where -> Machine.Machine
+	stack_exceeded = |machine, at| Machine.with_error(machine, RangeError, "Maximum call stack size exceeded", at)
 
 	closure_entered : Bytecode.Program, Machine.Machine, { environment : U64, calling : Instructions.Calling } -> Machine.Machine
 	closure_entered = |program, machine, { environment, calling }| {
@@ -673,8 +673,8 @@ Instructions :: [].{
 			Environment(held) => held
 			_ => crash "Instructions.closure_entered: a VM closure's scope names its environment"
 		}
-		if machine.depth >= Instructions.max_depth {
-			Machine.with_error(machine, RangeError, "Maximum call stack size exceeded", calling.at)
+		if machine.depth >= ValueRules.max_depth {
+			Instructions.stack_exceeded(machine, calling.at)
 		} else {
 			counted = Machine.stepped(machine)
 			caller = { code: counted.code, pc: counted.pc, base: counted.base, result_at: calling.result_at }
