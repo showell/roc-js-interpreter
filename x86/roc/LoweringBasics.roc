@@ -94,7 +94,8 @@ LoweringBasics :: [].{
 	is_value_kind : LoweringBasics.Kind -> Bool
 	is_value_kind = |kind|
 		match kind {
-			Number | Boolean | Undefined | Null | String | Array | Object | Value | Closure(_) => True
+			Number | Boolean | Undefined | Null => True
+			String | Array | Object | Value | Closure(_) => True
 			Function(_) | Console | Log | Method(_) => False
 			ErrorClass(_) | CollectionClass(_) | TimerFunction(_) => False
 			Static(_) | StaticMethod(_) => False
@@ -118,7 +119,10 @@ LoweringBasics :: [].{
 	## The label of a text the program names.
 	text_label : LoweringBasics.Site, Str -> Str
 	text_label = |site, text| {
-		number = site.lowering.literals.get(text) ?? crash "LoweringBasics.text_label: every text is numbered"
+		number = match site.lowering.literals.get(text) {
+			Ok(numbered) => numbered
+			Err(_) => crash "LoweringBasics.text_label: every text is numbered"
+		}
 		LoweringBasics.literal_label(number)
 	}
 
@@ -186,10 +190,10 @@ LoweringBasics :: [].{
 
 	## The instruction's refusal, naming its function and place.
 	refusal : LoweringBasics.Site, Str -> Try(a, [Refused(Str)])
-	refusal = |
-		site,
-		why,
-	| Err(Refused("${LoweringBasics.function_name(site.lowering)}, instruction ${site.at.to_str()}: ${why}"))
+	refusal = |site, why| {
+		named = LoweringBasics.function_name(site.lowering)
+		Err(Refused("${named}, instruction ${site.at.to_str()}: ${why}"))
+	}
 
 	## An instruction that falls through to the next with `state`.
 	falling : List(Assembly.Statement), LoweringBasics.State -> LoweringBasics.Lowered
@@ -204,7 +208,10 @@ LoweringBasics :: [].{
 	kind_below : LoweringBasics.State, U64 -> LoweringBasics.Kind
 	kind_below = |state, down| {
 		kinds = state.stack_kinds
-		kinds.get(kinds.len() - 1 - down) ?? crash "LoweringBasics.kind_below: a value the stack holds"
+		match kinds.get(kinds.len() - 1 - down) {
+			Ok(kind) => kind
+			Err(_) => crash "LoweringBasics.kind_below: a value the stack holds"
+		}
 	}
 
 	## The stack with its top `count` values gone.
@@ -251,15 +258,25 @@ LoweringBasics :: [].{
 	## A slot written with the value on top of the stack: refused for a
 	## function's name, and for a value that isn't a number, a boolean or
 	## `undefined`.
-	written_slot : LoweringBasics.Site, { state : LoweringBasics.State, slot : U64 } -> Try(LoweringBasics.State, [Refused(Str)])
+	written_slot : LoweringBasics.Site,
+	{
+		state : LoweringBasics.State,
+		slot : U64,
+	} -> Try(LoweringBasics.State, [Refused(Str)])
 	written_slot = |site, { state, slot }| {
 		match state.slots.get(slot) {
-			Ok(Ready(Function(_))) => return LoweringBasics.refusal(site, "a function's name is assigned")
+			Ok(Ready(Function(_))) => return LoweringBasics.refusal(
+				site,
+				"a function's name is assigned",
+			)
 			_ => {}
 		}
 		given = LoweringBasics.kind_below(state, 0)
 		if !LoweringBasics.is_value_kind(given) {
-			return LoweringBasics.refusal(site, "a variable is given a function, `console` or a method")
+			return LoweringBasics.refusal(
+				site,
+				"a variable is given a function, `console` or a method",
+			)
 		}
 		# A cell is shared with the closures that capture it, whose writes no
 		# walk of this code sees.
@@ -269,19 +286,30 @@ LoweringBasics :: [].{
 			} else {
 				given
 			}
-		slots = state.slots.set(slot, Ready(kind)) ?? crash "LoweringBasics.written_slot: a slot of the frame"
+		slots = state.slots.set(
+			slot,
+			Ready(kind),
+		) ?? crash "LoweringBasics.written_slot: a slot of the frame"
 		Ok({ ..state, slots })
 	}
 
 	## The value on top of the stack stored in its slot.
-	store_items : LoweringBasics.Site, { state : LoweringBasics.State, slot : U64 } -> List(Assembly.Statement)
+	store_items : LoweringBasics.Site,
+	{
+		state : LoweringBasics.State,
+		slot : U64,
+	} -> List(Assembly.Statement)
 	store_items = |site, { state, slot }| LoweringBasics.copy_items({
 		from: LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 1),
 		to: LoweringBasics.slot_place(slot),
 	})
 
 	## A slot's value pushed.
-	load_items : LoweringBasics.Site, { state : LoweringBasics.State, slot : U64 } -> List(Assembly.Statement)
+	load_items : LoweringBasics.Site,
+	{
+		state : LoweringBasics.State,
+		slot : U64,
+	} -> List(Assembly.Statement)
 	load_items = |site, { state, slot }| LoweringBasics.copy_items({
 		from: LoweringBasics.slot_place(slot),
 		to: LoweringBasics.stack_place(site.code, state.stack_kinds.len()),
@@ -289,7 +317,11 @@ LoweringBasics :: [].{
 
 	## A truth test of the value on top of the stack: the flags set so that
 	## `E` holds when it is falsy (false, 0, -0 or NaN).
-	truth_items : LoweringBasics.Site, LoweringBasics.State -> Try(List(Assembly.Statement), [Refused(Str)])
+	truth_items : LoweringBasics.Site,
+	LoweringBasics.State -> Try(
+		List(Assembly.Statement),
+		[Refused(Str)],
+	)
 	truth_items = |site, state| {
 		top = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 1)
 		match LoweringBasics.kind_below(state, 0) {
@@ -342,10 +374,16 @@ LoweringBasics :: [].{
 			return LoweringBasics.refusal(site, "`++` or `--` of a value that is not a number")
 		}
 		top = LoweringBasics.stack_place(site.code, state.stack_kinds.len())
-		checked = LoweringBasics.number_check_items({ kind, place: LoweringBasics.slot_place(slot) })
+		checked = LoweringBasics.number_check_items({
+			kind,
+			place: LoweringBasics.slot_place(slot),
+		})
 		numbered = {
 			..state,
-			slots: state.slots.set(slot, Ready(Number)) ?? crash "LoweringBasics.update_items: a slot",
+			slots: state.slots.set(
+				slot,
+				Ready(Number),
+			) ?? crash "LoweringBasics.update_items: a slot",
 		}
 		stepped = [
 			Instruction(MovsdLoad({ to: Xmm0, from: LoweringBasics.slot_place(slot) })),
@@ -361,7 +399,10 @@ LoweringBasics :: [].{
 			Instruction(MovsdStore({ to: LoweringBasics.slot_place(slot), from: Xmm0 })),
 		]
 		items = match step.fixity {
-			Postfix => LoweringBasics.copy_items({ from: LoweringBasics.slot_place(slot), to: top }).concat(stepped)
+			Postfix => LoweringBasics.copy_items({
+				from: LoweringBasics.slot_place(slot),
+				to: top,
+			}).concat(stepped)
 			Prefix => stepped.append(Instruction(MovsdStore({ to: top, from: Xmm0 })))
 		}
 		Ok(LoweringBasics.falling(checked.concat(items), LoweringBasics.with_top(numbered, Number)))
@@ -397,7 +438,7 @@ LoweringBasics :: [].{
 			(Array, other) | (other, Array) if LoweringBasics.is_value_kind(other) => Ok(String)
 			(Object, other) | (other, Object) if LoweringBasics.is_value_kind(other) => Ok(String)
 			# `undefined`, `null` and the booleans are made numbers.
-			(one, other) if LoweringBasics.is_primitive_number(one) and LoweringBasics.is_primitive_number(other) => Ok(Number)
+			(one, other) if [one, other].all(LoweringBasics.is_primitive_number) => Ok(Number)
 			_ => Err(Unadded)
 		}
 
@@ -467,7 +508,11 @@ LoweringBasics :: [].{
 	## The statements that put an array of `count` values from the stack's
 	## place `base` on, in order, in `rax`: a call's arguments, for a routine
 	## that takes any count of them.
-	arguments_array_items : LoweringBasics.Site, { base : U64, count : U64 } -> List(Assembly.Statement)
+	arguments_array_items : LoweringBasics.Site,
+	{
+		base : U64,
+		count : U64,
+	} -> List(Assembly.Statement)
 	arguments_array_items = |site, { base, count }| {
 		var $filled = [Emit.imm(Rdi, count.to_i64_wrap()), Emit.call(Runtime.new_array)]
 		for item in 0..<count {

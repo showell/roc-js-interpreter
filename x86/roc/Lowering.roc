@@ -143,7 +143,11 @@ Lowering :: [].{
 }
 
 ## The parameters' kinds of every call so far, with one more call met in.
-with_call_kinds : Dict(U64, List(LoweringBasics.Kind)), LoweringBasics.CallKinds -> Dict(U64, List(LoweringBasics.Kind))
+with_call_kinds : Dict(
+	U64,
+	List(LoweringBasics.Kind),
+),
+LoweringBasics.CallKinds -> Dict(U64, List(LoweringBasics.Kind))
 with_call_kinds = |called, { code, kinds }|
 	match called.get(code) {
 		Ok(before) => {
@@ -224,7 +228,10 @@ literal_statements : Dict(Str, U64) -> List(Assembly.Statement)
 literal_statements = |literals| {
 	var $out = []
 	for (text, number) in literals.to_list() {
-		$out = $out.concat([Mark(LoweringBasics.literal_label(number)), Data(Runtime.string_data(text))])
+		$out = $out.concat([
+			Mark(LoweringBasics.literal_label(number)),
+			Data(Runtime.string_data(text)),
+		])
 	}
 	$out
 }
@@ -408,7 +415,10 @@ closure_statements = |{ makers, statics, escaped_codes }| {
 				} else {
 					"[Function: ${maker.name}]"
 				}
-			$out = $out.concat([Mark(LoweringBasics.function_text_label(made)), Data(Runtime.string_data(text))])
+			$out = $out.concat([
+				Mark(LoweringBasics.function_text_label(made)),
+				Data(Runtime.string_data(text)),
+			])
 			if statics.contains(made) {
 				$out = $out.concat([
 					Mark(LoweringBasics.closure_label(made)),
@@ -548,7 +558,10 @@ CodeItems : {
 ## widens the head to `Value` and lowers the function again. A function
 ## refused still gives the calls it made before the refusal, so the
 ## functions it calls learn their parameters' kinds.
-code_items : LoweringBasics.Context -> Try(CodeItems, { refused : [Refused(Str)], calls : List(LoweringBasics.CallKinds) })
+code_items : LoweringBasics.Context -> Try(
+	CodeItems,
+	{ refused : [Refused(Str)], calls : List(LoweringBasics.CallKinds) },
+)
 code_items = |lowering| {
 	var $heads = Dict.empty()
 	for _ in 0..<16 {
@@ -706,7 +719,11 @@ code_walk = |lowering, heads| {
 
 ## The kinds of a call's arguments, when the instruction calls a declared
 ## function with as many arguments as it has parameters, each a value.
-call_kinds : LoweringBasics.Context, { instruction : Bytecode.Op, state : LoweringBasics.State } -> Try(LoweringBasics.CallKinds, [NoCall])
+call_kinds : LoweringBasics.Context,
+{
+	instruction : Bytecode.Op,
+	state : LoweringBasics.State,
+} -> Try(LoweringBasics.CallKinds, [NoCall])
 call_kinds = |lowering, { instruction, state }|
 	match instruction {
 		Call({ count, written: _, at: _ }) =>
@@ -735,7 +752,11 @@ call_kinds = |lowering, { instruction, state }|
 ## takes its arguments as a call through a value passes them, by either
 ## entry, and packs them into an array in its slot. Both go on to make the
 ## cells of its own variables a closure captures.
-entry_items : LoweringBasics.Context, { code : Bytecode.Code, frame_bytes : U64 } -> List(Assembly.Statement)
+entry_items : LoweringBasics.Context,
+{
+	code : Bytecode.Code,
+	frame_bytes : U64,
+} -> List(Assembly.Statement)
 entry_items = |lowering, { code, frame_bytes }| {
 	index = lowering.index
 	parameters = match code.arguments {
@@ -836,7 +857,11 @@ entry_items = |lowering, { code, frame_bytes }| {
 ## The functions known before the program runs among the values an
 ## instruction takes from the top of the stack, made values: each one's
 ## closure record, boxed, written in its place, which takes its kind.
-values_made : LoweringBasics.Site, { instruction : Bytecode.Op, state : LoweringBasics.State } -> Valued
+values_made : LoweringBasics.Site,
+{
+	instruction : Bytecode.Op,
+	state : LoweringBasics.State,
+} -> Valued
 values_made = |site, { instruction, state }| {
 	depth = state.stack_kinds.len()
 	taken = U64.min(taken_count(instruction), depth)
@@ -873,7 +898,11 @@ values_made = |site, { instruction, state }| {
 ## on its stack holding a function known by its code where the jump brings
 ## a value made that value: its closure record, boxed, as `values_made`
 ## makes one.
-values_met : LoweringBasics.Context, { state : LoweringBasics.State, waiting : LoweringBasics.State } -> Valued
+values_met : LoweringBasics.Context,
+{
+	state : LoweringBasics.State,
+	waiting : LoweringBasics.State,
+} -> Valued
 values_met = |lowering, { state, waiting }| {
 	code = lowering.program.codes.get(lowering.index) ?? crash "Lowering.values_met: a code's index"
 	var $items = []
@@ -1116,14 +1145,18 @@ binary_items = |site, { state, operator }| {
 							LoweringBasics.with_top(LoweringBasics.without_top(state, 2), kind),
 						),
 					)
-				Err(Unadded) => LoweringBasics.refusal(
-					site,
-					"`+` of ${LoweringBasics.kind_phrase(kinds.0)} and ${LoweringBasics.kind_phrase(kinds.1)} isn't compiled",
-				)
+				Err(Unadded) => {
+					first = LoweringBasics.kind_phrase(kinds.0)
+					second = LoweringBasics.kind_phrase(kinds.1)
+					LoweringBasics.refusal(site, "`+` of ${first} and ${second} isn't compiled")
+				}
 			}
 		(Subtract, _)
 		| (Multiply, _)
-		| (Divide, _) if LoweringBasics.is_numeric(kinds.0) and LoweringBasics.is_numeric(kinds.1) => {
+		| (
+			Divide,
+			_,
+		) if LoweringBasics.is_numeric(kinds.0) and LoweringBasics.is_numeric(kinds.1) => {
 			operation = match operator {
 				Subtract => Subsd
 				Multiply => Mulsd
@@ -1134,7 +1167,10 @@ binary_items = |site, { state, operator }| {
 			done = arithmetic(operation)
 			Ok({ ..done, statements: checked.concat(done.statements) })
 		}
-		(Less, _) | (LessOrEqual, _) | (Greater, _) | (GreaterOrEqual, _) if LoweringBasics.is_ordered(kinds) => {
+		(Less, _)
+		| (LessOrEqual, _)
+		| (Greater, _)
+		| (GreaterOrEqual, _) if LoweringBasics.is_ordered(kinds) => {
 			mapped = match operator {
 				Less => [Emit.cmp_imm(Rax, 0), Instruction(Setcc({ condition: E, to: Al }))]
 				LessOrEqual => [Emit.cmp_imm(Rax, 1), Instruction(Setcc({ condition: Be, to: Al }))]
@@ -1159,7 +1195,10 @@ binary_items = |site, { state, operator }| {
 				),
 			)
 		}
-		(Remainder, _) if LoweringBasics.is_numeric(kinds.0) and LoweringBasics.is_numeric(kinds.1) =>
+		(
+			Remainder,
+			_,
+		) if LoweringBasics.is_numeric(kinds.0) and LoweringBasics.is_numeric(kinds.1) =>
 			Ok(
 				LoweringBasics.falling(
 					[
@@ -1188,8 +1227,9 @@ binary_items = |site, { state, operator }| {
 		}
 		_ => {
 			named = Str.inspect(operator)
-			operands = "${LoweringBasics.kind_phrase(kinds.0)} and ${LoweringBasics.kind_phrase(kinds.1)}"
-			LoweringBasics.refusal(site, "`${named}` of ${operands} is not compiled yet")
+			first = LoweringBasics.kind_phrase(kinds.0)
+			second = LoweringBasics.kind_phrase(kinds.1)
+			LoweringBasics.refusal(site, "`${named}` of ${first} and ${second} is not compiled yet")
 		}
 	}
 }
@@ -1208,7 +1248,10 @@ dynamic_equality_items = |site, { state, operator, kinds }| {
 	right = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 1)
 	(one, other) = kinds
 	if !LoweringBasics.is_value_kind(one) or !LoweringBasics.is_value_kind(other) {
-		return LoweringBasics.refusal(site, "`===` of ${LoweringBasics.kind_phrase(one)} and ${LoweringBasics.kind_phrase(other)}")
+		return LoweringBasics.refusal(
+			site,
+			"`===` of ${LoweringBasics.kind_phrase(one)} and ${LoweringBasics.kind_phrase(other)}",
+		)
 	}
 	flipped = match operator {
 		StrictNotEqual => [
@@ -1242,7 +1285,11 @@ dynamic_equality_items = |site, { state, operator, kinds }| {
 }
 
 ## A unary operator on the value on top of the stack.
-unary_items : LoweringBasics.Site, { state : LoweringBasics.State, operator : Ast.UnaryOperator } -> Try(LoweringBasics.Lowered, [Refused(Str)])
+unary_items : LoweringBasics.Site,
+{
+	state : LoweringBasics.State,
+	operator : Ast.UnaryOperator,
+} -> Try(LoweringBasics.Lowered, [Refused(Str)])
 unary_items = |site, { state, operator }| {
 	top = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 1)
 	match (operator, LoweringBasics.kind_below(state, 0)) {
@@ -1353,7 +1400,12 @@ unary_items = |site, { state, operator }| {
 				]
 				Unnamed => [Emit.load(Rdi, top), Emit.call(Runtime.type_of)]
 			}
-			Ok(LoweringBasics.falling(found.append(Emit.store(top, Rax)), LoweringBasics.with_top(LoweringBasics.without_top(state, 1), String)))
+			Ok(
+				LoweringBasics.falling(
+					found.append(Emit.store(top, Rax)),
+					LoweringBasics.with_top(LoweringBasics.without_top(state, 1), String),
+				),
+			)
 		}
 		(_, kind) => LoweringBasics.refusal(
 			site,
@@ -1374,7 +1426,10 @@ defined_jump_items : LoweringBasics.Site,
 defined_jump_items = |site, { state, skip, settles }| {
 	kind = LoweringBasics.kind_below(state, 0)
 	if !LoweringBasics.is_value_kind(kind) {
-		return LoweringBasics.refusal(site, "`??` or a default of ${LoweringBasics.kind_phrase(kind)}")
+		return LoweringBasics.refusal(
+			site,
+			"`??` or a default of ${LoweringBasics.kind_phrase(kind)}",
+		)
 	}
 	top = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 1)
 	# `undefined` and `null` differ in their lowest bit alone.
@@ -1408,7 +1463,11 @@ defined_jump_items = |site, { state, skip, settles }| {
 
 ## A `switch`'s case: the two values on top compared by `===`, both
 ## dropped, and the jump taken when they are the same.
-same_jump_items : LoweringBasics.Site, { state : LoweringBasics.State, skip : U64 } -> Try(LoweringBasics.Lowered, [Refused(Str)])
+same_jump_items : LoweringBasics.Site,
+{
+	state : LoweringBasics.State,
+	skip : U64,
+} -> Try(LoweringBasics.Lowered, [Refused(Str)])
 same_jump_items = |site, { state, skip }| {
 	compared = binary_items(site, { state, operator: StrictEqual })?
 	after = match compared.falls {
@@ -1432,7 +1491,11 @@ same_jump_items = |site, { state, skip }| {
 
 ## A call: of a function known by its code, directly, `rbx` holding its
 ## closure record when it has one; of any other value, through it.
-call_items : LoweringBasics.Site, { state : LoweringBasics.State, count : U64 } -> Try(LoweringBasics.Lowered, [Refused(Str)])
+call_items : LoweringBasics.Site,
+{
+	state : LoweringBasics.State,
+	count : U64,
+} -> Try(LoweringBasics.Lowered, [Refused(Str)])
 call_items = |site, { state, count }| {
 	callee_place = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - count - 1)
 	match LoweringBasics.kind_below(state, count) {
@@ -1478,11 +1541,17 @@ call_items = |site, { state, count }| {
 						Emit.imm(Rcx, Boxing.tag_bits(Boxing.string_tag)),
 						Emit.plus(Rax, Rcx),
 					]
-				} else if LoweringBasics.is_value_kind(LoweringBasics.kind_below(state, count - 1)) {
-					argument = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - count)
+				} else if LoweringBasics.is_value_kind(
+					LoweringBasics.kind_below(state, count - 1),
+				) {
+					argument = LoweringBasics.stack_place(
+						site.code,
+						state.stack_kinds.len() - count,
+					)
 					[Emit.load(Rdi, argument), Emit.call(Runtime.text_of_boxed)]
 				} else {
-					return LoweringBasics.refusal(site, "`String` of ${LoweringBasics.kind_phrase(LoweringBasics.kind_below(state, count - 1))}")
+					phrase = LoweringBasics.kind_phrase(LoweringBasics.kind_below(state, count - 1))
+					return LoweringBasics.refusal(site, "`String` of ${phrase}")
 				}
 			Ok(
 				LoweringBasics.falling(
@@ -1519,14 +1588,19 @@ direct_call_items = |site, { state, count, made, record_statements }| {
 	}
 	base = state.stack_kinds.len() - count - 1
 	pushed = arguments_pushed(site, { state, count })?
-	var $items = record_statements.concat(pushed).concat(counted).append(CallTo(LoweringBasics.code_label(made)))
+	call = CallTo(LoweringBasics.code_label(made))
+	var $items = record_statements.concat(pushed).concat(counted).append(call)
 	if count > 0 {
 		$items = $items.append(Emit.plus_imm(Rsp, (8 * count).to_i64_wrap()))
 	}
 	result = site.lowering.returns.get(made) ?? crash "Lowering.call_items: a result"
 	Ok(
 		LoweringBasics.falling(
-			$items.append(Instruction(MovMemReg({ to: LoweringBasics.stack_place(site.code, base), from: Rax }))),
+			$items.append(
+				Instruction(
+					MovMemReg({ to: LoweringBasics.stack_place(site.code, base), from: Rax }),
+				),
+			),
 			LoweringBasics.with_top(LoweringBasics.without_top(state, count + 1), result),
 		),
 	)
@@ -1544,7 +1618,10 @@ arguments_pushed = |site, { state, count }| {
 	for back in 0..<count {
 		argument = count - 1 - back
 		if !LoweringBasics.is_value_kind(LoweringBasics.kind_below(state, back)) {
-			return LoweringBasics.refusal(site, "a call with a function, `console` or a method as an argument")
+			return LoweringBasics.refusal(
+				site,
+				"a call with a function, `console` or a method as an argument",
+			)
 		}
 		$items = $items.concat([
 			Emit.load(Rax, LoweringBasics.stack_place(site.code, base + argument)),
@@ -1637,7 +1714,11 @@ record_items = |site, { made, captures, place }| {
 }
 
 ## A cell's value pushed, or a plain slot's.
-boxed_load_items : LoweringBasics.Site, { state : LoweringBasics.State, slot : U64 } -> List(Assembly.Statement)
+boxed_load_items : LoweringBasics.Site,
+{
+	state : LoweringBasics.State,
+	slot : U64,
+} -> List(Assembly.Statement)
 boxed_load_items = |site, { state, slot }|
 	if site.lowering.cells.contains(slot) {
 		[
@@ -1650,7 +1731,11 @@ boxed_load_items = |site, { state, slot }|
 	}
 
 ## The value on top of the stack stored in a cell, or in a plain slot.
-boxed_store_items : LoweringBasics.Site, { state : LoweringBasics.State, slot : U64 } -> List(Assembly.Statement)
+boxed_store_items : LoweringBasics.Site,
+{
+	state : LoweringBasics.State,
+	slot : U64,
+} -> List(Assembly.Statement)
 boxed_store_items = |site, { state, slot }|
 	if site.lowering.cells.contains(slot) {
 		[
@@ -1701,7 +1786,11 @@ cell_update_items = |site, { state, slot, step }| {
 
 ## `console.log` of the values on top of the stack: each written as node
 ## writes it, a space between, then a newline.
-log_items : LoweringBasics.Site, { state : LoweringBasics.State, count : U64 } -> Try(LoweringBasics.Lowered, [Refused(Str)])
+log_items : LoweringBasics.Site,
+{
+	state : LoweringBasics.State,
+	count : U64,
+} -> Try(LoweringBasics.Lowered, [Refused(Str)])
 log_items = |site, { state, count }| {
 	base = state.stack_kinds.len() - count
 	var $items = []
@@ -1719,33 +1808,55 @@ log_items = |site, { state, count }| {
 				Instruction(MovRegMem({ to: Rdi, from: place })),
 				CallTo(Runtime.write_value),
 			]
-			kind => return LoweringBasics.refusal(site, "console.log of ${LoweringBasics.kind_phrase(kind)} is not compiled yet")
+			kind => return LoweringBasics.refusal(
+				site,
+				"console.log of ${LoweringBasics.kind_phrase(kind)} is not compiled yet",
+			)
 		}
 		$items = $items.concat(written)
 	}
 	$items = $items.concat(Runtime.text_items(Newline))
-	Ok(LoweringBasics.falling($items, LoweringBasics.with_top(LoweringBasics.without_top(state, count + 2), Undefined)))
+	Ok(
+		LoweringBasics.falling(
+			$items,
+			LoweringBasics.with_top(LoweringBasics.without_top(state, count + 2), Undefined),
+		),
+	)
 }
 
 ## A builtin read: `console`, `NaN` and `Infinity`, and no other yet.
-builtin_items : LoweringBasics.Site, { state : LoweringBasics.State, place : U64 } -> Try(LoweringBasics.Lowered, [Refused(Str)])
+builtin_items : LoweringBasics.Site,
+{
+	state : LoweringBasics.State,
+	place : U64,
+} -> Try(LoweringBasics.Lowered, [Refused(Str)])
 builtin_items = |site, { state, place }| {
 	top = LoweringBasics.stack_place(site.code, state.stack_kinds.len())
 	match Ast.global_names_of(Core).get(place) {
 		Ok("console") => Ok(LoweringBasics.falling([], LoweringBasics.with_top(state, Console)))
 		Ok("NaN") => Ok(
-			LoweringBasics.falling(LoweringBasics.constant_items({ bits: 0x7FF8000000000000, to: top }), LoweringBasics.with_top(state, Number)),
+			LoweringBasics.falling(
+				LoweringBasics.constant_items({ bits: 0x7FF8000000000000, to: top }),
+				LoweringBasics.with_top(state, Number),
+			),
 		)
 		Ok("Infinity") => Ok(
-			LoweringBasics.falling(LoweringBasics.constant_items({ bits: 0x7FF0000000000000, to: top }), LoweringBasics.with_top(state, Number)),
+			LoweringBasics.falling(
+				LoweringBasics.constant_items({ bits: 0x7FF0000000000000, to: top }),
+				LoweringBasics.with_top(state, Number),
+			),
 		)
-		Ok(name) if error_names.contains(name) => Ok(LoweringBasics.falling([], LoweringBasics.with_top(state, ErrorClass(name))))
+		Ok(name) if error_names.contains(name) => Ok(
+			LoweringBasics.falling([], LoweringBasics.with_top(state, ErrorClass(name))),
+		)
 		Ok(name) if name == "Map" or name == "Set" =>
 			Ok(LoweringBasics.falling([], LoweringBasics.with_top(state, CollectionClass(name))))
 		Ok(name) if timer_names.contains(name) => Ok(
 			LoweringBasics.falling([], LoweringBasics.with_top(state, TimerFunction(name))),
 		)
-		Ok(name) if static_names.contains(name) => Ok(LoweringBasics.falling([], LoweringBasics.with_top(state, Static(name))))
+		Ok(name) if static_names.contains(name) => Ok(
+			LoweringBasics.falling([], LoweringBasics.with_top(state, Static(name))),
+		)
 		Ok(name) => LoweringBasics.refusal(site, "the builtin `${name}` is not compiled yet")
 		Err(_) => crash "Lowering.builtin_items: a builtin's place"
 	}
@@ -1783,7 +1894,11 @@ unready_items = |site, name| {
 ## An optional link: `undefined` or `null` on top ends the chain, its
 ## answer `undefined`, by a jump to the chain's end. A kind known to be
 ## neither makes no code, and one known to be either only the jump.
-nullish_jump_items : LoweringBasics.Site, { state : LoweringBasics.State, skip : U64 } -> Try(LoweringBasics.Lowered, [Refused(Str)])
+nullish_jump_items : LoweringBasics.Site,
+{
+	state : LoweringBasics.State,
+	skip : U64,
+} -> Try(LoweringBasics.Lowered, [Refused(Str)])
 nullish_jump_items = |site, { state, skip }| {
 	target = LoweringBasics.forward(site, skip)
 	top = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 1)
@@ -1819,7 +1934,10 @@ nullish_jump_items = |site, { state, skip }| {
 			})
 		}
 		kind if LoweringBasics.is_value_kind(kind) => Ok(LoweringBasics.falling([], state))
-		kind => LoweringBasics.refusal(site, "an optional link of ${LoweringBasics.kind_phrase(kind)}")
+		kind => LoweringBasics.refusal(
+			site,
+			"an optional link of ${LoweringBasics.kind_phrase(kind)}",
+		)
 	}
 }
 
@@ -1973,7 +2091,10 @@ array_method_items = |site, { state, name, count }| {
 						Emit.shr(Rsi, 16),
 					]
 				} else {
-					return LoweringBasics.refusal(site, "`join` with a separator that is not a string")
+					return LoweringBasics.refusal(
+						site,
+						"`join` with a separator that is not a string",
+					)
 				}
 			called = [Emit.load(Rdi, receiver)]
 				.concat(separator)
@@ -2162,7 +2283,10 @@ array_method_items = |site, { state, name, count }| {
 			]
 			Ok(LoweringBasics.falling(called, after(String)))
 		}
-		_ => LoweringBasics.refusal(site, "`${name}` with ${LoweringBasics.count_text(count, "argument")} is not compiled yet")
+		_ => LoweringBasics.refusal(
+			site,
+			"`${name}` with ${LoweringBasics.count_text(count, "argument")} is not compiled yet",
+		)
 	}
 }
 
@@ -2178,10 +2302,11 @@ appended_items = |site, { state, slot, held }| {
 	top = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 1)
 	kind = match LoweringBasics.added_kind((held, LoweringBasics.kind_below(state, 0))) {
 		Ok(added) => added
-		Err(Unadded) => return LoweringBasics.refusal(
-			site,
-			"`+=` of ${LoweringBasics.kind_phrase(held)} and ${LoweringBasics.kind_phrase(LoweringBasics.kind_below(state, 0))}",
-		)
+		Err(Unadded) => {
+			first = LoweringBasics.kind_phrase(held)
+			second = LoweringBasics.kind_phrase(LoweringBasics.kind_below(state, 0))
+			return LoweringBasics.refusal(site, "`+=` of ${first} and ${second}")
+		}
 	}
 	slots = state.slots.set(
 		slot,
@@ -2226,7 +2351,12 @@ instruction_items = |site, { instruction, state }| {
 				True => Boxing.true_bits.to_u64_wrap()
 				False => Boxing.false_bits.to_u64_wrap()
 			}
-			Ok(LoweringBasics.falling(LoweringBasics.constant_items({ bits, to: next_place }), LoweringBasics.with_top(state, Boolean)))
+			Ok(
+				LoweringBasics.falling(
+					LoweringBasics.constant_items({ bits, to: next_place }),
+					LoweringBasics.with_top(state, Boolean),
+				),
+			)
 		}
 		PushText(text) => Ok(
 			LoweringBasics.falling(
@@ -2241,12 +2371,18 @@ instruction_items = |site, { instruction, state }| {
 		)
 		PushNull => Ok(
 			LoweringBasics.falling(
-				LoweringBasics.constant_items({ bits: Boxing.null_bits.to_u64_wrap(), to: next_place }),
+				LoweringBasics.constant_items({
+					bits: Boxing.null_bits.to_u64_wrap(),
+					to: next_place,
+				}),
 				LoweringBasics.with_top(state, Null),
 			),
 		)
 		TemplatePart(piece) =>
-			if LoweringBasics.kind_below(state, 1) == String and LoweringBasics.is_value_kind(LoweringBasics.kind_below(state, 0)) {
+			if LoweringBasics.kind_below(
+				state,
+				1,
+			) == String and LoweringBasics.is_value_kind(LoweringBasics.kind_below(state, 0)) {
 				Ok(
 					LoweringBasics.falling(
 						[
@@ -2260,10 +2396,16 @@ instruction_items = |site, { instruction, state }| {
 					),
 				)
 			} else {
-				LoweringBasics.refusal(site, "a template's substitution of ${LoweringBasics.kind_phrase(LoweringBasics.kind_below(state, 0))}")
+				phrase = LoweringBasics.kind_phrase(LoweringBasics.kind_below(state, 0))
+				LoweringBasics.refusal(site, "a template's substitution of ${phrase}")
 			}
 		GetProperty("log", _) if LoweringBasics.kind_below(state, 0) == Console =>
-			Ok(LoweringBasics.falling([], LoweringBasics.with_top(LoweringBasics.without_top(state, 1), Log)))
+			Ok(
+				LoweringBasics.falling(
+					[],
+					LoweringBasics.with_top(LoweringBasics.without_top(state, 1), Log),
+				),
+			)
 		GetProperty(key, _) => {
 			kind = LoweringBasics.kind_below(state, 0)
 			given = match (kind, key) {
@@ -2285,14 +2427,22 @@ instruction_items = |site, { instruction, state }| {
 						),
 					)
 				Static(owner) => static_property_items(site, { state, owner, key })
-				_ => LoweringBasics.refusal(site, "the property `${key}` of ${LoweringBasics.kind_phrase(kind)}")
+				_ => LoweringBasics.refusal(
+					site,
+					"the property `${key}` of ${LoweringBasics.kind_phrase(kind)}",
+				)
 			}
 		}
 		MakeArray(count) => {
 			base = depth - count
 			made = LoweringBasics.arguments_array_items(site, { base, count })
 				.append(Emit.store(LoweringBasics.stack_place(site.code, base), Rax))
-			Ok(LoweringBasics.falling(made, LoweringBasics.with_top(LoweringBasics.without_top(state, count), Array)))
+			Ok(
+				LoweringBasics.falling(
+					made,
+					LoweringBasics.with_top(LoweringBasics.without_top(state, count), Array),
+				),
+			)
 		}
 		NewObject => Ok(
 			LoweringBasics.falling(
@@ -2335,12 +2485,17 @@ instruction_items = |site, { instruction, state }| {
 								Emit.address_of(Rsi, LoweringBasics.text_label(site, key)),
 								Emit.load(Rdx, top_place(0)),
 								Emit.call(Runtime.set_property),
-							].concat(LoweringBasics.copy_items({ from: top_place(0), to: top_place(1) })),
+							].concat(
+								LoweringBasics.copy_items({ from: top_place(0), to: top_place(1) }),
+							),
 							LoweringBasics.with_top(LoweringBasics.without_top(state, 2), value),
 						),
 					)
 				}
-				kind => LoweringBasics.refusal(site, "the property `${key}` of ${LoweringBasics.kind_phrase(kind)} written")
+				kind => LoweringBasics.refusal(
+					site,
+					"the property `${key}` of ${LoweringBasics.kind_phrase(kind)} written",
+				)
 			}
 		GetIndex(_) =>
 			match LoweringBasics.kind_below(state, 1) {
@@ -2356,7 +2511,10 @@ instruction_items = |site, { instruction, state }| {
 							LoweringBasics.with_top(LoweringBasics.without_top(state, 2), Value),
 						),
 					)
-				kind => LoweringBasics.refusal(site, "an index of ${LoweringBasics.kind_phrase(kind)}")
+				kind => LoweringBasics.refusal(
+					site,
+					"an index of ${LoweringBasics.kind_phrase(kind)}",
+				)
 			}
 		SetIndex(_) =>
 			match LoweringBasics.kind_below(state, 2) {
@@ -2369,12 +2527,17 @@ instruction_items = |site, { instruction, state }| {
 								Emit.load(Rsi, top_place(1)),
 								Emit.load(Rdx, top_place(0)),
 								Emit.call(Runtime.set_index),
-							].concat(LoweringBasics.copy_items({ from: top_place(0), to: top_place(2) })),
+							].concat(
+								LoweringBasics.copy_items({ from: top_place(0), to: top_place(2) }),
+							),
 							LoweringBasics.with_top(LoweringBasics.without_top(state, 3), value),
 						),
 					)
 				}
-				kind => LoweringBasics.refusal(site, "an index of ${LoweringBasics.kind_phrase(kind)} written")
+				kind => LoweringBasics.refusal(
+					site,
+					"an index of ${LoweringBasics.kind_phrase(kind)} written",
+				)
 			}
 		# A walk of a Map, a Set or an iterator is live, so only a string is
 		# made an array.
@@ -2424,7 +2587,10 @@ instruction_items = |site, { instruction, state }| {
 					)
 				kind => {
 					phrase = LoweringBasics.kind_phrase(kind)
-					LoweringBasics.refusal(site, "a `for ... of` or an array pattern over ${phrase}")
+					LoweringBasics.refusal(
+						site,
+						"a `for ... of` or an array pattern over ${phrase}",
+					)
 				}
 			}
 		ItemOf(position) =>
@@ -2464,7 +2630,10 @@ instruction_items = |site, { instruction, state }| {
 					)
 				kind => {
 					phrase = LoweringBasics.kind_phrase(kind)
-					LoweringBasics.refusal(site, "an object pattern of ${phrase}, which throws in node")
+					LoweringBasics.refusal(
+						site,
+						"an object pattern of ${phrase}, which throws in node",
+					)
 				}
 			}
 		SkipIfDefined(skip) => defined_jump_items(site, { state, skip, settles: Defined })
@@ -2491,7 +2660,10 @@ instruction_items = |site, { instruction, state }| {
 		}
 		PushUndefined => Ok(
 			LoweringBasics.falling(
-				LoweringBasics.constant_items({ bits: Boxing.undefined_bits.to_u64_wrap(), to: next_place }),
+				LoweringBasics.constant_items({
+					bits: Boxing.undefined_bits.to_u64_wrap(),
+					to: next_place,
+				}),
 				LoweringBasics.with_top(state, Undefined),
 			),
 		)
@@ -2504,15 +2676,26 @@ instruction_items = |site, { instruction, state }| {
 		)
 		DuplicatePair => {
 			items = LoweringBasics.copy_items({ from: top_place(1), to: next_place }).concat(
-				LoweringBasics.copy_items({ from: top_place(0), to: LoweringBasics.stack_place(site.code, depth + 1) }),
+				LoweringBasics.copy_items({
+					from: top_place(0),
+					to: LoweringBasics.stack_place(site.code, depth + 1),
+				}),
 			)
 			second = LoweringBasics.with_top(state, LoweringBasics.kind_below(state, 1))
-			Ok(LoweringBasics.falling(items, LoweringBasics.with_top(second, LoweringBasics.kind_below(state, 0))))
+			Ok(
+				LoweringBasics.falling(
+					items,
+					LoweringBasics.with_top(second, LoweringBasics.kind_below(state, 0)),
+				),
+			)
 		}
 		Nip => Ok(
 			LoweringBasics.falling(
 				LoweringBasics.copy_items({ from: top_place(0), to: top_place(1) }),
-				LoweringBasics.with_top(LoweringBasics.without_top(state, 2), LoweringBasics.kind_below(state, 0)),
+				LoweringBasics.with_top(
+					LoweringBasics.without_top(state, 2),
+					LoweringBasics.kind_below(state, 0),
+				),
 			),
 		)
 		Swap => {
@@ -2522,8 +2705,16 @@ instruction_items = |site, { instruction, state }| {
 				Instruction(MovMemReg({ to: top_place(1), from: Rcx })),
 				Instruction(MovMemReg({ to: top_place(0), from: Rax })),
 			]
-			first = LoweringBasics.with_top(LoweringBasics.without_top(state, 2), LoweringBasics.kind_below(state, 0))
-			Ok(LoweringBasics.falling(items, LoweringBasics.with_top(first, LoweringBasics.kind_below(state, 1))))
+			first = LoweringBasics.with_top(
+				LoweringBasics.without_top(state, 2),
+				LoweringBasics.kind_below(state, 0),
+			)
+			Ok(
+				LoweringBasics.falling(
+					items,
+					LoweringBasics.with_top(first, LoweringBasics.kind_below(state, 1)),
+				),
+			)
 		}
 		Rotate => {
 			items = [
@@ -2542,31 +2733,52 @@ instruction_items = |site, { instruction, state }| {
 			Ok(
 				LoweringBasics.falling(
 					items,
-					{ ..state, stack_kinds: LoweringBasics.without_top(state, 3).stack_kinds.concat(moved) },
+					{
+						..state,
+						stack_kinds: LoweringBasics.without_top(state, 3).stack_kinds.concat(moved),
+					},
 				),
 			)
 		}
 		LoadLocal(slot) => {
 			kind = LoweringBasics.slot_kind(site, { state, slot, name: "a variable" })?
-			Ok(LoweringBasics.falling(LoweringBasics.load_items(site, { state, slot }), LoweringBasics.with_top(state, kind)))
+			Ok(
+				LoweringBasics.falling(
+					LoweringBasics.load_items(site, { state, slot }),
+					LoweringBasics.with_top(state, kind),
+				),
+			)
 		}
 		LoadBoxed({ slot, name, at: _ }) if state.slots.get(slot) == Ok(Unready) =>
 			Ok(unready_items(site, name))
 		LoadBoxed({ slot, name, at: _ }) => {
 			kind = LoweringBasics.slot_kind(site, { state, slot, name: "`${name}`" })?
-			Ok(LoweringBasics.falling(boxed_load_items(site, { state, slot }), LoweringBasics.with_top(state, kind)))
+			Ok(
+				LoweringBasics.falling(
+					boxed_load_items(site, { state, slot }),
+					LoweringBasics.with_top(state, kind),
+				),
+			)
 		}
 		# An unready box's value is `undefined`, read before its check.
 		PeekBoxed(slot) if state.slots.get(slot) == Ok(Unready) =>
 			Ok(
 				LoweringBasics.falling(
-					LoweringBasics.constant_items({ bits: Boxing.undefined_bits.to_u64_wrap(), to: next_place }),
+					LoweringBasics.constant_items({
+						bits: Boxing.undefined_bits.to_u64_wrap(),
+						to: next_place,
+					}),
 					LoweringBasics.with_top(state, Undefined),
 				),
 			)
 		PeekBoxed(slot) => {
 			kind = LoweringBasics.slot_kind(site, { state, slot, name: "a variable" })?
-			Ok(LoweringBasics.falling(boxed_load_items(site, { state, slot }), LoweringBasics.with_top(state, kind)))
+			Ok(
+				LoweringBasics.falling(
+					boxed_load_items(site, { state, slot }),
+					LoweringBasics.with_top(state, kind),
+				),
+			)
 		}
 		StoreLocal(slot) => {
 			after = LoweringBasics.written_slot(site, { state, slot })?
@@ -2574,7 +2786,12 @@ instruction_items = |site, { instruction, state }| {
 		}
 		SetLocal(slot) | SetBoxed(slot) => {
 			after = LoweringBasics.written_slot(site, { state, slot })?
-			Ok(LoweringBasics.falling(boxed_store_items(site, { state, slot }), LoweringBasics.without_top(after, 1)))
+			Ok(
+				LoweringBasics.falling(
+					boxed_store_items(site, { state, slot }),
+					LoweringBasics.without_top(after, 1),
+				),
+			)
 		}
 		StoreBoxed({ slot, name, kind, at: _ }) => {
 			throws = "which throws in node"
@@ -2593,7 +2810,10 @@ instruction_items = |site, { instruction, state }| {
 		}
 		NewBox(slot) =>
 			match state.slots.get(slot) {
-				Ok(Ready(Function(_))) => LoweringBasics.refusal(site, "a function's name is declared again")
+				Ok(Ready(Function(_))) => LoweringBasics.refusal(
+					site,
+					"a function's name is declared again",
+				)
 				_ => {
 					slots = state.slots.set(
 						slot,
@@ -2705,7 +2925,9 @@ instruction_items = |site, { instruction, state }| {
 		)
 		MethodLookup(name, _) =>
 			match (LoweringBasics.kind_below(state, 0), name) {
-				(Console, "log") => Ok(LoweringBasics.falling([], LoweringBasics.with_top(state, Log)))
+				(Console, "log") => Ok(
+					LoweringBasics.falling([], LoweringBasics.with_top(state, Log)),
+				)
 				(Array, _) | (Value, _) if array_methods.contains(name) =>
 					Ok(LoweringBasics.falling([], LoweringBasics.with_top(state, Method(name))))
 				(Array, _) if iterator_methods.contains(name) =>
@@ -2715,7 +2937,12 @@ instruction_items = |site, { instruction, state }| {
 				(String, _) | (Value, _) if string_methods.contains(name) =>
 					Ok(LoweringBasics.falling([], LoweringBasics.with_top(state, Method(name))))
 				(Static(owner), _) if static_members(owner).contains(name) =>
-					Ok(LoweringBasics.falling([], LoweringBasics.with_top(state, StaticMethod({ owner, name }))))
+					Ok(
+						LoweringBasics.falling(
+							[],
+							LoweringBasics.with_top(state, StaticMethod({ owner, name })),
+						),
+					)
 				(Object, _) | (Value, _) | (Null, _) | (Undefined, _) =>
 					Ok(
 						LoweringBasics.falling(
@@ -2728,10 +2955,13 @@ instruction_items = |site, { instruction, state }| {
 							LoweringBasics.with_top(state, Value),
 						),
 					)
-				(kind, _) => LoweringBasics.refusal(
-					site,
-					"the method `${name}` of ${LoweringBasics.kind_phrase(kind)} is not compiled yet",
-				)
+				(kind, _) => {
+					phrase = LoweringBasics.kind_phrase(kind)
+					LoweringBasics.refusal(
+						site,
+						"the method `${name}` of ${phrase} is not compiled yet",
+					)
+				}
 			}
 		CallMethod({ name: _, site: { count, written: _, at: _ } }) =>
 			match LoweringBasics.kind_below(state, count) {
@@ -2740,13 +2970,19 @@ instruction_items = |site, { instruction, state }| {
 				StaticMethod({ owner, name }) =>
 					static_call_items(site, { state, count, owner, name })
 				Value => value_call_items(site, { state, count, taken: count + 2 })
-				kind => LoweringBasics.refusal(site, "a method call of ${LoweringBasics.kind_phrase(kind)} is not compiled yet")
+				kind => LoweringBasics.refusal(
+					site,
+					"a method call of ${LoweringBasics.kind_phrase(kind)} is not compiled yet",
+				)
 			}
 		Call({ count, written: _, at: _ }) => call_items(site, { state, count })
 		Return => {
 			kind = LoweringBasics.kind_below(state, 0)
 			if !LoweringBasics.is_value_kind(kind) {
-				return LoweringBasics.refusal(site, "a function returns ${LoweringBasics.kind_phrase(kind)}")
+				return LoweringBasics.refusal(
+					site,
+					"a function returns ${LoweringBasics.kind_phrase(kind)}",
+				)
 			}
 			items = [
 				Instruction(MovRegMem({ to: Rax, from: top_place(0) })),
@@ -2806,7 +3042,10 @@ instruction_items = |site, { instruction, state }| {
 		Throw(_) | Rethrow => {
 			kind = LoweringBasics.kind_below(state, 0)
 			if !LoweringBasics.is_value_kind(kind) {
-				return LoweringBasics.refusal(site, "a throw of ${LoweringBasics.kind_phrase(kind)}")
+				return LoweringBasics.refusal(
+					site,
+					"a throw of ${LoweringBasics.kind_phrase(kind)}",
+				)
 			}
 			Ok({
 				statements: [Emit.load(Rax, top_place(0)), Emit.jmp(Runtime.throw)],
@@ -2822,13 +3061,13 @@ instruction_items = |site, { instruction, state }| {
 					given =
 						if count == 0 {
 							[Emit.imm(Rsi, Boxing.undefined_bits)]
-						} else if LoweringBasics.is_value_kind(LoweringBasics.kind_below(state, 0)) {
+						} else if LoweringBasics.is_value_kind(
+							LoweringBasics.kind_below(state, 0),
+						) {
 							[Emit.load(Rsi, LoweringBasics.stack_place(site.code, depth - 1))]
 						} else {
-							return LoweringBasics.refusal(
-								site,
-								"`new ${name}` of ${LoweringBasics.kind_phrase(LoweringBasics.kind_below(state, 0))}",
-							)
+							phrase = LoweringBasics.kind_phrase(LoweringBasics.kind_below(state, 0))
+							return LoweringBasics.refusal(site, "`new ${name}` of ${phrase}")
 						}
 					kind = if name == "Map" {
 						0
@@ -2840,9 +3079,20 @@ instruction_items = |site, { instruction, state }| {
 						Emit.call(Runtime.new_collection),
 						Emit.store(LoweringBasics.stack_place(site.code, depth - count - 1), Rax),
 					])
-					Ok(LoweringBasics.falling(made, LoweringBasics.with_top(LoweringBasics.without_top(state, count + 1), Value)))
+					Ok(
+						LoweringBasics.falling(
+							made,
+							LoweringBasics.with_top(
+								LoweringBasics.without_top(state, count + 1),
+								Value,
+							),
+						),
+					)
 				}
-				kind => LoweringBasics.refusal(site, "`new` of ${LoweringBasics.kind_phrase(kind)} is not compiled yet")
+				kind => LoweringBasics.refusal(
+					site,
+					"`new` of ${LoweringBasics.kind_phrase(kind)} is not compiled yet",
+				)
 			}
 		_ => LoweringBasics.refusal(site, "${instruction_name(instruction)} is not compiled yet")
 	}
@@ -2862,13 +3112,20 @@ instruction_name = |instruction| {
 ## spreads appended (`[...xs, 1]`), a call's arguments spread (`f(...xs)`,
 ## `console.log(...xs)`, `Math.max(...xs)`), an object's properties spread
 ## (`{ ...o }`), and an object pattern's rest.
-spread_items : LoweringBasics.Site, { state : LoweringBasics.State, instruction : Bytecode.Op } -> Try(LoweringBasics.Lowered, [Refused(Str)])
+spread_items : LoweringBasics.Site,
+{
+	state : LoweringBasics.State,
+	instruction : Bytecode.Op,
+} -> Try(LoweringBasics.Lowered, [Refused(Str)])
 spread_items = |site, { state, instruction }| {
 	depth = state.stack_kinds.len()
 	top_place = |down| LoweringBasics.stack_place(site.code, depth - 1 - down)
 	top_kind = LoweringBasics.kind_below(state, 0)
 	if !LoweringBasics.is_value_kind(top_kind) {
-		return LoweringBasics.refusal(site, "a spread or a rest of ${LoweringBasics.kind_phrase(top_kind)}")
+		return LoweringBasics.refusal(
+			site,
+			"a spread or a rest of ${LoweringBasics.kind_phrase(top_kind)}",
+		)
 	}
 	unboxed = |reg| [Emit.shl(reg, 16), Emit.shr(reg, 16)]
 	match instruction {
@@ -2922,7 +3179,12 @@ spread_items = |site, { state, instruction }| {
 				Emit.call(Runtime.properties_left),
 				Emit.store(top_place(0), Rax),
 			]
-			Ok(LoweringBasics.falling($listed.concat(called), LoweringBasics.with_top(LoweringBasics.without_top(state, 1), Object)))
+			Ok(
+				LoweringBasics.falling(
+					$listed.concat(called),
+					LoweringBasics.with_top(LoweringBasics.without_top(state, 1), Object),
+				),
+			)
 		}
 		CallSpread(_) =>
 			match LoweringBasics.kind_below(state, 1) {
@@ -2938,7 +3200,10 @@ spread_items = |site, { state, instruction }| {
 							LoweringBasics.with_top(LoweringBasics.without_top(state, 2), Value),
 						),
 					)
-				kind => LoweringBasics.refusal(site, "a call with a spread of ${LoweringBasics.kind_phrase(kind)}")
+				kind => LoweringBasics.refusal(
+					site,
+					"a call with a spread of ${LoweringBasics.kind_phrase(kind)}",
+				)
 			}
 		CallMethodSpread(_) => {
 			receiver = top_place(2)
@@ -2977,7 +3242,10 @@ spread_items = |site, { state, instruction }| {
 							after(Value),
 						),
 					)
-				kind => LoweringBasics.refusal(site, "a method call with a spread of ${LoweringBasics.kind_phrase(kind)}")
+				kind => LoweringBasics.refusal(
+					site,
+					"a method call with a spread of ${LoweringBasics.kind_phrase(kind)}",
+				)
 			}
 		}
 		_ => crash "Lowering.spread_items: a spread's or a rest's instruction"
@@ -3012,13 +3280,23 @@ static_property_items : LoweringBasics.Site,
 static_property_items = |site, { state, owner, key }| {
 	top = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 1)
 	numbered = LoweringBasics.with_top(LoweringBasics.without_top(state, 1), Number)
-	constant = |bits| Ok(LoweringBasics.falling(LoweringBasics.constant_items({ bits, to: top }), numbered))
+	constant = |bits| Ok(
+		LoweringBasics.falling(LoweringBasics.constant_items({ bits, to: top }), numbered),
+	)
 	match (owner, key) {
 		# The doubles nearest pi and e.
 		("Math", "PI") => constant(0x400921FB54442D18)
 		("Math", "E") => constant(0x4005BF0A8B145769)
 		_ if static_members(owner).contains(key) =>
-			Ok(LoweringBasics.falling([], LoweringBasics.with_top(LoweringBasics.without_top(state, 1), StaticMethod({ owner, name: key }))))
+			Ok(
+				LoweringBasics.falling(
+					[],
+					LoweringBasics.with_top(
+						LoweringBasics.without_top(state, 1),
+						StaticMethod({ owner, name: key }),
+					),
+				),
+			)
 		_ => LoweringBasics.refusal(site, "the property `${key}` of `${owner}` is not compiled yet")
 	}
 }
@@ -3044,7 +3322,10 @@ static_call_items = |site, { state, count, owner, name }| {
 		if LoweringBasics.is_value_kind(kind) {
 			Ok(LoweringBasics.number_check_items({ kind, place }).append(Emit.load(reg, place)))
 		} else {
-			LoweringBasics.refusal(site, "`${owner}.${name}` of ${LoweringBasics.kind_phrase(kind)}")
+			LoweringBasics.refusal(
+				site,
+				"`${owner}.${name}` of ${LoweringBasics.kind_phrase(kind)}",
+			)
 		}
 	}
 	match (owner, name) {
@@ -3074,7 +3355,10 @@ static_call_items = |site, { state, count, owner, name }| {
 		}
 		("Math", _) if Runtime.math_functions.contains(name) =>
 			if count == 0 {
-				not_a_number = LoweringBasics.constant_items({ bits: 0x7FF8000000000000, to: receiver })
+				not_a_number = LoweringBasics.constant_items({
+					bits: 0x7FF8000000000000,
+					to: receiver,
+				})
 				Ok(LoweringBasics.falling(not_a_number, after(Number)))
 			} else {
 				loaded = number_in({ at: 0, reg: Rdi })?
@@ -3096,7 +3380,10 @@ static_call_items = |site, { state, count, owner, name }| {
 			Ok(LoweringBasics.falling(tested.append(Emit.store(receiver, Rax)), after(Boolean)))
 		}
 		("Array", "of") => {
-			made = LoweringBasics.arguments_array_items(site, { base, count }).append(Emit.store(receiver, Rax))
+			made = LoweringBasics.arguments_array_items(
+				site,
+				{ base, count },
+			).append(Emit.store(receiver, Rax))
 			Ok(LoweringBasics.falling(made, after(Array)))
 		}
 		("Array", "from") if count == 1 or count == 2 => {
@@ -3128,7 +3415,9 @@ static_call_items = |site, { state, count, owner, name }| {
 				site,
 				"`Math.${name}` is not compiled yet: node's last digits are V8's port of fdlibm's",
 			)
-		("Object", _) if count >= 1 and LoweringBasics.is_value_kind(LoweringBasics.kind_below(state, count - 1)) => {
+		("Object", _) if count >= 1 and LoweringBasics.is_value_kind(
+			LoweringBasics.kind_below(state, count - 1),
+		) => {
 			listed = match name {
 				"keys" => 0
 				"values" => 1
@@ -3189,7 +3478,12 @@ timer_items = |site, { state, count, name }| {
 				Emit.call(Runtime.set_timer),
 				Emit.store(callee, Rax),
 			]
-			Ok(LoweringBasics.falling(called, LoweringBasics.with_top(LoweringBasics.without_top(state, count + 1), Value)))
+			Ok(
+				LoweringBasics.falling(
+					called,
+					LoweringBasics.with_top(LoweringBasics.without_top(state, count + 1), Value),
+				),
+			)
 		}
 		("clearTimeout", _) | ("clearInterval", _) => {
 			cleared =
@@ -3198,11 +3492,17 @@ timer_items = |site, { state, count, name }| {
 				} else {
 					[Emit.load(Rdi, argument(0)), Emit.call(Runtime.clear_timer)]
 				}
-			undefined = LoweringBasics.constant_items({ bits: Boxing.undefined_bits.to_u64_wrap(), to: callee })
+			undefined = LoweringBasics.constant_items({
+				bits: Boxing.undefined_bits.to_u64_wrap(),
+				to: callee,
+			})
 			Ok(
 				LoweringBasics.falling(
 					cleared.concat(undefined),
-					LoweringBasics.with_top(LoweringBasics.without_top(state, count + 1), Undefined),
+					LoweringBasics.with_top(
+						LoweringBasics.without_top(state, count + 1),
+						Undefined,
+					),
 				),
 			)
 		}
@@ -3246,7 +3546,10 @@ error_items = |site, { state, count, name }| {
 					Emit.call(Runtime.error_message),
 					Emit.mov(Rsi, Rax),
 				]
-				kind => return LoweringBasics.refusal(site, "an error's message of ${LoweringBasics.kind_phrase(kind)}")
+				kind => return LoweringBasics.refusal(
+					site,
+					"an error's message of ${LoweringBasics.kind_phrase(kind)}",
+				)
 			}
 		}
 	made = message.concat([
@@ -3254,7 +3557,12 @@ error_items = |site, { state, count, name }| {
 		Emit.call(Runtime.new_error),
 		Emit.store(LoweringBasics.stack_place(site.code, depth - count - 1), Rax),
 	])
-	Ok(LoweringBasics.falling(made, LoweringBasics.with_top(LoweringBasics.without_top(state, count + 1), Object)))
+	Ok(
+		LoweringBasics.falling(
+			made,
+			LoweringBasics.with_top(LoweringBasics.without_top(state, count + 1), Object),
+		),
+	)
 }
 
 ## A `try`'s handler pushed: its record on the machine's stack (the code
@@ -3288,7 +3596,10 @@ try_items = |site, { state, skip, handling }| {
 		),
 	}
 	(placed, sent) = match handling {
-		Catching => ([Emit.store(LoweringBasics.stack_place(site.code, depth), Rax)], LoweringBasics.with_top(widened, Value))
+		Catching => (
+			[Emit.store(LoweringBasics.stack_place(site.code, depth), Rax)],
+			LoweringBasics.with_top(widened, Value),
+		)
 		Finishing => (
 			[
 				Emit.zero(Rcx),
@@ -3296,7 +3607,10 @@ try_items = |site, { state, skip, handling }| {
 				Emit.store(LoweringBasics.stack_place(site.code, depth + 1), Rcx),
 				Emit.store(LoweringBasics.stack_place(site.code, depth + 2), Rax),
 			],
-			LoweringBasics.with_top(LoweringBasics.with_top(LoweringBasics.with_top(widened, Number), Number), Value),
+			LoweringBasics.with_top(
+				LoweringBasics.with_top(LoweringBasics.with_top(widened, Number), Number),
+				Value,
+			),
 		)
 	}
 	statements = [
