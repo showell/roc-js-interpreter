@@ -125,4 +125,17 @@ RuntimeBuilders :: [].{
 			Emit.jcc(L, label),
 		]
 	}
+
+	## The statements that jump to `label` when the value in `rdi`, a
+	## property's or an index's receiver, is `undefined` or `null`. They
+	## change `rcx`.
+	nullish_jump_items : Str -> List(Assembly.Statement)
+	nullish_jump_items = |label| [
+		Emit.imm(Rcx, Boxing.undefined_bits),
+		Emit.cmp(Rdi, Rcx),
+		Emit.jcc(E, label),
+		Emit.imm(Rcx, Boxing.null_bits),
+		Emit.cmp(Rdi, Rcx),
+		Emit.jcc(E, label),
+	]
 }
