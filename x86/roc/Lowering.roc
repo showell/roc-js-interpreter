@@ -720,8 +720,11 @@ entry_items = |context, { code, frame_bytes }| {
 	var $cells = []
 	for step in code.entry {
 		match step {
+			# A number held for good is read as the number, so its cell is
+			# never copied: a function known before the program runs has no
+			# record to copy it from.
 			CapturedBox({ slot, capture }) =>
-				if context.cells.contains(slot) {
+				if context.cells.contains(slot) and !context.numbers.contains(slot) {
 					$captured = $captured.concat([
 						Emit.load(Rax, Emit.mem(Rbx, (24 + 8 * capture).to_i64_wrap())),
 						Emit.store(LoweringBasics.slot_place(slot), Rax),

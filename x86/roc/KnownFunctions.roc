@@ -118,8 +118,12 @@ KnownFunctions :: [].{
 	}
 
 	## The codes known before the program runs: every function that is no
-	## class and whose captures are all functions known so, the most that
-	## hold together (fib, which captures only itself, is one).
+	## class and whose captures are all functions known so, or numbers held
+	## for good (`constant_numbers`) that it passes on to no closure of its
+	## own, the most that hold together (fib, which captures only itself, is
+	## one; the fib race's addInto, which captures `BASE`, another). A read of
+	## such a number is the number, so the function needs no cell of it, and
+	## so no closure record of its own.
 	statics_of : Bytecode.Program, Dict(U64, LoweringBasics.Maker) -> List(U64)
 	statics_of = |program, makers| {
 		var $statics =
@@ -133,11 +137,17 @@ KnownFunctions :: [].{
 			kept = $statics.keep_if(
 				|made| {
 					maker = makers.get(made) ?? crash "KnownFunctions.statics_of: a maker"
-					maker.captures.all(
-						|from|
+					numbers = KnownFunctions.constant_numbers(known, made)
+					code = program.codes.get(made) ?? crash "KnownFunctions.statics_of: a code"
+					maker.captures.map_with_index(|from, capture| (from, capture)).all(
+						|(from, capture)|
 							match held_function(known, { code: maker.parent, slot: from }) {
 								Ok(_) => True
-								Err(Unheld) => False
+								Err(Unheld) =>
+									match captured_slot(code, capture) {
+										Ok(slot) => numbers.contains(slot) and !passes_on(code, slot)
+										Err(_) => False
+									}
 							},
 					)
 				},
@@ -274,6 +284,29 @@ KnownFunctions :: [].{
 		$out
 	}
 }
+
+## The slot of a code's frame that holds its closure's capture `capture`.
+captured_slot : Bytecode.Code, U64 -> Try(U64, [NotCaptured])
+captured_slot = |code, capture| {
+	for step in code.entry {
+		match step {
+			CapturedBox({ slot, capture: at }) if at == capture => return Ok(slot)
+			_ => {}
+		}
+	}
+	Err(NotCaptured)
+}
+
+## Whether a code passes the cell in a slot on to a closure it makes.
+passes_on : Bytecode.Code, U64 -> Bool
+passes_on = |code, slot|
+	code.ops.any(
+		|instruction|
+			match instruction {
+				MakeClosure({ code: _, captures, definition: _ }) => captures.contains(slot)
+				_ => False
+			},
+	)
 
 ## The number a slot of code `parent`'s frame holds for good, as
 ## `constant_numbers` says: its box fresh at the code's entry, set once,
