@@ -103,7 +103,9 @@ KnownFunctions :: [].{
 				)
 				match (captured, known.makers.get(code)) {
 					(Ok(CapturedBox({ slot: _, capture })), Ok(maker)) => {
-						from = maker.captures.get(capture) ?? crash "KnownFunctions.held_function: a capture"
+						from =
+							maker.captures.get(capture)
+								?? crash "KnownFunctions.held_function: a capture"
 						held_function(known, { code: maker.parent, slot: from })
 					}
 					_ => Err(Unheld)
