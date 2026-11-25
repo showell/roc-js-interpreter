@@ -84,6 +84,9 @@ LoweringBasics :: [].{
 		# The captured cells that hold one number for good, with the number
 		# (`KnownFunctions.constant_numbers`).
 		numbers : Dict(U64, F64),
+		# Whether the program has a `try` anywhere, which keeps every value of
+		# every frame in the frame (`Registers.roc`).
+		trying : Bool,
 		returns : Dict(U64, LoweringBasics.Kind),
 		parameters : Dict(U64, List(LoweringBasics.Kind)),
 		literals : Dict(Str, U64),

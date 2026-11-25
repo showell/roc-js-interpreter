@@ -53,6 +53,7 @@ import LoweringBasics
 import CallLowering
 import IndexLowering
 import OperatorLowering
+import Registers
 import Runtime
 import RuntimeBuilders
 import RuntimeCode
@@ -77,6 +78,16 @@ Lowering :: [].{
 		}
 		var $parameters = Dict.empty()
 		known = { program, makers, statics }
+		trying = program.codes.any(
+			|code|
+				code.ops.any(
+					|instruction|
+						match instruction {
+							EnterTry(_) => True
+							_ => False
+						},
+				),
+		)
 		for _ in 0..<most_passes {
 			var $items = Runtime.start_items(LoweringBasics.code_label(program.main))
 			var $found = $returns
@@ -91,6 +102,7 @@ Lowering :: [].{
 					escaped_codes: $escaped_codes,
 					cells: KnownFunctions.celled_slots(known, index),
 					numbers: KnownFunctions.constant_numbers(known, index),
+					trying,
 					returns: $returns,
 					parameters: $parameters,
 					literals,
@@ -580,7 +592,13 @@ code_walk = |context, heads| {
 	if frame_bytes > 1048576 {
 		return Err(code_refusal(context, FrameTooLarge))
 	}
-	statements = entry_items(context, { code, frame_bytes }).concat($body)
+	made = entry_items(context, { code, frame_bytes }).concat($body)
+	statements =
+		if context.trying {
+			made
+		} else {
+			Registers.promoted({ statements: made, frame_bytes, loops: !looped_to.is_empty() })
+		}
 	Ok(
 		Walked({
 			statements,
