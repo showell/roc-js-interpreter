@@ -1414,8 +1414,14 @@ instruction_items = |site, { instruction, state }| {
 					)
 				}
 			}
-		SkipIfDefined(skip) => OperatorLowering.defined_jump_items(site, { state, skip, settles: Defined })
-		SkipIfNotUndefined(skip) => OperatorLowering.defined_jump_items(site, { state, skip, settles: NotUndefined })
+		SkipIfDefined(skip) => OperatorLowering.defined_jump_items(
+			site,
+			{ state, skip, settles: Defined },
+		)
+		SkipIfNotUndefined(skip) => OperatorLowering.defined_jump_items(
+			site,
+			{ state, skip, settles: NotUndefined },
+		)
 		JumpIfSame(skip) => OperatorLowering.same_jump_items(site, { state, skip })
 		ShortIfNullish(skip) => OperatorLowering.nullish_jump_items(site, { state, skip })
 		IterNext({ slot, exit }) => {

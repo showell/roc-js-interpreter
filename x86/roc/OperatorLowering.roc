@@ -189,7 +189,10 @@ OperatorLowering :: [].{
 			| (GreaterOrEqual, _) if LoweringBasics.is_ordered(kinds) => {
 				mapped = match operator {
 					Less => [Emit.cmp_imm(Rax, 0), Instruction(Setcc({ condition: E, to: Al }))]
-					LessOrEqual => [Emit.cmp_imm(Rax, 1), Instruction(Setcc({ condition: Be, to: Al }))]
+					LessOrEqual => [
+						Emit.cmp_imm(Rax, 1),
+						Instruction(Setcc({ condition: Be, to: Al })),
+					]
 					Greater => [Emit.cmp_imm(Rax, 2), Instruction(Setcc({ condition: E, to: Al }))]
 					_ => [
 						Emit.minus_imm(Rax, 1),
@@ -226,7 +229,10 @@ OperatorLowering :: [].{
 						LoweringBasics.with_top(LoweringBasics.without_top(state, 2), Number),
 					),
 				)
-			(Power, _) if LoweringBasics.is_numeric(kinds.0) and LoweringBasics.is_numeric(kinds.1) => {
+			(
+				Power,
+				_,
+			) if LoweringBasics.is_numeric(kinds.0) and LoweringBasics.is_numeric(kinds.1) => {
 				checked = LoweringBasics.number_check_items({ kind: kinds.0, place: left })
 					.concat(LoweringBasics.number_check_items({ kind: kinds.1, place: right }))
 				Ok(
@@ -245,7 +251,10 @@ OperatorLowering :: [].{
 				named = Str.inspect(operator)
 				first = LoweringBasics.kind_phrase(kinds.0)
 				second = LoweringBasics.kind_phrase(kinds.1)
-				LoweringBasics.refusal(site, "`${named}` of ${first} and ${second} is not compiled yet")
+				LoweringBasics.refusal(
+					site,
+					"`${named}` of ${first} and ${second} is not compiled yet",
+				)
 			}
 		}
 	}
@@ -264,10 +273,9 @@ OperatorLowering :: [].{
 		right = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 1)
 		(one, other) = kinds
 		if !LoweringBasics.is_value_kind(one) or !LoweringBasics.is_value_kind(other) {
-			return LoweringBasics.refusal(
-				site,
-				"`===` of ${LoweringBasics.kind_phrase(one)} and ${LoweringBasics.kind_phrase(other)}",
-			)
+			one_phrase = LoweringBasics.kind_phrase(one)
+			other_phrase = LoweringBasics.kind_phrase(other)
+			return LoweringBasics.refusal(site, "`===` of ${one_phrase} and ${other_phrase}")
 		}
 		flipped = match operator {
 			StrictNotEqual => [
@@ -401,7 +409,8 @@ OperatorLowering :: [].{
 					Boolean => Named("runtime_text_type_boolean")
 					Undefined => Named("runtime_text_undefined")
 					Null | Array | Object | Console => Named("runtime_text_type_object")
-					Function(_) | Closure(_) | Log | Method(_) => Named("runtime_text_type_function")
+					Function(_) | Closure(_) => Named("runtime_text_type_function")
+					Log | Method(_) => Named("runtime_text_type_function")
 					ErrorClass(_) | StaticMethod(_) => Named("runtime_text_type_function")
 					CollectionClass(_) | TimerFunction(_) => Named("runtime_text_type_function")
 					Static("Math") => Named("runtime_text_type_object")
@@ -423,10 +432,11 @@ OperatorLowering :: [].{
 					),
 				)
 			}
-			(_, kind) => LoweringBasics.refusal(
-				site,
-				"`${Str.inspect(operator)}` of ${LoweringBasics.kind_phrase(kind)} is not compiled yet",
-			)
+			(_, kind) => {
+				phrase = LoweringBasics.kind_phrase(kind)
+				named = Str.inspect(operator)
+				LoweringBasics.refusal(site, "`${named}` of ${phrase} is not compiled yet")
+			}
 		}
 	}
 
@@ -470,7 +480,9 @@ OperatorLowering :: [].{
 		}
 		target = LoweringBasics.forward(site, skip)
 		Ok({
-			statements: tested.append(Emit.jcc(Ne, LoweringBasics.place_label(site.lowering, target))),
+			statements: tested.append(
+				Emit.jcc(Ne, LoweringBasics.place_label(site.lowering, target)),
+			),
 			falls: Falls(LoweringBasics.without_top(state, 1)),
 			branch: Branch({ target, state }),
 			result: GivesNothing,
@@ -519,7 +531,10 @@ OperatorLowering :: [].{
 		shorted = LoweringBasics.with_top(LoweringBasics.without_top(state, 1), Undefined)
 		short_label = "${LoweringBasics.place_label(site.lowering, site.at)}_short"
 		going_label = "${LoweringBasics.place_label(site.lowering, site.at)}_going"
-		jumped = LoweringBasics.constant_items({ bits: Boxing.undefined_bits.to_u64_wrap(), to: top })
+		jumped = LoweringBasics.constant_items({
+			bits: Boxing.undefined_bits.to_u64_wrap(),
+			to: top,
+		})
 			.append(JmpTo(LoweringBasics.place_label(site.lowering, target)))
 		match LoweringBasics.kind_below(state, 0) {
 			Undefined | Null =>
