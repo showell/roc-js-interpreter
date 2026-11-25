@@ -25,8 +25,9 @@
 ## slot; the result comes back in `rax`.
 ##
 ## **A FUNCTION KNOWN BEFORE THE PROGRAM RUNS TAKES NO BYTES.** A function
-## whose captures are all names of such functions (`KnownFunctions.statics_of`:
-## fib, which captures only itself) is known by its code alone, as
+## whose captures are all names of such functions, or numbers held for good
+## (`KnownFunctions.statics_of`: fib, which captures only itself) is known
+## by its code alone, as
 ## `Function(code)`, and called directly. Where it is used as a value
 ## (stored, passed, returned) it becomes its closure record in the read-only
 ## segment, boxed with `Boxing.function_tag`, and it is `escaped_codes`.
