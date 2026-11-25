@@ -297,6 +297,33 @@ Runtime :: [].{
 	split : Str
 	split = "runtime_split"
 
+	## The routine that calls the function `rdi` through its value with the
+	## items of the array `rsi` as its arguments: a call with a spread.
+	call_spread : Str
+	call_spread = "runtime_call_spread"
+
+	## The routine that writes the items of the array `rdi` as
+	## `console.log` writes its arguments, a line: `console.log(...xs)`.
+	log_spread : Str
+	log_spread = "runtime_log_spread"
+
+	## The routine that gives `Math.max` (`rsi` 0) or `Math.min` (1) of the
+	## items of the array `rdi`.
+	extreme_of : Str
+	extreme_of = "runtime_extreme_of"
+
+	## The routine that sets on the object `rdi` the properties of `rsi`, as
+	## `{ ...rsi }` does: an object's, none of a number, a boolean, `null`
+	## or `undefined`.
+	spread_fields : Str
+	spread_fields = "runtime_spread_fields"
+
+	## The routine that gives a new object of the properties of `rdi` but
+	## those whose keys are the strings of the array `rsi`: an object
+	## pattern's rest.
+	properties_left : Str
+	properties_left = "runtime_properties_left"
+
 	## The routine that gives `String(v)` of the value `rdi`, boxed, in `rax`.
 	text_of : Str
 	text_of = "runtime_text_of_boxed"
@@ -369,6 +396,7 @@ Runtime :: [].{
 		search_items,
 		sort_items,
 		string_method_items,
+		spread_items,
 	]
 		.join()
 		.concat(text_statements)
@@ -546,6 +574,10 @@ texts = [
 		),
 	),
 	("runtime_text_object_object", "[object Object]"),
+	(
+		"runtime_text_spread_error",
+		"x86: an error's properties spread or taken by a pattern's rest are not compiled yet\n",
+	),
 	(
 		"runtime_text_index_of_place",
 		"x86: `indexOf` or `includes` from a place that is not a number is not compiled yet\n",
@@ -4224,6 +4256,260 @@ string_method_items = {
 			])
 			.concat(stopping_items("runtime_text_split_separator"))
 	[char_code, piece, split].join()
+}
+
+## The statements that stop the program when the object at `rsi`
+## (unboxed) is an error; `label` names their way past. They change `rcx`
+## and `rdx`.
+not_an_error_items : Str -> List(Assembly.Statement)
+not_an_error_items = |label| [
+	Emit.load(Rcx, Emit.mem(Rsi, 0)),
+	Emit.test(Rcx, Rcx),
+	Emit.jcc(E, label),
+	Emit.load(Rcx, Emit.mem(Rsi, 16)),
+	Emit.load(Rcx, Emit.mem(Rcx, 0)),
+	Emit.address_of(Rdx, error_mark),
+	Emit.cmp(Rcx, Rdx),
+	Emit.jcc(E, "runtime_spread_error"),
+	Emit.mark(label),
+]
+
+## `runtime_call_spread`, `runtime_log_spread`, `runtime_extreme_of`,
+## `runtime_spread_fields` and `runtime_properties_left`. Each walk's frame
+## holds its list (`[rbp - 8]`), what it makes or its kind (16), the place
+## (24) and, for a rest, the keys left out (32).
+spread_items : List(Assembly.Statement)
+spread_items = {
+	local = |offset| Emit.mem(Rbp, 0 - offset)
+	framed = |{ label, size }| [
+		Emit.mark(label),
+		Emit.save(Rbp),
+		Emit.mov(Rbp, Rsp),
+		Emit.minus_imm(Rsp, size),
+	]
+	leave = [
+		Emit.mov(Rsp, Rbp),
+		Emit.restore(Rbp),
+		Emit.ret,
+	]
+	# The walk's next item in `rax`, `label` taken past the last.
+	next_item = |label| [
+		Emit.load(Rdi, local(8)),
+		Emit.load(Rcx, local(24)),
+		Emit.load(Rdx, Emit.mem(Rdi, 0)),
+		Emit.cmp(Rcx, Rdx),
+		Emit.jcc(Ae, label),
+		Emit.load(R8, Emit.mem(Rdi, 16)),
+		Emit.load(Rax, listed_item(Rcx)),
+		Emit.plus_imm(Rcx, 1),
+		Emit.store(local(24), Rcx),
+	]
+	# The items pushed, the last first, as a call through a value takes them.
+	call_spread =
+		[
+			Emit.mark(Runtime.call_spread),
+			Emit.mov(Rax, Rdi),
+			Emit.call(Runtime.check_function),
+		]
+			.concat(tag_load_items(Rsi))
+			.concat([Emit.cmp_imm(Rcx, Boxing.array_tag), Emit.jcc(Ne, "runtime_not_an_array")])
+			.concat([Emit.save(Rbp), Emit.mov(Rbp, Rsp)])
+			.concat(unboxed_items(Rsi))
+			.concat([
+				Emit.load(Rcx, Emit.mem(Rsi, 0)),
+				Emit.load(R8, Emit.mem(Rsi, 16)),
+				Emit.mov(Rdx, Rcx),
+				Emit.mark("runtime_call_spread_push"),
+				Emit.test(Rdx, Rdx),
+				Emit.jcc(E, "runtime_call_spread_pushed"),
+				Emit.minus_imm(Rdx, 1),
+				Emit.load(Rax, listed_item(Rdx)),
+				Emit.save(Rax),
+				Emit.jmp("runtime_call_spread_push"),
+				Emit.mark("runtime_call_spread_pushed"),
+				Emit.mov(Rbx, Rdi),
+			])
+			.concat(unboxed_items(Rbx))
+			.concat([
+				Emit.load(Rax, Emit.mem(Rbx, 0)),
+				Emit.plus(Rax, Rbx),
+				Instruction(CallReg(Rax)),
+			])
+			.concat(leave)
+	log_spread =
+		framed({ label: Runtime.log_spread, size: 32 })
+			.concat(array_check_items)
+			.concat(unboxed_items(Rdi))
+			.concat([
+				Emit.store(local(8), Rdi),
+				Emit.zero(Rax),
+				Emit.store(local(24), Rax),
+				Emit.mark("runtime_log_spread_next"),
+			])
+			.concat(next_item("runtime_log_spread_done"))
+			.concat([
+				Emit.store(local(16), Rax),
+				Emit.cmp_imm(Rcx, 1),
+				Emit.jcc(E, "runtime_log_spread_first"),
+			])
+			.concat(Runtime.text_items(Space))
+			.concat([
+				Emit.mark("runtime_log_spread_first"),
+				Emit.load(Rdi, local(16)),
+				Emit.call(Runtime.write_value),
+				Emit.jmp("runtime_log_spread_next"),
+				Emit.mark("runtime_log_spread_done"),
+			])
+			.concat(Runtime.text_items(Newline))
+			.concat(leave)
+	extreme_of =
+		framed({ label: Runtime.extreme_of, size: 32 })
+			.concat(array_check_items)
+			.concat(unboxed_items(Rdi))
+			.concat([
+				Emit.store(local(8), Rdi),
+				Emit.store(local(32), Rsi),
+				Emit.zero(Rax),
+				Emit.store(local(24), Rax),
+				Emit.imm(Rax, 0x7FF0000000000000),
+				Emit.test(Rsi, Rsi),
+				Emit.jcc(Ne, "runtime_extreme_of_started"),
+				Emit.imm(Rax, (0xFFF0000000000000).to_i64_wrap()),
+				Emit.mark("runtime_extreme_of_started"),
+				Emit.store(local(16), Rax),
+				Emit.mark("runtime_extreme_of_next"),
+			])
+			.concat(next_item("runtime_extreme_of_done"))
+			.concat([
+				Emit.call(Runtime.check_number),
+				Emit.mov(Rsi, Rax),
+				Emit.load(Rdi, local(16)),
+				Emit.load(Rax, local(32)),
+				Emit.test(Rax, Rax),
+				Emit.jcc(Ne, "runtime_extreme_of_min"),
+				Emit.call(Runtime.math_routine("max")),
+				Emit.jmp("runtime_extreme_of_kept"),
+				Emit.mark("runtime_extreme_of_min"),
+				Emit.call(Runtime.math_routine("min")),
+				Emit.mark("runtime_extreme_of_kept"),
+				Emit.store(local(16), Rax),
+				Emit.jmp("runtime_extreme_of_next"),
+				Emit.mark("runtime_extreme_of_done"),
+				Emit.load(Rax, local(16)),
+			])
+			.concat(leave)
+	# An array's or a string's items would be integer keys, which node
+	# orders first.
+	keyed = |label|
+		tag_load_items(Rsi)
+			.concat([
+				Emit.cmp_imm(Rcx, Boxing.object_tag),
+				Emit.jcc(E, "${label}_object"),
+				Emit.cmp_imm(Rcx, Boxing.array_tag),
+				Emit.jcc(E, "${label}_listed"),
+				Emit.cmp_imm(Rcx, Boxing.string_tag),
+				Emit.jcc(Ne, "${label}_done"),
+				Emit.mark("${label}_listed"),
+			])
+			.concat(unboxed_items(Rsi))
+			.concat([
+				Emit.load(Rcx, Emit.mem(Rsi, 0)),
+				Emit.test(Rcx, Rcx),
+				Emit.jcc(Ne, "runtime_integer_key"),
+				Emit.jmp("${label}_done"),
+				Emit.mark("${label}_object"),
+			])
+			.concat(unboxed_items(Rsi))
+			.concat(not_an_error_items("${label}_plain"))
+	# Each entry of the object at [rbp - 8] whose key isn't left out, set
+	# on the object at [rbp - 16].
+	copied = |label|
+		[
+			Emit.zero(Rax),
+			Emit.store(local(24), Rax),
+			Emit.mark("${label}_next"),
+			Emit.load(Rdi, local(8)),
+			Emit.load(Rcx, local(24)),
+			Emit.load(Rdx, Emit.mem(Rdi, 0)),
+			Emit.cmp(Rcx, Rdx),
+			Emit.jcc(Ae, "${label}_done"),
+			Emit.plus_imm(Rcx, 1),
+			Emit.store(local(24), Rcx),
+			Emit.minus_imm(Rcx, 1),
+			Emit.shl(Rcx, 4),
+			Emit.load(R8, Emit.mem(Rdi, 16)),
+			Emit.plus(R8, Rcx),
+			Emit.load(Rsi, Emit.mem(R8, 0)),
+			Emit.load(Rdx, Emit.mem(R8, 8)),
+			Emit.load(R9, local(32)),
+			Emit.zero(R11),
+			Emit.mark("${label}_key"),
+			Emit.load(R10, Emit.mem(R9, 0)),
+			Emit.cmp(R11, R10),
+			Emit.jcc(E, "${label}_kept"),
+			Emit.load(R8, Emit.mem(R9, 16)),
+			Emit.load(Rdi, listed_item(R11)),
+		]
+			.concat(unboxed_items(Rdi))
+			.concat([
+				Emit.save(Rdx),
+				Emit.save(R9),
+				Emit.save(R11),
+				Emit.save(Rsi),
+				Emit.call("runtime_text_equal"),
+				Emit.restore(Rsi),
+				Emit.restore(R11),
+				Emit.restore(R9),
+				Emit.restore(Rdx),
+				Emit.test(Rax, Rax),
+				Emit.jcc(Ne, "${label}_next"),
+				Emit.plus_imm(R11, 1),
+				Emit.jmp("${label}_key"),
+				Emit.mark("${label}_kept"),
+				Emit.load(Rdi, local(16)),
+				Emit.call(Runtime.set_property),
+				Emit.jmp("${label}_next"),
+			])
+	spread_fields =
+		framed({ label: Runtime.spread_fields, size: 32 })
+			.concat([Emit.store(local(16), Rdi)])
+			.concat(keyed("runtime_spread_fields"))
+			.concat([
+				Emit.store(local(8), Rsi),
+				# No key is left out: an empty list of them.
+				Emit.zero(Rdi),
+				Emit.call(Runtime.new_array),
+			])
+			.concat(unboxed_items(Rax))
+			.append(Emit.store(local(32), Rax))
+			.concat(copied("runtime_spread_fields_copy"))
+			.concat([
+				Emit.mark("runtime_spread_fields_done"),
+				Emit.mark("runtime_spread_fields_copy_done"),
+			])
+			.concat(leave)
+	left =
+		framed({ label: Runtime.properties_left, size: 32 })
+			.concat(unboxed_items(Rsi))
+			.concat([
+				Emit.store(local(32), Rsi),
+				Emit.mov(Rsi, Rdi),
+				Emit.call(Runtime.new_object),
+				Emit.store(local(16), Rax),
+				Emit.mov(Rdi, Rax),
+			])
+			.concat(keyed("runtime_properties_left"))
+			.concat([Emit.store(local(8), Rsi)])
+			.concat(copied("runtime_properties_left_copy"))
+			.concat([
+				Emit.mark("runtime_properties_left_done"),
+				Emit.mark("runtime_properties_left_copy_done"),
+				Emit.load(Rax, local(16)),
+			])
+			.concat(leave)
+			.append(Emit.mark("runtime_spread_error"))
+			.concat(stopping_items("runtime_text_spread_error"))
+	[call_spread, log_spread, extreme_of, spread_fields, left].join()
 }
 
 ## `runtime_throw`, `runtime_new_error` and `runtime_error_message`. A

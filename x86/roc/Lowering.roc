@@ -267,23 +267,22 @@ literals_of = |program| {
 	for code in program.codes {
 		for instruction in code.ops {
 			named = match instruction {
-				PushText(text) => Named(text)
-				TemplatePart(text) => Named(text)
-				GetProperty(key, _) => Named(key)
-				MethodLookup(key, _) => Named(key)
-				SetProperty(key, _) => Named(key)
-				SetField(key) => Named(key)
-				_ => Unnamed
+				PushText(text) => [text]
+				TemplatePart(text) => [text]
+				GetProperty(key, _) => [key]
+				MethodLookup(key, _) => [key]
+				SetProperty(key, _) => [key]
+				SetField(key) => [key]
+				PropertiesLeft({ keys, at: _ }) => keys
+				_ => []
 			}
-			match named {
-				Named(text) =>
-					if !$found.contains(text) {
-						if text.to_utf8().any(|byte| byte >= 0x80) {
-							return Err(Refused("a string that is not ASCII is not compiled yet"))
-						}
-						$found = $found.insert(text, $found.len())
+			for text in named {
+				if !$found.contains(text) {
+					if text.to_utf8().any(|byte| byte >= 0x80) {
+						return Err(Refused("a string that is not ASCII is not compiled yet"))
 					}
-				Unnamed => {}
+					$found = $found.insert(text, $found.len())
+				}
 			}
 		}
 	}
@@ -1012,7 +1011,8 @@ taken_count = |instruction|
 		StoreLocal(_) | SetLocal(_) | SetBoxed(_) | Return | SetField(_) | TemplatePart(_) => 1
 		StoreBoxed(_) | SetProperty(_, _) | SetIndex(_) | Unary(_, _) | Throw(_) => 1
 		JumpIfFalse(_) | SkipIfFalsy(_) | SkipIfTruthy(_) => 1
-		Binary(_, _) => 2
+		AppendItem | AppendSpread(_) | SpreadFields(_) | CallMethodSpread(_) => 1
+		Binary(_, _) | CallSpread(_) => 2
 		MakeArray(count) => count
 		Call({ count, written: _, at: _ }) => count
 		CallMethod({ name: _, site: { count, written: _, at: _ } }) => count
@@ -2487,6 +2487,19 @@ instruction_items = |site, { instruction, state }| {
 				with_top(state, Object),
 			),
 		)
+		NewArray => Ok(
+			falling(
+				[
+					Emit.zero(Rdi),
+					Emit.call(Runtime.new_array),
+					Emit.store(next_place, Rax),
+				],
+				with_top(state, Array),
+			),
+		)
+		AppendItem | AppendSpread(_) => spread_items(site, { state, instruction })
+		SpreadFields(_) | PropertiesLeft(_) => spread_items(site, { state, instruction })
+		CallSpread(_) | CallMethodSpread(_) => spread_items(site, { state, instruction })
 		SetField(key) => Ok(
 			falling(
 				[
@@ -2969,6 +2982,132 @@ instruction_name = |instruction| {
 	match text.split_first("(") {
 		Ok({ before, after: _ }) => before
 		Err(_) => text
+	}
+}
+
+## The instructions of spreads and rests: an array literal's items and
+## spreads appended (`[...xs, 1]`), a call's arguments spread (`f(...xs)`,
+## `console.log(...xs)`, `Math.max(...xs)`), an object's properties spread
+## (`{ ...o }`), and an object pattern's rest.
+spread_items : Site, { state : State, instruction : Bytecode.Op } -> Try(Lowered, [Refused(Str)])
+spread_items = |site, { state, instruction }| {
+	depth = state.stack_kinds.len()
+	top_place = |down| stack_place(site.code, depth - 1 - down)
+	top_kind = kind_below(state, 0)
+	if !is_value_kind(top_kind) {
+		return refusal(site, "a spread or a rest of ${kind_phrase(top_kind)}")
+	}
+	unboxed = |reg| [Emit.shl(reg, 16), Emit.shr(reg, 16)]
+	match instruction {
+		AppendItem =>
+			Ok(
+				falling(
+					[Emit.load(Rdi, top_place(1))]
+						.concat(unboxed(Rdi))
+						.concat([Emit.load(Rsi, top_place(0)), Emit.call("runtime_push_item")]),
+					without_top(state, 1),
+				),
+			)
+		AppendSpread(_) =>
+			Ok(
+				falling(
+					[
+						Emit.load(Rdi, top_place(0)),
+						Emit.call(Runtime.items_of),
+						Emit.mov(Rsi, Rax),
+						Emit.load(Rdi, top_place(1)),
+					]
+						.concat(unboxed(Rdi))
+						.append(Emit.call(Runtime.concat_item)),
+					without_top(state, 1),
+				),
+			)
+		SpreadFields(_) =>
+			Ok(
+				falling(
+					[
+						Emit.load(Rdi, top_place(1)),
+						Emit.load(Rsi, top_place(0)),
+						Emit.call(Runtime.spread_fields),
+					],
+					without_top(state, 1),
+				),
+			)
+		PropertiesLeft({ keys, at: _ }) => {
+			var $listed = [Emit.imm(Rdi, keys.len().to_i64_wrap()), Emit.call(Runtime.new_array)]
+			for (at, key) in keys.map_with_index(|key, at| (at, key)) {
+				$listed = $listed.concat([
+					Emit.address_of(Rcx, text_label(site, key)),
+					Emit.imm(R8, Boxing.tag_bits(Boxing.string_tag)),
+					Emit.plus(Rcx, R8),
+					Emit.store(Emit.mem(Rdx, (8 * at).to_i64_wrap()), Rcx),
+				])
+			}
+			called = [
+				Emit.mov(Rsi, Rax),
+				Emit.load(Rdi, top_place(0)),
+				Emit.call(Runtime.properties_left),
+				Emit.store(top_place(0), Rax),
+			]
+			Ok(falling($listed.concat(called), with_top(without_top(state, 1), Object)))
+		}
+		CallSpread(_) =>
+			match kind_below(state, 1) {
+				Closure(_) | Value =>
+					Ok(
+						falling(
+							[
+								Emit.load(Rdi, top_place(1)),
+								Emit.load(Rsi, top_place(0)),
+								Emit.call(Runtime.call_spread),
+								Emit.store(top_place(1), Rax),
+							],
+							with_top(without_top(state, 2), Value),
+						),
+					)
+				kind => refusal(site, "a call with a spread of ${kind_phrase(kind)}")
+			}
+		CallMethodSpread(_) => {
+			receiver = top_place(2)
+			after = |kind| with_top(without_top(state, 3), kind)
+			match kind_below(state, 1) {
+				Log =>
+					Ok(
+						falling(
+							[Emit.load(Rdi, top_place(0)), Emit.call(Runtime.log_spread)],
+							after(Undefined),
+						),
+					)
+				StaticMethod({ owner: "Math", name }) if name == "max" or name == "min" => {
+					extreme = if name == "max" {
+						0
+					} else {
+						1
+					}
+					called = [
+						Emit.load(Rdi, top_place(0)),
+						Emit.imm(Rsi, extreme),
+						Emit.call(Runtime.extreme_of),
+						Emit.store(receiver, Rax),
+					]
+					Ok(falling(called, after(Number)))
+				}
+				Value =>
+					Ok(
+						falling(
+							[
+								Emit.load(Rdi, top_place(1)),
+								Emit.load(Rsi, top_place(0)),
+								Emit.call(Runtime.call_spread),
+								Emit.store(receiver, Rax),
+							],
+							after(Value),
+						),
+					)
+				kind => refusal(site, "a method call with a spread of ${kind_phrase(kind)}")
+			}
+		}
+		_ => crash "Lowering.spread_items: a spread's or a rest's instruction"
 	}
 }
 

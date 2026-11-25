@@ -27,6 +27,7 @@
 32-word-count.js
 33-string-append.js
 34-shadowing.js
+40-parameters.js
 41-exceptions.js
 49-loops-labels.js
 56-call-depth.js
