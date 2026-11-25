@@ -77,6 +77,7 @@ import Collector
 import Events
 import Heap
 import Inspect
+import StringRules
 import ValueRules
 
 Vm :: [].{
@@ -1570,7 +1571,7 @@ method_called! = |host, program, machine, { name, site }| {
 		TextMethod(text) => {
 			arguments = arguments_of(machine, count)
 			{ cells, machine: rest } = lent(machine)
-			with_got(rest, ValueRules.text_method(shell(cells, rest), text, name, arguments, site.at), result_at)
+			with_got(rest, StringRules.text_method(shell(cells, rest), text, name, arguments, site.at), result_at)
 		}
 		CollectionMethod(place) if name == "forEach" => collection_walk!(host, program, machine, { id: place.id, count: count, result_at: result_at, at: site.at })
 		CollectionMethod(place) => {
