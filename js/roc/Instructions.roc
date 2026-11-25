@@ -10,6 +10,18 @@
 ## arm, and the calls that run a callback (and so the loop again) stay there
 ## with it, since Roc allows no import cycle. What is here is pure, so it is
 ## read and changed without the effects in view.
+##
+## **A THROW LANDS AT A HANDLER THAT IS DATA.** A `try` pushes a handler
+## (`Machine.Handler`): its frame, where its `catch` or `finally` code
+## starts, and how high the stack stood. A throw, the program's or one of
+## JavaScript's own errors, sets `status`, and `caught` takes the innermost
+## handler when its frame is one this run of the loop entered: the frames
+## and the stack above it are given up, and its code goes on with the value
+## thrown on top.
+##
+## **A HANDLER TAKES SEVERAL ARGUMENTS:** the machine (the program before
+## it, for those that enter a frame), then the rest, for the reason `Vm`'s
+## module doc gives.
 import Ast
 import BuiltinRules
 import Bytecode
@@ -20,37 +32,6 @@ import Machine
 import ValueRules
 
 Instructions :: [].{
-
-	# The machine after a throw: at the innermost waiting handler, when that
-	# handler's frame is one this run of the loop entered (at `floor` or
-	# deeper), with the stack as it stood and what was thrown on top; else as
-	# it is, for the loop that entered the handler's frame to catch.
-	caught : Machine.Machine, Box(ValueRules.Throw), U64 -> Machine.Machine
-	caught = |machine, boxed, floor|
-		if machine.handler_count == 0 {
-			machine
-		} else {
-			handler = machine.handlers.get(machine.handler_count - 1) ?? crash "Instructions.caught: a handler waits"
-			if handler.depth < floor {
-				machine
-			} else {
-				{ value, site } = Box.unbox(boxed)
-				back = {
-					..machine,
-					status: Running,
-					handler_count: machine.handler_count - 1,
-					depth: handler.depth,
-					code: handler.code,
-					pc: handler.pc,
-					base: handler.base,
-				}
-				cleared = Machine.dropped(back, back.top - handler.top)
-				match handler.kind {
-					Catching => Machine.pushed(cleared, value)
-					Finishing => Machine.pushed(Machine.pushed(Machine.pushed(cleared, Number(site.line.to_f64())), Number(site.column.to_f64())), value)
-				}
-			}
-		}
 
 	# The value and the class under the top of the stack replaced by whether
 	# the value is an instance of the class named, or of a class that extends
@@ -237,6 +218,37 @@ Instructions :: [].{
 		}
 
 	# ---- exceptions ------------------------------------------------------------
+
+	# The machine after a throw: at the innermost waiting handler, when that
+	# handler's frame is one this run of the loop entered (at `floor` or
+	# deeper), with the stack as it stood and what was thrown on top; else as
+	# it is, for the loop that entered the handler's frame to catch.
+	caught : Machine.Machine, Box(ValueRules.Throw), U64 -> Machine.Machine
+	caught = |machine, boxed, floor|
+		if machine.handler_count == 0 {
+			machine
+		} else {
+			handler = machine.handlers.get(machine.handler_count - 1) ?? crash "Instructions.caught: a handler waits"
+			if handler.depth < floor {
+				machine
+			} else {
+				{ value, site } = Box.unbox(boxed)
+				back = {
+					..machine,
+					status: Running,
+					handler_count: machine.handler_count - 1,
+					depth: handler.depth,
+					code: handler.code,
+					pc: handler.pc,
+					base: handler.base,
+				}
+				cleared = Machine.dropped(back, back.top - handler.top)
+				match handler.kind {
+					Catching => Machine.pushed(cleared, value)
+					Finishing => Machine.pushed(Machine.pushed(Machine.pushed(cleared, Number(site.line.to_f64())), Number(site.column.to_f64())), value)
+				}
+			}
+		}
 
 	try_entered : Machine.Machine, U64, Bytecode.Handling -> Machine.Machine
 	try_entered = |machine, handler, kind| {
@@ -635,7 +647,7 @@ Instructions :: [].{
 		)
 	}
 
-	# ---- closures and calls ----------------------------------------------------
+	# ---- closures and frames ---------------------------------------------------
 
 	closure_made : Machine.Machine, { code : U64, captures : List(U64), definition : Box(Ast.FunctionDefinition) } -> Machine.Machine
 	closure_made = |machine, { code, captures, definition }| {
@@ -809,7 +821,7 @@ Instructions :: [].{
 		Machine.with_got(rest, BuiltinRules.constructed(Machine.shell(cells, rest), maker, callee, arguments, at), rest.top - count - 1)
 	}
 
-	# ---- builtins --------------------------------------------------------------
+	# ---- timers ----------------------------------------------------------------
 
 	# `setTimeout` or `setInterval`: the timer's handle, its callback queued by
 	# `Events.timer_requested`'s rules.
@@ -828,7 +840,7 @@ Instructions :: [].{
 		Machine.with_got(back, { machine: after, value: value }, calling.result_at)
 	}
 
-	# ---- array methods ---------------------------------------------------------
+	# ---- array items -----------------------------------------------------------
 
 	item_count : Machine.Machine, U64 -> U64
 	item_count = |machine, id| match ValueRules.kind_of(machine.cells, id) {

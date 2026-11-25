@@ -19,10 +19,12 @@
 ## (the item `filter` keeps, the items `sort` orders), so the collections
 ## inside the callback see it.
 ##
-## **THE LOOP ONLY DISPATCHES.** `run!` fetches the next instruction and
+## **THE LOOP ONLY DISPATCHES.** `loop!` fetches the next instruction and
 ## calls `dispatch!`, whose match calls one top-level handler an arm, so no
-## single function grows with the language. A handler answers the machine
-## and nothing else; a value it makes goes on the stack.
+## single function grows with the language. Most handlers are
+## `Instructions`' (the stack's own moves are `Machine`'s); the calls, which
+## may run the loop again for a callback, stay here. A handler answers the
+## machine and nothing else; a value it makes goes on the stack.
 ##
 ## **A PLACE THE STACK GIVES UP IS CLEARED.** The stack never shrinks: a pop
 ## lowers `top` and writes `Null` where the value was, and a push past the
@@ -47,18 +49,14 @@
 ## function of the program.
 ##
 ## **THE HANDLERS TAKE SEVERAL ARGUMENTS, A NAMED EXCEPTION.** A handler
-## takes the host, then the program, then the machine, then the rest, where the style guide would take one record:
-## a record holding the machine is a second reference to the heap.
+## here takes the host, then the program, then the machine, then the rest,
+## where the style guide would take one record: a record holding the
+## machine is a second reference to the heap.
 ##
-## **A THROW LANDS AT A HANDLER THAT IS DATA.** A `try` pushes a handler
-## (`Handler`): its frame, where its `catch` or `finally` code starts, and
-## how high the stack stood. A throw, the program's or one of JavaScript's
-## own errors, sets `status`, and the loop takes the innermost handler when
-## its frame is one this run of the loop entered: the frames and the stack
-## above it are given up, and its code goes on with the value thrown on top
-## (`caught`). A throw a callback's own frames don't catch ends the
-## callback's run, and the builtin that called it hands it to the loop
-## beneath. One nothing catches ends the run as node ends it.
+## **A THROW SETS `status`, AND THE LOOP HANDS IT TO `Instructions.caught`**
+## after the instruction that threw. A throw a callback's own frames don't
+## catch ends the callback's run, and the builtin that called it hands it to
+## the loop beneath. One nothing catches ends the run as node ends it.
 ##
 ## **EVERY CALLBACK RUNS AFTER THE PROGRAM, ON ONE QUEUE.**
 ## `setTimeout` and `setInterval` queue their callbacks by `Events`' rules,

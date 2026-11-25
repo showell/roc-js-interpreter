@@ -319,7 +319,9 @@ The interpreter is `js/roc/`: `Lexer.roc` makes tokens with their lines and
 columns, `Parser.roc` reads them into `Ast.roc`'s tree by recursive descent,
 laying out each scope's names, and `Resolve.roc` places every name read or
 written in those layouts before the run. `Compile.roc` makes each function
-a list of `Bytecode.roc`'s instructions, `Vm.roc` runs them, and
+a list of `Bytecode.roc`'s instructions, `Vm.roc` runs them (its loop
+and calls; `Instructions.roc` what each instruction does, `Machine.roc` the
+machine and its stack), and
 `Collector.roc` frees the cells its roots don't reach. `ValueRules.roc`
 holds the rules JavaScript's values follow, and four modules built on it
 hold one kind of value's each: `StringRules.roc` the methods of strings,
@@ -352,7 +354,7 @@ its own, so no one function grows with the language.
   fresh box. So the roots a collector needs are the live stack, the frames
   and the cells, all data.
 - **The collector marks from the machine and sweeps onto a free list**
-  (`Collector.roc`, `Vm.roots`). Its roots are the stack up to its top
+  (`Collector.roc`, `Machine.roots`). Its roots are the stack up to its top
   (each frame's slots, its boxes and the function it runs, a caller's
   half-made values, a `finally`'s held throw), the builtins, a throw on its
   way to a handler and the event queue's callbacks. It runs before an
@@ -381,7 +383,7 @@ its own, so no one function grows with the language.
   `BuiltinRules`); the VM's fast paths settle the common cases (numbers, an object's own property,
   an array's item) and hand the rest to the rule. A rule takes a machine of
   the cells and a status (`ValueRules.Machine`), and the VM lends it its
-  cells and puts back what it gives (`Vm.lent`, `Vm.shell`), so the cells
+  cells and puts back what it gives (`Machine.lent`, `Machine.shell`), so the cells
   have one owner while the rule writes them. A rule generic over the VM's
   whole machine (an open record) would need no lending, but the dev build
   copies the cells a rule writes through one, so the controls would see a
@@ -410,7 +412,7 @@ held to `js/controls/expected-dev.txt`):** every control flat: 0, 1, 1, 0,
 makes an object a pass inside a call; its 0.04 is the collector's own
 lists, made once a collection. The one a call makes is a list of 112 bytes,
 the same at every size, which roc-alloc-trace's `where` puts down to
-`Vm.pushed`; rewriting the write three ways didn't move it. On the dev
+`Machine.pushed`; rewriting the write three ways didn't move it. On the dev
 backend fib(22) takes about 860 ms of CPU (best of three, with the
 collector's check before every instruction).
 
@@ -421,7 +423,7 @@ fastest of five, a quiet box):** fib(22) takes 99 ms, and the loops
 key's identity and a new object's property list. js-vm's release build
 takes 91 s. `memcpy` doesn't show in fib's profile (`perf record`).
 
-**The machine stays at most 256 bytes inline (`Vm.Machine`); it is 248.**
+**The machine stays at most 256 bytes inline (`Machine.Machine`); it is 248.**
 Every instruction hands the machine back, and a handler copies it on the
 way in. LLVM copies a record of up to 256 bytes with eight vector moves and
 calls `memcpy` for a bigger one, so a machine past 256 bytes pays a call on
@@ -441,7 +443,7 @@ interpreter keeps everything JavaScript shares in one Roc value, the heap, a
 list of cells (an object, an array, a closure, a builtin, an error, a Map, a
 Set, an iterator, a captured variable's box, a closure's environment) named
 by index, and a JavaScript reference is that index. The machine
-(`Vm.Machine`: the heap, the operand stack, the frames, the handlers, the
+(`Machine.Machine`: the heap, the operand stack, the frames, the handlers, the
 step count) is handed to each instruction's handler, which answers it back.
 
 **Roc writes a list in place only while nothing else refers to it, so one
@@ -468,7 +470,7 @@ shapes that keep it unique, each with a comment where it is used:
   pop lowers `top` and writes `Null` where the value was, so no value left
   above `top` is a second reference to a string or a list.
 - **`s += e` on a string grows the string where the slot holds it**
-  (`Vm.local_appended`), so a string built one piece at a time is not
+  (`Instructions.local_appended`), so a string built one piece at a time is not
   copied per piece.
 - **A Map's or a Set's table sits in a list of one in its cell,** so every
   cell stays an object's size while `List.update` still writes the table
