@@ -1,11 +1,12 @@
 ## This module holds what every part of the JavaScript parser shares: the
 ## parser's state (`State`, where it is in the tokens, the statements and
 ## the class around it), a parse's value (`Parsed`), the class records that
-## state holds (`ClassInfo`, `Receiver`, `Parent`, `ClassCode`), the labels
-## around the parser's place, the tokens read and their faults (`token`,
-## `fault_here`, `fault_at`, `token_text`), the reserved and unsupported
-## words, and the lookahead that only scans tokens (whether a loop, an arrow
-## or a pattern assignment starts here, where a bracket closes).
+## state holds (`ParsedClass`, `Receiver`, `Parent`, `ClassCode`), the
+## labels around the parser's place, the tokens read and their faults
+## (`token`, `fault_here`, `fault_at`, `token_text`), the reserved and
+## unsupported words, the refusals more than one part meets (`Refusal`),
+## and the lookahead that only scans tokens (whether a loop, an arrow or a
+## pattern assignment starts here, where a bracket closes).
 ##
 ## It stands apart from Parser because the parser is split: the scope
 ## layout (ScopeLayout) and the class desugaring (ClassDesugaring) are
@@ -30,7 +31,7 @@ ParserBasics :: [].{
 		# Every class's name the program declares, found before the parse,
 		# and the classes parsed so far.
 		class_names : List(Str),
-		classes : List(ParserBasics.ClassInfo),
+		classes : List(ParserBasics.ParsedClass),
 		# What `this` and `super` mean where the parser is.
 		receiver : ParserBasics.Receiver,
 	}
@@ -159,7 +160,7 @@ ParserBasics :: [].{
 			)
 		}
 
-	# A statement's end: a `;`, or at JavaScript would insert one.
+	# A statement's end: a `;`, or where JavaScript would insert one.
 	end_of_statement : ParserBasics.State -> Try(ParserBasics.State, Lexer.Fault)
 	end_of_statement = |parser| {
 		current = ParserBasics.token(parser)
@@ -346,7 +347,7 @@ ParserBasics :: [].{
 	## A class parsed: its name, its own name and the names of the classes
 	## it extends (nearest first), and its methods and static methods, its
 	## own and those it inherits.
-	ClassInfo : {
+	ParsedClass : {
 		name : Str,
 		class_names : List(Str),
 		methods : List(Str),
@@ -364,7 +365,7 @@ ParserBasics :: [].{
 	]
 
 	## What a class extends: nothing, or a class parsed above it.
-	Parent : [Base, Extends(ParserBasics.ClassInfo)]
+	Parent : [Base, Extends(ParserBasics.ParsedClass)]
 
 	## A constructor's or a method's class so far: what the class extends,
 	## and, for the checks a constructor is held to, how often `this` and
@@ -394,7 +395,8 @@ ParserBasics :: [].{
 			_ => False
 		}
 
-	# The index of the `)` that closes the `(` at the parser's place.
+	# The index of the bracket (`)`, `]` or `}`) that closes the one at the
+	# parser's place.
 	matching_close : ParserBasics.State -> U64
 	matching_close = |parser| {
 		var $i = parser.at
@@ -435,12 +437,30 @@ ParserBasics :: [].{
 			_ => Ok({})
 		}
 
+	# The refusals more than one part of the parser meets, so each text has
+	# one home. A class's own refusals are ClassDesugaring's `ClassRefusal`.
+	Refusal : [Accessors, Generators, ComputedNames, PrivateNames, ColonExpected]
+
+	refusal_text : ParserBasics.Refusal -> Str
+	refusal_text = |refusal| match refusal {
+		Accessors => "unsupported: getters, setters and async methods"
+		Generators => "unsupported: generators"
+		ComputedNames => "unsupported: computed property names"
+		PrivateNames => "unsupported: private names"
+		ColonExpected => "expected `:` after a property's name"
+	}
+
+	refusal_here : ParserBasics.State, ParserBasics.Refusal -> Try(a, Lexer.Fault)
+	refusal_here = |parser, refusal| Err(
+		ParserBasics.fault_here(parser, ParserBasics.refusal_text(refusal)),
+	)
+
 	# A property's name after a `.`.
 	name_after_dot : ParserBasics.State -> Try(ParserBasics.Parsed(Str), Lexer.Fault)
 	name_after_dot = |parser|
 		match ParserBasics.token(parser).kind {
 			Name(text) => Ok({ parser: ParserBasics.advance(parser), value: text })
-			Punct("#") => Err(ParserBasics.fault_here(parser, "unsupported: private names"))
+			Punct("#") => ParserBasics.refusal_here(parser, PrivateNames)
 			other => Err(
 				ParserBasics.fault_here(
 					parser,

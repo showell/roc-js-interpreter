@@ -3,10 +3,10 @@
 ##
 ## Every form outside the subset that the parser can recognize is refused
 ## with a message that names it ("unsupported: `this`"), at the line and
-## column at it starts. A program that parses runs only constructs whose
+## column where it starts. A program that parses runs only constructs whose
 ## meaning the interpreter has.
 ##
-## Semicolons may be left out at JavaScript inserts them: before a `}`, at
+## Semicolons may be left out as JavaScript inserts them: before a `}`, at
 ## the end, and at a line break the next token can't continue.
 ##
 ## The parser lays out each scope (`Ast.Scoping`, a function's and a `for`'s
@@ -14,6 +14,12 @@
 ## twice where JavaScript refuses it, two parameters of one name, and a
 ## declaration as the lone body of an `if`, a `while` or a `for`. Then
 ## `Resolve` places every name in those layouts.
+##
+## A class declaration is written as plain functions as it is parsed, so
+## nothing after the parser meets a class. Parser keeps the class parts
+## inside the grammar's cycle, a class's declaration and body and `super`;
+## the desugaring itself, and every class refusal's text, is
+## ClassDesugaring's.
 import Ast
 import ClassDesugaring
 import Lexer
@@ -89,8 +95,8 @@ Parser :: [].{
 			Name("while") => {
 				onward = ParserBasics.expect_punct(ParserBasics.advance(parser), "(")?
 				test = Parser.expression(onward)?
-				q2 = ParserBasics.expect_punct(test.parser, ")")?
-				body = Parser.body_statement(ParserBasics.inside(q2, Looping))?
+				closed = ParserBasics.expect_punct(test.parser, ")")?
+				body = Parser.body_statement(ParserBasics.inside(closed, Looping))?
 				Ok({
 					parser: ParserBasics.outside(body.parser, parser),
 					value: While({
@@ -138,7 +144,7 @@ Parser :: [].{
 			Name(text) if ParserBasics.token_after(parser).kind == Punct(":") and !ParserBasics.is_reserved(text) => {
 				Parser.labelled_statement(parser, text)
 			}
-			Name("for") => Parser.for_statement(parser)
+			Name("for") => Parser.loop_statement(parser)
 			Name("return") => {
 				onward = ParserBasics.advance(parser)
 				next_token = ParserBasics.token(onward)
@@ -146,12 +152,12 @@ Parser :: [].{
 					onward,
 					"}",
 				) or next_token.kind == End or next_token.before == NewLine {
-					q2 = ParserBasics.end_of_statement(onward)?
-					Ok({ parser: q2, value: Return(Undefined) })
+					ended = ParserBasics.end_of_statement(onward)?
+					Ok({ parser: ended, value: Return(Undefined) })
 				} else {
 					parsed_expression = Parser.expression(onward)?
-					q2 = ParserBasics.end_of_statement(parsed_expression.parser)?
-					Ok({ parser: q2, value: Return(parsed_expression.value) })
+					ended = ParserBasics.end_of_statement(parsed_expression.parser)?
+					Ok({ parser: ended, value: Return(parsed_expression.value) })
 				}
 			}
 			Name("try") => Parser.try_statement(parser)
@@ -162,9 +168,9 @@ Parser :: [].{
 					Err(ParserBasics.fault_here(onward, "SyntaxError: Illegal newline after throw"))
 				} else {
 					parsed_expression = Parser.expression(onward)?
-					q2 = ParserBasics.end_of_statement(parsed_expression.parser)?
+					ended = ParserBasics.end_of_statement(parsed_expression.parser)?
 					Ok({
-						parser: q2,
+						parser: ended,
 						value: Throw(parsed_expression.value, ParserBasics.where_of(current)),
 					})
 				}
@@ -200,6 +206,132 @@ Parser :: [].{
 		} else {
 			Parser.statement(parser)
 		}
+
+	if_statement : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Statement), Lexer.Fault)
+	if_statement = |parser| {
+		onward = ParserBasics.expect_punct(ParserBasics.advance(parser), "(")?
+		test = Parser.expression(onward)?
+		closed = ParserBasics.expect_punct(test.parser, ")")?
+		yes = Parser.body_statement(closed)?
+		if ParserBasics.is_word(yes.parser, "else") {
+			no = Parser.body_statement(ParserBasics.advance(yes.parser))?
+			Ok({ parser: no.parser, value: If(test.value, yes.value, no.value) })
+		} else {
+			Ok({ parser: yes.parser, value: If(test.value, yes.value, Empty) })
+		}
+	}
+
+	# A `for` loop, of either form: `for (init; test; update)`, or
+	# `for (... of ...)`, which `iteration_rest` reads.
+	loop_statement : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Statement), Lexer.Fault)
+	loop_statement = |parser| {
+		before = parser.functions
+		onward = ParserBasics.expect_punct(ParserBasics.advance(parser), "(")?
+		binding_word = if ParserBasics.is_word(onward, "let") {
+			Bound(Let)
+		} else if ParserBasics.is_word(onward, "const") {
+			Bound(Const)
+		} else {
+			Unbound
+		}
+		past_binding = ParserBasics.after_binding(ParserBasics.advance(onward))
+		match binding_word {
+			Bound(binding) if ParserBasics.is_word(past_binding, "of") => {
+				Parser.iteration_rest(ParserBasics.advance(onward), binding)
+			}
+			Bound(_) if ParserBasics.is_word(past_binding, "in") => {
+				Err(
+					ParserBasics.fault_here(
+						onward,
+						"unsupported: `for ... in` (use `for ... of` over Object.keys)",
+					),
+				)
+			}
+			_ => {
+				init = match binding_word {
+					Bound(binding) => {
+						parsed = Parser.declarators(ParserBasics.advance(onward), binding)?
+						Ok({ parser: parsed.parser, value: Declare(binding, parsed.value) })
+					}
+					Unbound => if ParserBasics.is_punct(onward, ";") {
+						Ok({ parser: onward, value: Empty })
+					} else {
+						parsed_expression = Parser.expression(onward)?
+						Ok({
+							parser: parsed_expression.parser,
+							value: Expression(parsed_expression.value),
+						})
+					}
+				}?
+				past_init = ParserBasics.expect_punct(init.parser, ";")?
+				test = if ParserBasics.is_punct(past_init, ";") {
+					{ parser: past_init, value: Always }
+				} else {
+					parsed_expression = Parser.expression(past_init)?
+					{ parser: parsed_expression.parser, value: Tested(parsed_expression.value) }
+				}
+				past_test = ParserBasics.expect_punct(test.parser, ";")?
+				update = if ParserBasics.is_punct(past_test, ")") {
+					{ parser: past_test, value: NoUpdate }
+				} else {
+					parsed_expression = Parser.expression(past_test)?
+					{ parser: parsed_expression.parser, value: Updated(parsed_expression.value) }
+				}
+				closed = ParserBasics.expect_punct(update.parser, ")")?
+				looped = Parser.body_statement(ParserBasics.inside(closed, Looping))?
+				body = { ..looped, parser: ParserBasics.outside(looped.parser, closed) }
+				loop = {
+					labels: [],
+					names: ScopeLayout.scope_names([], [init.value])?,
+					init: init.value,
+					test: test.value,
+					update: update.value,
+					body: body.value,
+					capture: ParserBasics.capture_since(body.parser, before),
+				}
+				Ok({ parser: body.parser, value: For(loop) })
+			}
+		}
+	}
+
+	# A `for ... of` loop after its `let` or `const`: the pattern, the
+	# iterable and the body.
+	iteration_rest : ParserBasics.State,
+	Ast.Binding -> Try(
+		ParserBasics.Parsed(Ast.Statement),
+		Lexer.Fault,
+	)
+	iteration_rest = |parser, binding| {
+		site = ParserBasics.here(parser)
+		bound = Parser.pattern(parser, Declaring)?
+		names = Ast.pattern_names(bound.value)
+		match ScopeLayout.repeated_name(names) {
+			Ok(name) => return Err(ScopeLayout.redeclaration(site, name))
+			Err(NoneRepeated) => {}
+		}
+		parsed_expression = Parser.assignment(ParserBasics.advance(bound.parser))?
+		onward = ParserBasics.expect_punct(parsed_expression.parser, ")")?
+		before = onward.functions
+		looped = Parser.body_statement(ParserBasics.inside(onward, Looping))?
+		body = { ..looped, parser: ParserBasics.outside(looped.parser, onward) }
+		loop = {
+			labels: [],
+			binding: binding,
+			pattern: bound.value,
+			names: names,
+			iterable: parsed_expression.value,
+			body: body.value,
+			# A closure in the pattern's defaults can capture the pass's scope
+			# too; one in the iterable can't.
+			capture: if bound.parser.functions > parser.functions {
+				Captures
+			} else {
+				ParserBasics.capture_since(body.parser, before)
+			},
+			at: site,
+		}
+		Ok({ parser: body.parser, value: ForOf(loop) })
+	}
 
 	switch_statement : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Statement), Lexer.Fault)
 	switch_statement = |parser| {
@@ -415,7 +547,7 @@ Parser :: [].{
 		match refusal {
 			Refused(why) => Err(ParserBasics.fault_here(parser, why))
 			Allowed => {
-				q2 = ParserBasics.end_of_statement(after)?
+				ended = ParserBasics.end_of_statement(after)?
 				numbered = match label {
 					Unlabelled => Unlabelled
 					Named(name) => Named(ParserBasics.label_number(enclosing, name))
@@ -424,7 +556,7 @@ Parser :: [].{
 					Breaking => Break(numbered)
 					Continuing => Continue(numbered)
 				}
-				Ok({ parser: q2, value: jumped })
+				Ok({ parser: ended, value: jumped })
 			}
 		}
 	}
@@ -619,9 +751,7 @@ Parser :: [].{
 					Name(text) => Ok(text)
 					Text(text) => Ok(text)
 					Number(number) => Ok(NumberText.text_for(number))
-					Punct("[") => Err(
-						ParserBasics.fault_here($onward, "unsupported: computed property names"),
-					)
+					Punct("[") => ParserBasics.refusal_here($onward, ComputedNames)
 					other => Err(
 						ParserBasics.fault_here(
 							$onward,
@@ -642,9 +772,7 @@ Parser :: [].{
 							parser: after,
 							value: Leaf(ToName(text, Unresolved, site)),
 						}
-						_ => return Err(
-							ParserBasics.fault_here(after, "expected `:` after a property's name"),
-						)
+						_ => return ParserBasics.refusal_here(after, ColonExpected)
 					}
 				}
 				defaulted = Parser.default_after(bound.parser, bound.value)?
@@ -676,133 +804,17 @@ Parser :: [].{
 			Ok({ parser: parser, value: NoDefault })
 		}
 
-	if_statement : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Statement), Lexer.Fault)
-	if_statement = |parser| {
-		onward = ParserBasics.expect_punct(ParserBasics.advance(parser), "(")?
-		test = Parser.expression(onward)?
-		q2 = ParserBasics.expect_punct(test.parser, ")")?
-		yes = Parser.body_statement(q2)?
-		if ParserBasics.is_word(yes.parser, "else") {
-			no = Parser.body_statement(ParserBasics.advance(yes.parser))?
-			Ok({ parser: no.parser, value: If(test.value, yes.value, no.value) })
-		} else {
-			Ok({ parser: yes.parser, value: If(test.value, yes.value, Empty) })
-		}
-	}
-
-	for_statement : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Statement), Lexer.Fault)
-	for_statement = |parser| {
-		before = parser.functions
-		onward = ParserBasics.expect_punct(ParserBasics.advance(parser), "(")?
-		binding_word = if ParserBasics.is_word(onward, "let") {
-			Bound(Let)
-		} else if ParserBasics.is_word(onward, "const") {
-			Bound(Const)
-		} else {
-			Unbound
-		}
-		past_binding = ParserBasics.after_binding(ParserBasics.advance(onward))
-		match binding_word {
-			Bound(binding) if ParserBasics.is_word(past_binding, "of") => {
-				Parser.for_of_rest(ParserBasics.advance(onward), binding)
-			}
-			Bound(_) if ParserBasics.is_word(past_binding, "in") => {
-				Err(
-					ParserBasics.fault_here(
-						onward,
-						"unsupported: `for ... in` (use `for ... of` over Object.keys)",
-					),
-				)
-			}
-			_ => {
-				init = match binding_word {
-					Bound(binding) => {
-						parsed = Parser.declarators(ParserBasics.advance(onward), binding)?
-						Ok({ parser: parsed.parser, value: Declare(binding, parsed.value) })
-					}
-					Unbound => if ParserBasics.is_punct(onward, ";") {
-						Ok({ parser: onward, value: Empty })
-					} else {
-						parsed_expression = Parser.expression(onward)?
-						Ok({
-							parser: parsed_expression.parser,
-							value: Expression(parsed_expression.value),
-						})
-					}
-				}?
-				q2 = ParserBasics.expect_punct(init.parser, ";")?
-				test = if ParserBasics.is_punct(q2, ";") {
-					{ parser: q2, value: Always }
-				} else {
-					parsed_expression = Parser.expression(q2)?
-					{ parser: parsed_expression.parser, value: Tested(parsed_expression.value) }
-				}
-				q3 = ParserBasics.expect_punct(test.parser, ";")?
-				update = if ParserBasics.is_punct(q3, ")") {
-					{ parser: q3, value: NoUpdate }
-				} else {
-					parsed_expression = Parser.expression(q3)?
-					{ parser: parsed_expression.parser, value: Updated(parsed_expression.value) }
-				}
-				q4 = ParserBasics.expect_punct(update.parser, ")")?
-				looped = Parser.body_statement(ParserBasics.inside(q4, Looping))?
-				body = { ..looped, parser: ParserBasics.outside(looped.parser, q4) }
-				loop = {
-					labels: [],
-					names: ScopeLayout.scope_names([], [init.value])?,
-					init: init.value,
-					test: test.value,
-					update: update.value,
-					body: body.value,
-					capture: ParserBasics.capture_since(body.parser, before),
-				}
-				Ok({ parser: body.parser, value: For(loop) })
-			}
-		}
-	}
-
-	for_of_rest : ParserBasics.State,
-	Ast.Binding -> Try(
-		ParserBasics.Parsed(Ast.Statement),
-		Lexer.Fault,
-	)
-	for_of_rest = |parser, binding| {
-		site = ParserBasics.here(parser)
-		bound = Parser.pattern(parser, Declaring)?
-		names = Ast.pattern_names(bound.value)
-		match ScopeLayout.repeated_name(names) {
-			Ok(name) => return Err(ScopeLayout.redeclaration(site, name))
-			Err(NoneRepeated) => {}
-		}
-		parsed_expression = Parser.assignment(ParserBasics.advance(bound.parser))?
-		onward = ParserBasics.expect_punct(parsed_expression.parser, ")")?
-		before = onward.functions
-		looped = Parser.body_statement(ParserBasics.inside(onward, Looping))?
-		body = { ..looped, parser: ParserBasics.outside(looped.parser, onward) }
-		loop = {
-			labels: [],
-			binding: binding,
-			pattern: bound.value,
-			names: names,
-			iterable: parsed_expression.value,
-			body: body.value,
-			# A closure in the pattern's defaults can capture the pass's scope
-			# too; one in the iterable can't.
-			capture: if bound.parser.functions > parser.functions {
-				Captures
-			} else {
-				ParserBasics.capture_since(body.parser, before)
-			},
-			at: site,
-		}
-		Ok({ parser: body.parser, value: ForOf(loop) })
-	}
-
 	# ---- classes ---------------------------------------------------------------
 	#
 	# The class parts inside the grammar's cycle, which parse a body's
 	# functions and a call's arguments. The rest, and how a class is written
 	# as plain functions, is ClassDesugaring.
+
+	# The function literals a class's desugaring writes, past the methods
+	# parsed in its body: `#install C`, `#construct C` and `C` itself
+	# (ClassDesugaring's doc), each a literal a block's capture counts.
+	desugared_functions : U64
+	desugared_functions = 3
 
 	class_declaration : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Statement), Lexer.Fault)
 	class_declaration = |parser| {
@@ -827,7 +839,7 @@ Parser :: [].{
 		Ok({
 			parser: {
 				..body.parser,
-				functions: body.parser.functions + 3,
+				functions: body.parser.functions + Parser.desugared_functions,
 				classes: body.parser.classes.append(desugared.parsed_class),
 			},
 			value: Declare(Let, desugared.declarators),
@@ -931,7 +943,7 @@ Parser :: [].{
 
 	# `super(...)` in a derived class's constructor, or `super.m` in a
 	# derived class's method.
-	super_expression : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Expression), Lexer.Fault)
+	super_expression : ParserBasics.State -> ParserBasics.ParsedExpression
 	super_expression = |parser| {
 		after = ParserBasics.advance(parser)
 		match parser.receiver {
@@ -967,7 +979,7 @@ Parser :: [].{
 	}
 
 	# `super(...)` at `super`, written as a call of `#construct P(this, ...)`.
-	super_call : ParserBasics.State, ParserBasics.ClassInfo -> ParserBasics.ParsedExpression
+	super_call : ParserBasics.State, ParserBasics.ParsedClass -> ParserBasics.ParsedExpression
 	super_call = |parser, parent| {
 		site = ParserBasics.here(parser)
 		given = Parser.arguments(ParserBasics.advance(parser))?
@@ -996,8 +1008,6 @@ Parser :: [].{
 	# How a function's name is written: a declaration must have one.
 	Naming : [Declared, Expressed]
 
-	# A function after its `function` keyword: an optional name, the
-	# parameters and the body.
 	ParsedFunction : Try(ParserBasics.Parsed(Ast.FunctionDefinition), Lexer.Fault)
 
 	# What a function's body is parsed with: the function's name, its
@@ -1015,12 +1025,14 @@ Parser :: [].{
 	## arguments reach them.
 	Parameters : { names : List(Str), binding : Ast.ParameterBinding }
 
+	# A function after its `function` keyword: an optional name, the
+	# parameters and the body.
 	function_rest : ParserBasics.State, Ast.Where, Parser.Naming -> Parser.ParsedFunction
 	function_rest = |parser, site, naming| {
 		if ParserBasics.is_punct(parser, "*") {
-			return Err(ParserBasics.fault_here(parser, "unsupported: generators"))
+			return ParserBasics.refusal_here(parser, Generators)
 		}
-		named_p = match ParserBasics.token(parser).kind {
+		function_name = match ParserBasics.token(parser).kind {
 			Name(_) => {
 				name_found = ParserBasics.name_here(parser, "a function's name")?
 				Ok(name_found)
@@ -1033,14 +1045,14 @@ Parser :: [].{
 			}
 		}?
 		# `this` in a function inside a method is not the instance.
-		parameters = Parser.parameter_list({ ..named_p.parser, receiver: NoReceiver })?
+		parameters = Parser.parameter_list({ ..function_name.parser, receiver: NoReceiver })?
 		made = Parser.function_body(
 			parameters.parser,
 			{
-				name: named_p.value,
+				name: function_name.value,
 				parameters: parameters.value,
 				at: site,
-				before: named_p.parser.functions,
+				before: function_name.parser.functions,
 			},
 		)?
 		Ok({ ..made, parser: { ..made.parser, receiver: parser.receiver } })
@@ -1131,7 +1143,7 @@ Parser :: [].{
 		})
 	}
 
-	arrow : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Expression), Lexer.Fault)
+	arrow : ParserBasics.State -> ParserBasics.ParsedExpression
 	arrow = |parser| {
 		site = ParserBasics.here(parser)
 		before = parser.functions
@@ -1181,7 +1193,7 @@ Parser :: [].{
 
 	# ---- expressions -----------------------------------------------------------
 
-	expression : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Expression), Lexer.Fault)
+	expression : ParserBasics.State -> ParserBasics.ParsedExpression
 	expression = |parser| {
 		parsed_expression = Parser.assignment(parser)?
 		if ParserBasics.is_punct(parsed_expression.parser, ",") {
@@ -1261,7 +1273,7 @@ Parser :: [].{
 		}
 	}
 
-	assignment : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Expression), Lexer.Fault)
+	assignment : ParserBasics.State -> ParserBasics.ParsedExpression
 	assignment = |parser|
 		if ParserBasics.is_arrow_start(parser) {
 			Parser.arrow(parser)
@@ -1289,7 +1301,7 @@ Parser :: [].{
 			}
 		}
 
-	conditional : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Expression), Lexer.Fault)
+	conditional : ParserBasics.State -> ParserBasics.ParsedExpression
 	conditional = |parser| {
 		test = Parser.logical_or(parser)?
 		if ParserBasics.is_punct(test.parser, "?") {
@@ -1302,7 +1314,7 @@ Parser :: [].{
 		}
 	}
 
-	logical_or : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Expression), Lexer.Fault)
+	logical_or : ParserBasics.State -> ParserBasics.ParsedExpression
 	logical_or = |parser| {
 		first = Parser.logical_and(parser)?
 		var $onward = first.parser
@@ -1320,7 +1332,7 @@ Parser :: [].{
 		Ok({ parser: $onward, value: $built })
 	}
 
-	logical_and : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Expression), Lexer.Fault)
+	logical_and : ParserBasics.State -> ParserBasics.ParsedExpression
 	logical_and = |parser| {
 		first = Parser.equality(parser)?
 		var $onward = first.parser
@@ -1336,11 +1348,11 @@ Parser :: [].{
 	# The binary operators of one level of precedence, by their tokens.
 	Level : List({ punct : Str, operator : Ast.BinaryOperator })
 
-	# One left-associative level: operands from `next`, joined by the level's
-	# operators.
 	# A level's parser, which reads its operands.
 	Operand : ParserBasics.State -> ParserBasics.ParsedExpression
 
+	# One left-associative level: operands from `next`, joined by the level's
+	# operators.
 	binary_level : ParserBasics.State, Parser.Level, Parser.Operand -> ParserBasics.ParsedExpression
 	binary_level = |parser, level, next| {
 		first = next(parser)?
@@ -1368,7 +1380,7 @@ Parser :: [].{
 		Ok({ parser: $onward, value: $built })
 	}
 
-	equality : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Expression), Lexer.Fault)
+	equality : ParserBasics.State -> ParserBasics.ParsedExpression
 	equality = |parser| {
 		parsed = Parser.binary_level(
 			parser,
@@ -1388,7 +1400,7 @@ Parser :: [].{
 		Ok(parsed)
 	}
 
-	relational : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Expression), Lexer.Fault)
+	relational : ParserBasics.State -> ParserBasics.ParsedExpression
 	relational = |parser| {
 		parsed = Parser.binary_level(
 			parser,
@@ -1427,7 +1439,7 @@ Parser :: [].{
 		}
 	}
 
-	additive : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Expression), Lexer.Fault)
+	additive : ParserBasics.State -> ParserBasics.ParsedExpression
 	additive = |parser|
 		Parser.binary_level(
 			parser,
@@ -1435,7 +1447,7 @@ Parser :: [].{
 			Parser.multiplicative,
 		)
 
-	multiplicative : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Expression), Lexer.Fault)
+	multiplicative : ParserBasics.State -> ParserBasics.ParsedExpression
 	multiplicative = |parser|
 		Parser.binary_level(
 			parser,
@@ -1448,7 +1460,7 @@ Parser :: [].{
 		)
 
 	# `**` binds to the right: `2 ** 3 ** 2` is `2 ** 9`.
-	exponent : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Expression), Lexer.Fault)
+	exponent : ParserBasics.State -> ParserBasics.ParsedExpression
 	exponent = |parser| {
 		base = Parser.unary(parser)?
 		if ParserBasics.is_punct(base.parser, "**") {
@@ -1460,7 +1472,7 @@ Parser :: [].{
 		}
 	}
 
-	unary : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Expression), Lexer.Fault)
+	unary : ParserBasics.State -> ParserBasics.ParsedExpression
 	unary = |parser| {
 		site = ParserBasics.here(parser)
 		operator = match ParserBasics.token(parser).kind {
@@ -1489,7 +1501,7 @@ Parser :: [].{
 		}
 	}
 
-	postfix : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Expression), Lexer.Fault)
+	postfix : ParserBasics.State -> ParserBasics.ParsedExpression
 	postfix = |parser| {
 		site = ParserBasics.here(parser)
 		parsed = Parser.call_or_member(parser)?
@@ -1515,7 +1527,7 @@ Parser :: [].{
 		}
 	}
 
-	call_or_member : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Expression), Lexer.Fault)
+	call_or_member : ParserBasics.State -> ParserBasics.ParsedExpression
 	call_or_member = |parser| {
 		first = Parser.primary(parser)?
 		var $onward = first.parser
@@ -1654,7 +1666,7 @@ Parser :: [].{
 		Ok({ parser: ParserBasics.advance($onward), value: $items })
 	}
 
-	primary : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Expression), Lexer.Fault)
+	primary : ParserBasics.State -> ParserBasics.ParsedExpression
 	primary = |parser| {
 		ParserBasics.refuse_unsupported_word(parser)?
 		current = ParserBasics.token(parser)
@@ -1719,7 +1731,7 @@ Parser :: [].{
 			}
 			Punct("{") => Parser.object_rest(after)
 			Punct("/") => Err(ParserBasics.fault_here(parser, "unsupported: regular expressions"))
-			Punct("#") => Err(ParserBasics.fault_here(parser, "unsupported: private names"))
+			Punct("#") => ParserBasics.refusal_here(parser, PrivateNames)
 			Punct("@") => Err(ParserBasics.fault_here(parser, "unsupported: decorators"))
 			other => Err(
 				ParserBasics.fault_here(
@@ -1732,7 +1744,7 @@ Parser :: [].{
 
 	# What `new` calls: a name and the properties after it, up to the
 	# arguments.
-	new_callee : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Expression), Lexer.Fault)
+	new_callee : ParserBasics.State -> ParserBasics.ParsedExpression
 	new_callee = |parser| {
 		first = Parser.primary(parser)?
 		var $onward = first.parser
@@ -1761,7 +1773,7 @@ Parser :: [].{
 		Ok({ parser: $onward, value: $built })
 	}
 
-	template_rest : ParserBasics.State, Str -> Try(ParserBasics.Parsed(Ast.Expression), Lexer.Fault)
+	template_rest : ParserBasics.State, Str -> ParserBasics.ParsedExpression
 	template_rest = |parser, head| {
 		var $onward = parser
 		var $texts = [head]
@@ -1792,7 +1804,7 @@ Parser :: [].{
 	}
 
 	# An object literal after its `{`.
-	object_rest : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Expression), Lexer.Fault)
+	object_rest : ParserBasics.State -> ParserBasics.ParsedExpression
 	object_rest = |parser| {
 		var $onward = parser
 		var $parts = []
@@ -1805,18 +1817,7 @@ Parser :: [].{
 				{ parser: field.parser, value: Field(field.value) }
 			}
 			$parts = $parts.append(parsed.value)
-			if ParserBasics.is_punct(parsed.parser, ",") {
-				$onward = ParserBasics.advance(parsed.parser)
-			} else if ParserBasics.is_punct(parsed.parser, "}") {
-				$onward = parsed.parser
-			} else {
-				return Err(
-					ParserBasics.fault_here(
-						parsed.parser,
-						"expected `,` or `}` in an object, found ${ParserBasics.token_text(ParserBasics.token(parsed.parser).kind)}",
-					),
-				)
-			}
+			$onward = ParserBasics.after_part(parsed.parser, "}", "an object")?
 		}
 		Ok({ parser: ParserBasics.advance($onward), value: ObjectLit($parts) })
 	}
@@ -1829,22 +1830,15 @@ Parser :: [].{
 			Name(text) => {
 				next = ParserBasics.token_after(parser).kind
 				if (text == "get" or text == "set" or text == "async") and next != Punct(":") and next != Punct("(") and next != Punct(",") and next != Punct("}") {
-					Err(
-						ParserBasics.fault_here(
-							parser,
-							"unsupported: getters, setters and async methods",
-						),
-					)
+					ParserBasics.refusal_here(parser, Accessors)
 				} else {
 					Ok(text)
 				}
 			}
 			Text(text) => Ok(text)
 			Number(number) => Ok(NumberText.text_for(number))
-			Punct("[") => Err(
-				ParserBasics.fault_here(parser, "unsupported: computed property names"),
-			)
-			Punct("*") => Err(ParserBasics.fault_here(parser, "unsupported: generators"))
+			Punct("[") => ParserBasics.refusal_here(parser, ComputedNames)
+			Punct("*") => ParserBasics.refusal_here(parser, Generators)
 			other => Err(
 				ParserBasics.fault_here(
 					parser,
@@ -1892,7 +1886,7 @@ Parser :: [].{
 						})
 					}
 				}
-				_ => Err(ParserBasics.fault_here(after, "expected `:` after a property's name"))
+				_ => ParserBasics.refusal_here(after, ColonExpected)
 			}
 		}
 	}

@@ -33,7 +33,7 @@
 ## parts inside the grammar's cycle: a class's declaration and body, which
 ## parse its methods as functions, and `super`, whose call parses its
 ## arguments. ParserBasics keeps the class records the parser's
-## `State` holds (`ClassInfo`, `Receiver`, `Parent`, `ClassCode`).
+## `State` holds (`ParsedClass`, `Receiver`, `Parent`, `ClassCode`).
 import Ast
 import Lexer
 import ParserBasics
@@ -85,11 +85,11 @@ ClassDesugaring :: [].{
 		NeverEnds => "a class that never ends (expected `}`)"
 		TwoConstructors => "SyntaxError: A class may only have one constructor"
 		TwoStatics(name) => "unsupported: two static methods named `${name}`"
-		Accessors => "unsupported: getters, setters and async methods"
+		Accessors => ParserBasics.refusal_text(Accessors)
 		Fields => "unsupported: class fields (set them on `this` in the constructor)"
 		Private => "unsupported: private fields and methods (`#`)"
 		ComputedNames => "unsupported: computed method names"
-		Generators => "unsupported: generators"
+		Generators => ParserBasics.refusal_text(Generators)
 		StaticBlocks => "unsupported: static blocks"
 		NamedByLiteral => "unsupported: a method named by anything but a name"
 		ReturnsValue => "unsupported: a constructor that returns a value"
@@ -255,7 +255,7 @@ ClassDesugaring :: [].{
 	}
 
 	# A method's class so far, and the class it extends.
-	SuperMethod : { code : ParserBasics.ClassCode, parent : ParserBasics.ClassInfo }
+	SuperMethod : { code : ParserBasics.ClassCode, parent : ParserBasics.ParsedClass }
 
 	# `super.m` at `super`, the parent's method kept as `super.m`.
 	super_method : ParserBasics.State, ClassDesugaring.SuperMethod -> ParserBasics.ParsedExpression
@@ -274,7 +274,7 @@ ClassDesugaring :: [].{
 	}
 
 	# `this` in a constructor, a method or an arrow inside them.
-	this_expression : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Expression), Lexer.Fault)
+	this_expression : ParserBasics.State -> ParserBasics.ParsedExpression
 	this_expression = |parser| {
 		this = Name("this", Unresolved, ParserBasics.here(parser))
 		after = ParserBasics.advance(parser)
@@ -299,7 +299,7 @@ ClassDesugaring :: [].{
 
 	# A class declaration written as plain code: its declarators, and the
 	# class's record for the classes after it.
-	ClassDesugared : { parsed_class : ParserBasics.ClassInfo, declarators : List(Ast.Declarator) }
+	ClassDesugared : { parsed_class : ParserBasics.ParsedClass, declarators : List(Ast.Declarator) }
 
 	# The declarators a class declaration is written as (the module's
 	# doc), and the class's record for the classes after it.

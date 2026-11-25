@@ -14,11 +14,11 @@ import Lexer
 import ParserBasics
 
 ScopeLayout :: [].{
-	# The names a scope holds, in order: `first` (a call's parameters), then
-	# each function and each `let` and `const` that `statements` declare. A
-	# function may share its name with a parameter or another function, the
-	# later made winning; a `let` or a `const` shares its name with nothing,
-	# as JavaScript refuses.
+	# The names a scope holds, in order: `leading_names` (a call's
+	# parameters), then each function and each `let` and `const` that
+	# `statements` declare. A function may share its name with a parameter or
+	# another function, the later made winning; a `let` or a `const` shares
+	# its name with nothing, as JavaScript refuses.
 	scope_names : List(Str), List(Ast.Statement) -> Try(List(Str), Lexer.Fault)
 	scope_names = |leading_names, statements| {
 		var $names = leading_names
