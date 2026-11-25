@@ -197,10 +197,10 @@ KnownFunctions :: [].{
 			if escaped_codes.contains(made) {
 				text =
 					if maker.form == MakesInstances {
-						ops = program.codes.get(made).map_ok(|code| code.ops) ?? []
+						instructions = program.codes.get(made).map_ok(|code| code.ops) ?? []
 						var $parents = []
-						for op in ops {
-							match op {
+						for instruction in instructions {
+							match instruction {
 								NewInstance(classes) => {
 									$parents = classes.drop_first(1)
 								}

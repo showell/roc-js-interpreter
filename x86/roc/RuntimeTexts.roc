@@ -114,7 +114,10 @@ texts = [
 	),
 	(
 		"runtime_text_instance_written",
-		"x86: console.log of a class's instance, which node writes with its class's name, is not compiled yet\n",
+		Str.concat(
+			"x86: console.log of a class's instance, which node writes with its class's name,",
+			" is not compiled yet\n",
+		),
 	),
 	(
 		"runtime_text_instance_listed",

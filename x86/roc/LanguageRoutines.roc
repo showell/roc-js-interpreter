@@ -960,14 +960,15 @@ exception_items = {
 		.concat(RuntimeBuilders.stopping_items("runtime_text_instance_listed"))
 	# `value instanceof C`: true when the value (`rdi`) is an instance whose
 	# keys hold C's (`rsi`, the text `NewInstance` sets for each class).
+	marked = "runtime_instance_of_marked"
 	instance_of = [Emit.mark(Runtime.instance_of)]
 		.concat(RuntimeBuilders.tag_load_items(Rdi))
 		.concat([Emit.cmp_imm(Rcx, Boxing.object_tag), Emit.jcc(Ne, "runtime_instance_of_false")])
 		.concat(RuntimeBuilders.unboxed_items(Rdi))
-		.concat(RuntimeBuilders.instance_jump_items({ reg: Rdi, label: "runtime_instance_of_marked" }))
+		.concat(RuntimeBuilders.instance_jump_items({ reg: Rdi, label: marked }))
 		.concat([
 			Emit.jmp("runtime_instance_of_false"),
-			Emit.mark("runtime_instance_of_marked"),
+			Emit.mark(marked),
 			Emit.call("runtime_object_entry"),
 			Emit.test(Rax, Rax),
 			Emit.jcc(E, "runtime_instance_of_false"),

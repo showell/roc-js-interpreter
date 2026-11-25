@@ -32,7 +32,7 @@ RuntimeBuilders :: [].{
 	error_mark = "runtime_text_error_mark"
 
 	## The label of an instance's key, the one-byte string every instance of
-	## a class holds as its first key (`runtime_new_instance`), so console.log,
+	## a class holds as its first key (`NewInstance`'s, in Lowering), so console.log,
 	## the listings and the spreads stop at one rather than show the keys
 	## that name its classes.
 	instance_mark : Str
