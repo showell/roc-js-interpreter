@@ -57,3 +57,17 @@ The 20-second race after both, the same box and day, load average 0.96:
     node: F(349559), 73054 digits, elapsed 19960 ms, PASS, verified; after the verdict 57 ms (wall 20017 ms)
 
 The compiled program did about 1.16 times its earlier work, and node now does about 3.2 times the compiled program's work, down from four. What is left, measured above but not yet fixed: the bytecode's stack is still memory (a variable read is copied there before use), `s` is still a `Value`, and `.length` is read twice a limb.
+
+## Two more fixes: a constant, then registers (2026-11-25, 1-second copies)
+
+Each measured as before: the median of 5 runs of the 1-second race, alternated with master's executable, on the same box and day (load average under 0.7).
+
+5. **A captured `const` set from a number literal is that number** (`KnownFunctions.constant_numbers`): when the maker sets the variable from a literal in the straight run of declarations its code starts with, before anything can run code, and nothing else writes it, a read of its cell is the number, a known `Number`. `BASE`'s cell load and its tag tests go: addInto's first loop 314 to 304 instructions a limb. The race didn't move: F(39,444) master, F(39,442) with it. `s` is still a `Value`, so `s >= BASE` still tests `s`'s tag.
+6. **A looping function's three busiest places of the frame kept in registers** (`x86/roc/Registers.roc`): in a function with a loop, the three places at `rbp` that the most plain moves name, and nothing else names, become `r9`, `r10` and `r11` (which no lowered instruction used), spilled before and reloaded after every call and `syscall`, saved below the frame at entry and put back before `ret`; a program with a `try` renames nothing (the module's header has the whole rule). In addInto these are the bytecode stack's two top places and `i`. The first loop's memory operands at `rbp` went from 126 to 101; its instructions from 304 to 384, all of the rise being the spills and reloads around the runtime calls of the slow ways, which the usual way never takes. F(43,215) master to F(47,024), about 1.18 times the work. fib's times were unchanged (x86/fib.shale: 19 ms for fib(22) and fib(30), which has no loop and so no registers).
+
+The 20-second race after both, the same box and day, load average 0.72:
+
+    compiled: F(207628), 43392 digits, elapsed 19966 ms, PASS, verified; after the verdict 89 ms (wall 20055 ms)
+    node: F(353376), 73851 digits, elapsed 19975 ms, PASS, verified; after the verdict 52 ms (wall 20027 ms)
+
+From F(194,187), the compiled program did about 1.14 times its earlier work, and node now does about 2.9 times the compiled program's work, down from 3.2. What is left, a guess: `s` is a `Value` (its tag is tested at each use), `.length` is still read twice a limb, and only three places are in registers, chosen by how often the code names them, not by how often they run; xmm registers for the known numbers would save the moves between the general and the xmm registers.
