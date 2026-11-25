@@ -16,6 +16,7 @@
 ## | 0xFFFB | an array | its address |
 ## | 0xFFFC | a plain object | its address |
 ## | 0xFFFD | a function | its closure record's address |
+## | 0xFFFE | a Map, a Set or an iterator | its record's address |
 ##
 ## Every value has these bits wherever it is held, so a kind known before
 ## the program runs costs no conversion where two ways meet and the kind
@@ -43,6 +44,21 @@ Boxing :: [].{
 	## address, 8 bytes each (0 for a function known before the program runs).
 	function_tag : I64
 	function_tag = 0xFFFD
+
+	## The tag of a Map, a Set and an iterator over one or over an array.
+	## The payload is a record's address whose first 8 bytes say which:
+	## 0 a Map, 1 a Set (then their size, the entries used, their room and
+	## the entries' address: 16 bytes each, a key and a value, a Set's value
+	## its key, a deleted entry's key `Boxing.gone_bits`), 2 an iterator
+	## (then what it walks, its place there and what it gives: 0 keys, 1
+	## values, 2 entries).
+	collection_tag : I64
+	collection_tag = 0xFFFE
+
+	## The key of a Map's or a Set's deleted entry: a constant no program
+	## makes, so a walk under way passes it and keeps its place.
+	gone_bits : I64
+	gone_bits = constant_bits(0xFF)
 
 	## How far a tag is shifted into a value's top bits.
 	tag_shift : U8

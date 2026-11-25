@@ -160,6 +160,8 @@ Kind : [
 	Log,
 	Method(Str),
 	ErrorClass(Str),
+	# `Map` or `Set`, which `new` makes one of.
+	CollectionClass(Str),
 	Static(Str),
 	StaticMethod({ owner : Str, name : Str }),
 ]
@@ -212,7 +214,7 @@ is_value_kind = |kind|
 	match kind {
 		Number | Boolean | Undefined | Null | String | Array | Object | Value | Closure(_) => True
 		Function(_) | Console | Log | Method(_) => False
-		ErrorClass(_) | Static(_) | StaticMethod(_) => False
+		ErrorClass(_) | CollectionClass(_) | Static(_) | StaticMethod(_) => False
 	}
 
 ## The kind two ways give a place: their own when they agree, `Value` when
@@ -1673,7 +1675,7 @@ kind_text = |kind|
 		Function(_) | Closure(_) => "function"
 		Console => "console"
 		Log => "console.log"
-		ErrorClass(name) => "`${name}`"
+		ErrorClass(name) | CollectionClass(name) => "`${name}`"
 		Static(name) => "`${name}`"
 		StaticMethod({ owner, name }) => "`${owner}.${name}`"
 	}
@@ -1777,6 +1779,7 @@ unary_items = |site, { state, operator }| {
 				Null | Array | Object | Console => Named("runtime_text_type_object")
 				Function(_) | Closure(_) | Log | Method(_) => Named("runtime_text_type_function")
 				ErrorClass(_) | StaticMethod(_) => Named("runtime_text_type_function")
+				CollectionClass(_) => Named("runtime_text_type_function")
 				Static("Math") => Named("runtime_text_type_object")
 				Static(_) => Named("runtime_text_type_function")
 				Value => Unnamed
@@ -1892,6 +1895,19 @@ call_items = |site, { state, count }| {
 			}
 		}
 		Value => value_call_items(site, { state, count, taken: count + 1 })
+		# node's TypeError for `Map()` or `Set()` without `new`.
+		CollectionClass(name) =>
+			Ok({
+				statements: [
+					Emit.address_of(Rsi, Runtime.new_required_text(name)),
+					Emit.address_of(Rdi, Runtime.error_name_label("TypeError")),
+					Emit.call(Runtime.new_error),
+					Emit.jmp(Runtime.throw),
+				],
+				falls: Ends,
+				branch: NoBranch,
+				result: GivesNothing,
+			})
 		Static("String") => {
 			made =
 				if count == 0 {
@@ -2162,6 +2178,8 @@ builtin_items = |site, { state, place }| {
 			falling(constant_items({ bits: 0x7FF0000000000000, to: top }), with_top(state, Number)),
 		)
 		Ok(name) if error_names.contains(name) => Ok(falling([], with_top(state, ErrorClass(name))))
+		Ok(name) if name == "Map" or name == "Set" =>
+			Ok(falling([], with_top(state, CollectionClass(name))))
 		Ok(name) if static_names.contains(name) => Ok(falling([], with_top(state, Static(name))))
 		Ok(name) => refusal(site, "the builtin `${name}` is not compiled yet")
 		Err(_) => crash "Lowering.builtin_items: a builtin's place"
@@ -2288,7 +2306,18 @@ array_methods = [
 	"reverse",
 	"splice",
 	"lastIndexOf",
+	"shift",
+	"unshift",
 ]
+
+## The methods of a Map or a Set compiled here, by their numbers in
+## `Runtime.collection_method`: those that walk it last, an array's too.
+collection_methods : List(Str)
+collection_methods = ["get", "set", "has", "delete", "clear", "add"].concat(iterator_methods)
+
+## The methods that give an iterator, of an array, a Map or a Set.
+iterator_methods : List(Str)
+iterator_methods = ["keys", "values", "entries"]
 
 ## The methods of a string compiled here.
 string_methods : List(Str)
@@ -2493,6 +2522,20 @@ array_method_items = |site, { state, name, count }| {
 			]
 			Ok(falling(called, after(Array)))
 		}
+		(_, _) if collection_methods.contains(name) => {
+			numbered = collection_methods.find_first_index(|known| known == name)
+			number = numbered ?? crash "Lowering.array_method_items: a method's number"
+			called = arguments_array_items(site, { base, count })
+				.concat([
+					Emit.mov(Rdx, Rax),
+					Emit.load(Rdi, receiver),
+					Emit.address_of(Rsi, text_label(site, name)),
+					Emit.imm(Rcx, number.to_i64_wrap()),
+					Emit.call(Runtime.collection_method),
+					Emit.store(receiver, Rax),
+				])
+			Ok(falling(called, after(Value)))
+		}
 		("splice", _) => {
 			called = arguments_array_items(site, { base, count })
 				.concat([
@@ -2502,6 +2545,54 @@ array_method_items = |site, { state, name, count }| {
 					Emit.store(receiver, Rax),
 				])
 			Ok(falling(called, after(Array)))
+		}
+		# `shift` and `unshift` as splices at the start: `splice(0, 1)`'s
+		# item, and `splice(0, 0, ...items)` then the length.
+		("shift", 0) => {
+			called = [
+				Emit.imm(Rdi, 2),
+				Emit.call(Runtime.new_array),
+				Emit.zero(Rcx),
+				Emit.store(Emit.mem(Rdx, 0), Rcx),
+				Emit.imm(Rcx, 0x3FF0000000000000),
+				Emit.store(Emit.mem(Rdx, 8), Rcx),
+				Emit.mov(Rsi, Rax),
+				Emit.load(Rdi, receiver),
+				Emit.call(Runtime.splice),
+				Emit.mov(Rdi, Rax),
+				Emit.zero(Rsi),
+				Emit.call(Runtime.get_index),
+				Emit.store(receiver, Rax),
+			]
+			Ok(falling(called, after(Value)))
+		}
+		("unshift", _) => {
+			var $filled = [
+				Emit.imm(Rdi, (count + 2).to_i64_wrap()),
+				Emit.call(Runtime.new_array),
+				Emit.zero(Rcx),
+				Emit.store(Emit.mem(Rdx, 0), Rcx),
+				Emit.store(Emit.mem(Rdx, 8), Rcx),
+			]
+			for item in 0..<count {
+				$filled = $filled.concat([
+					Emit.load(Rcx, argument(item)),
+					Emit.store(Emit.mem(Rdx, (16 + 8 * item).to_i64_wrap()), Rcx),
+				])
+			}
+			called = $filled.concat([
+				Emit.mov(Rsi, Rax),
+				Emit.load(Rdi, receiver),
+				Emit.call(Runtime.splice),
+				Emit.load(Rdi, receiver),
+				Emit.shl(Rdi, 16),
+				Emit.shr(Rdi, 16),
+				Emit.load(Rax, Emit.mem(Rdi, 0)),
+				Instruction(Cvtsi2sd({ to: Xmm0, from: Rax })),
+				Instruction(MovqFromXmm({ to: Rax, from: Xmm0 })),
+				Emit.store(receiver, Rax),
+			])
+			Ok(falling(called, after(Number)))
 		}
 		("lastIndexOf", 1) => {
 			called = [
@@ -2735,7 +2826,39 @@ instruction_items = |site, { instruction, state }| {
 				}
 				kind => refusal(site, "an index of ${kind_phrase(kind)} written")
 			}
-		IterStart(_) | DestructureItems(_) =>
+		# A walk of a Map, a Set or an iterator is live, so only a string is
+		# made an array.
+		IterStart(_) =>
+			match kind_below(state, 0) {
+				Array => Ok(falling([], state))
+				String =>
+					Ok(
+						falling(
+							[
+								Emit.load(Rdi, top_place(0)),
+								Emit.call(Runtime.items_of),
+								Emit.store(top_place(0), Rax),
+							],
+							with_top(without_top(state, 1), Array),
+						),
+					)
+				Value =>
+					Ok(
+						falling(
+							[
+								Emit.load(Rdi, top_place(0)),
+								Emit.call(Runtime.iter_start),
+								Emit.store(top_place(0), Rax),
+							],
+							state,
+						),
+					)
+				kind => {
+					phrase = kind_phrase(kind)
+					refusal(site, "a `for ... of` over ${phrase}")
+				}
+			}
+		DestructureItems(_) =>
 			match kind_below(state, 0) {
 				Array => Ok(falling([], state))
 				String | Value =>
@@ -2807,18 +2930,7 @@ instruction_items = |site, { instruction, state }| {
 				Emit.test(Rdx, Rdx),
 				Emit.jcc(E, place_label(site.lowering, target)),
 				Emit.store(next_place, Rax),
-				Instruction(MovsdLoad({ to: Xmm0, from: slot_place(slot + 1) })),
-				# 1.0, as a double's bits.
-				Emit.imm(Rax, 0x3FF0000000000000),
-				Emit.to_xmm(Xmm1, Rax),
-				Instruction(
-					Sse({
-						operation: Addsd,
-						to: Xmm0,
-						from: Xmm1,
-					}),
-				),
-				Instruction(MovsdStore({ to: slot_place(slot + 1), from: Xmm0 })),
+				Emit.store(slot_place(slot + 1), Rcx),
 			]
 			Ok({
 				statements: stepped,
@@ -3046,6 +3158,10 @@ instruction_items = |site, { instruction, state }| {
 				(Console, "log") => Ok(falling([], with_top(state, Log)))
 				(Array, _) | (Value, _) if array_methods.contains(name) =>
 					Ok(falling([], with_top(state, Method(name))))
+				(Array, _) if iterator_methods.contains(name) =>
+					Ok(falling([], with_top(state, Method(name))))
+				(Value, _) if collection_methods.contains(name) =>
+					Ok(falling([], with_top(state, Method(name))))
 				(String, _) | (Value, _) if string_methods.contains(name) =>
 					Ok(falling([], with_top(state, Method(name))))
 				(Static(owner), _) if static_members(owner).contains(name) =>
@@ -3151,6 +3267,30 @@ instruction_items = |site, { instruction, state }| {
 		Construct({ count, callee: _, at: _ }) =>
 			match kind_below(state, count) {
 				ErrorClass(name) if count <= 1 => error_items(site, { state, count, name })
+				CollectionClass(name) if count <= 1 => {
+					given =
+						if count == 0 {
+							[Emit.imm(Rsi, Boxing.undefined_bits)]
+						} else if is_value_kind(kind_below(state, 0)) {
+							[Emit.load(Rsi, stack_place(site.code, depth - 1))]
+						} else {
+							return refusal(
+								site,
+								"`new ${name}` of ${kind_phrase(kind_below(state, 0))}",
+							)
+						}
+					kind = if name == "Map" {
+						0
+					} else {
+						1
+					}
+					made = given.concat([
+						Emit.imm(Rdi, kind),
+						Emit.call(Runtime.new_collection),
+						Emit.store(stack_place(site.code, depth - count - 1), Rax),
+					])
+					Ok(falling(made, with_top(without_top(state, count + 1), Value)))
+				}
 				kind => refusal(site, "`new` of ${kind_phrase(kind)} is not compiled yet")
 			}
 		_ => refusal(site, "${instruction_name(instruction)} is not compiled yet")
@@ -3296,7 +3436,7 @@ spread_items = |site, { state, instruction }| {
 ## The builtins that are objects of functions: `Math`, `Object`, and
 ## `String`, which is a function too.
 static_names : List(Str)
-static_names = ["Math", "Object", "String"]
+static_names = ["Math", "Object", "String", "Array"]
 
 ## The functions a builtin object holds, compiled or refused by name when
 ## called.
@@ -3306,6 +3446,7 @@ static_members = |owner|
 		"Math" => Runtime.math_functions.concat(["pow", "sin", "cos", "tan", "atan"])
 		"Object" => ["keys", "values", "entries"]
 		"String" => ["fromCharCode"]
+		"Array" => ["isArray", "from", "of"]
 		_ => []
 	}
 
@@ -3389,6 +3530,39 @@ static_call_items = |site, { state, count, owner, name }| {
 				called = [Emit.call(Runtime.math_routine(name)), Emit.store(receiver, Rax)]
 				Ok(falling(loaded.concat(called), after(Number)))
 			}
+		("Array", "isArray") => {
+			tested =
+				if count == 0 {
+					[Emit.imm(Rax, Boxing.false_bits)]
+				} else {
+					[
+						Emit.load(Rax, stack_place(site.code, base)),
+						Emit.shr(Rax, Boxing.tag_shift),
+						Emit.cmp_imm(Rax, Boxing.array_tag),
+						Instruction(Setcc({ condition: E, to: Al })),
+					].concat(boolean_items)
+				}
+			Ok(falling(tested.append(Emit.store(receiver, Rax)), after(Boolean)))
+		}
+		("Array", "of") => {
+			made = arguments_array_items(site, { base, count }).append(Emit.store(receiver, Rax))
+			Ok(falling(made, after(Array)))
+		}
+		("Array", "from") if count == 1 or count == 2 => {
+			mapper =
+				if count == 2 {
+					Emit.load(Rsi, stack_place(site.code, base + 1))
+				} else {
+					Emit.imm(Rsi, Boxing.undefined_bits)
+				}
+			called = [
+				Emit.load(Rdi, stack_place(site.code, base)),
+				mapper,
+				Emit.call(Runtime.array_from),
+				Emit.store(receiver, Rax),
+			]
+			Ok(falling(called, after(Array)))
+		}
 		("String", "fromCharCode") => {
 			called = arguments_array_items(site, { base, count })
 				.concat([

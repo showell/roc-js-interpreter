@@ -1,2 +1,2 @@
-// refused: the method `shift` of an array is not compiled yet
-console.log([2, 1].shift());
+// refused: the method `fill` of an array is not compiled yet
+console.log([2, 1].fill(0));

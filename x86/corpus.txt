@@ -34,6 +34,10 @@
 41-exceptions.js
 46-switch.js
 47-spread-chains.js
+48-map-set.js
 49-loops-labels.js
+51-collector-roots.js
+53-collector-callbacks.js
 55-garbage.js
 56-call-depth.js
+57-map-set-churn.js
