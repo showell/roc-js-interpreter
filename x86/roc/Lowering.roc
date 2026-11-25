@@ -543,7 +543,19 @@ code_walk = |context, heads| {
 	var $deepest = 0
 	var $result = GivesNothing
 	var $calls = []
+	# What the straight run so far has proved of its index checks
+	# (IndexLowering's header).
+	var $checked = IndexLowering.unchecked(0)
 	for at in 0..<code.ops.len() {
+		meets =
+			looped_to.contains(at)
+				or $pending.contains(at)
+				or (
+					match $flowing {
+						Stopped => True
+						Flowing(_) => False
+					}
+				)
 		arriving = match ($flowing, $pending.get(at)) {
 			(Flowing(state), Ok(waiting)) => {
 				# A function known by its code that falls to where a jump
@@ -570,6 +582,12 @@ code_walk = |context, heads| {
 				$seen = $seen.insert(at, state)
 				instruction = code.ops.get(at) ?? crash "Lowering.code_walk: an instruction"
 				site = { context, code, at, skipped }
+				checked =
+					if meets {
+						IndexLowering.unchecked(state.stack_kinds.len())
+					} else {
+						$checked
+					}
 				valued =
 					if skipped.contains(at) or $fused.contains(at) {
 						{ statements: [], state, escaped: [] }
@@ -595,7 +613,7 @@ code_walk = |context, heads| {
 							Unfused =>
 								match instruction_items(
 									site,
-									{ instruction, state: valued.state },
+									{ instruction, state: valued.state, checked },
 								) {
 									Ok(done) => done
 									Err(refused) => return Ok(Halted({ refused, calls: $calls }))
@@ -603,6 +621,22 @@ code_walk = |context, heads| {
 						}
 					}
 				$body = $body.concat(valued.statements).concat(lowered.statements)
+				$checked = match lowered.falls {
+					Falls(next) => {
+						depth = next.stack_kinds.len()
+						if $fused.contains(at) and depth == checked.origins.len() {
+							checked
+						} else if skipped.contains(at) or !valued.statements.is_empty() {
+							IndexLowering.unchecked(depth)
+						} else {
+							IndexLowering.checked_after(
+								checked,
+								{ instruction, before: valued.state, depth },
+							)
+						}
+					}
+					Ends => IndexLowering.unchecked(0)
+				}
 				$flowing = match lowered.falls {
 					Falls(next) => {
 						$deepest = U64.max($deepest, next.stack_kinds.len())
@@ -1091,8 +1125,9 @@ instruction_items : LoweringBasics.Site,
 {
 	instruction : Bytecode.Op,
 	state : LoweringBasics.State,
+	checked : IndexLowering.Checked,
 } -> Try(LoweringBasics.Lowered, [Refused(Str)])
-instruction_items = |site, { instruction, state }| {
+instruction_items = |site, { instruction, state, checked }| {
 	depth = state.stack_kinds.len()
 	top_place = |down| LoweringBasics.stack_place(site.code, depth - 1 - down)
 	next_place = LoweringBasics.stack_place(site.code, depth)
@@ -1336,6 +1371,7 @@ instruction_items = |site, { instruction, state }| {
 							kinds: (Array, LoweringBasics.kind_below(state, 0)),
 							receiver: top_place(1),
 							index: top_place(0),
+							checks: IndexLowering.checks_for(checked, instruction),
 							slow_items: [Emit.jmp(Runtime.numbers_read_not_compiled)],
 						},
 					),
@@ -1362,6 +1398,7 @@ instruction_items = |site, { instruction, state }| {
 									),
 									receiver: top_place(1),
 									index: top_place(0),
+									checks: IndexLowering.all_checks,
 									slow_items: called,
 								},
 							),
@@ -1396,6 +1433,11 @@ instruction_items = |site, { instruction, state }| {
 									receiver: top_place(2),
 									index: top_place(1),
 									value_place: top_place(0),
+									checks: if LoweringBasics.kind_below(state, 2) == Numbers {
+										IndexLowering.checks_for(checked, instruction)
+									} else {
+										IndexLowering.all_checks
+									},
 									slow_items: called,
 								},
 							).concat(
