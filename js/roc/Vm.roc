@@ -72,6 +72,7 @@
 ## a log's among them, each counted against the budget of what is running.
 import ArrayRules
 import Ast
+import BuiltinRules
 import Bytecode
 import Canvas
 import Collector
@@ -215,7 +216,7 @@ Vm :: [].{
 	## the next.
 	start! : Canvas.Host, Bytecode.Program, Vm.Settings => Vm.Session
 	start! = |host, program, settings| {
-		{ cells, values: builtins } = ValueRules.globals([], settings.library)
+		{ cells, values: builtins } = BuiltinRules.globals([], settings.library)
 		begun = {
 			cells: cells,
 			stack: [],
@@ -1589,7 +1590,7 @@ constructed = |machine, { count, callee, at }| {
 	maker = value_at(machine, count + 1)
 	arguments = arguments_of(machine, count)
 	{ cells, machine: rest } = lent(machine)
-	with_got(rest, ValueRules.constructed(shell(cells, rest), maker, callee, arguments, at), rest.top - count - 1)
+	with_got(rest, BuiltinRules.constructed(shell(cells, rest), maker, callee, arguments, at), rest.top - count - 1)
 }
 
 # ---- builtins --------------------------------------------------------------
@@ -1650,7 +1651,7 @@ native_called! = |host, program, machine, { native, calling }| {
 			}
 			_ => with_fault(machine, "unsupported: onCollect of anything but a function${ValueRules.line_note(at)}")
 		}
-		ArrayFrom if ValueRules.is_mapped(arguments) => array_from!(host, program, machine, { arguments: arguments, calling: calling })
+		ArrayFrom if BuiltinRules.is_mapped(arguments) => array_from!(host, program, machine, { arguments: arguments, calling: calling })
 		Timing(SetTimeout) => timer_set(machine, { repeats: Once, arguments: arguments, calling: calling })
 		Timing(SetInterval) => timer_set(machine, { repeats: Repeating, arguments: arguments, calling: calling })
 		Timing(ClearTimeout) | Timing(ClearInterval) => {
@@ -1662,7 +1663,7 @@ native_called! = |host, program, machine, { native, calling }| {
 		}
 		_ => {
 			{ cells, machine: rest } = lent(machine)
-			with_got(rest, ValueRules.native_called(shell(cells, rest), native, arguments, at), calling.result_at)
+			with_got(rest, BuiltinRules.native_called(shell(cells, rest), native, arguments, at), calling.result_at)
 		}
 	}
 }
@@ -1869,7 +1870,7 @@ array_from! : Canvas.Host, Bytecode.Program, Vm.Machine, { arguments : List(Heap
 array_from! = |host, program, machine, { arguments, calling }| {
 	mapper = arguments.get(1) ?? Undefined
 	{ cells, machine: rest } = lent(machine)
-	{ machine: rules, listed } = ValueRules.array_from_values(shell(cells, rest), arguments.first() ?? Undefined)
+	{ machine: rules, listed } = BuiltinRules.array_from_values(shell(cells, rest), arguments.first() ?? Undefined)
 	back = with_rules(rest, rules)
 	match listed {
 		Err(Unsupported(why)) => with_fault(back, "${why}${ValueRules.line_note(calling.at)}")
