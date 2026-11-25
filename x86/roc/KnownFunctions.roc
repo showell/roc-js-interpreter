@@ -206,7 +206,7 @@ KnownFunctions :: [].{
 							from =
 								maker.captures.get(capture)
 									?? crash "KnownFunctions.constant_numbers: a capture"
-							match set_number(known, { parent: maker.parent, slot: from }) {
+							match held_number(known, { parent: maker.parent, slot: from }) {
 								Ok(number) => {
 									$found = $found.insert(slot, number)
 								}
@@ -279,9 +279,9 @@ KnownFunctions :: [].{
 ## `constant_numbers` says: its box fresh at the code's entry, set once,
 ## from a number literal, in the declarations the code starts with, and
 ## written by nothing else.
-set_number : LoweringBasics.Known, { parent : U64, slot : U64 } -> Try(F64, [Unset])
-set_number = |known, { parent, slot }| {
-	code = known.program.codes.get(parent) ?? crash "KnownFunctions.set_number: a code"
+held_number : LoweringBasics.Known, { parent : U64, slot : U64 } -> Try(F64, [Unset])
+held_number = |known, { parent, slot }| {
+	code = known.program.codes.get(parent) ?? crash "KnownFunctions.held_number: a code"
 	if !code.entry.contains(FreshBox(slot)) {
 		return Err(Unset)
 	}
@@ -313,7 +313,7 @@ set_number = |known, { parent, slot }| {
 	for (made, maker) in known.makers.to_list() {
 		if maker.parent == parent {
 			for (from, capture) in maker.captures.map_with_index(|from, capture| (from, capture)) {
-				if from == slot and written_where_captured(known, { made, capture }) {
+				if from == slot and is_written_where_captured(known, { made, capture }) {
 					return Err(Unset)
 				}
 			}
@@ -324,9 +324,9 @@ set_number = |known, { parent, slot }| {
 
 ## Whether code `made` writes the slot its capture `capture` lands in, or
 ## captures that slot in a closure of its own.
-written_where_captured : LoweringBasics.Known, { made : U64, capture : U64 } -> Bool
-written_where_captured = |known, { made, capture }| {
-	code = known.program.codes.get(made) ?? crash "KnownFunctions.written_where_captured: a code"
+is_written_where_captured : LoweringBasics.Known, { made : U64, capture : U64 } -> Bool
+is_written_where_captured = |known, { made, capture }| {
+	code = known.program.codes.get(made) ?? crash "KnownFunctions.is_written_where_captured: a code"
 	code.entry.any(
 		|step|
 			match step {
@@ -334,7 +334,9 @@ written_where_captured = |known, { made, capture }| {
 					code.ops.any(
 						|instruction|
 							match instruction {
-								MakeClosure({ code: _, captures, definition: _ }) => captures.contains(slot)
+								MakeClosure(
+									{ code: _, captures, definition: _ },
+								) => captures.contains(slot)
 								_ => writes_slot(instruction, slot)
 							},
 					)
@@ -360,8 +362,22 @@ writes_slot = |instruction, slot|
 	match instruction {
 		StoreLocal(written) | SetLocal(written) | SetBoxed(written) => written == slot
 		NewBox(written) | CopyBox(written) => written == slot
-		StoreBoxed({ slot: written, name: _, kind: Mutable, at: _ }) => written == slot
-		UpdateBoxed({ slot: written, name: _, kind: Mutable, step: _ }) => written == slot
+		StoreBoxed(
+			{
+				slot: written,
+				name: _,
+				kind: Mutable,
+				at: _,
+			},
+		) => written == slot
+		UpdateBoxed(
+			{
+				slot: written,
+				name: _,
+				kind: Mutable,
+				step: _,
+			},
+		) => written == slot
 		AppendLocal({ slot: written, at: _ }) => written == slot
 		UpdateLocal({ slot: written, step: _ }) => written == slot
 		IterNext({ slot: written, exit: _ }) => written == slot
@@ -370,38 +386,62 @@ writes_slot = |instruction, slot|
 
 ## The captured numbers `constant_numbers` finds for the program's first
 ## function, each number as its bits, for the expects.
-first_function_numbers : Str -> List((U64, U64))
-first_function_numbers = |src| {
-	tree = Parser.program_of(src, Core) ?? crash "KnownFunctions.first_function_numbers: a program that parses"
+first_function_numbers : List(Str) -> List((U64, U64))
+first_function_numbers = |source_lines| {
+	src = Str.join_with(source_lines, "\n")
+	tree = Parser.program_of(
+		src,
+		Core,
+	) ?? crash "KnownFunctions.first_function_numbers: a program that parses"
 	program = match Compile.program(tree) {
 		Ok(compiled) => compiled
 		Err(_) => crash "KnownFunctions.first_function_numbers: a program that compiles"
 	}
-	makers = KnownFunctions.makers_of(program) ?? crash "KnownFunctions.first_function_numbers: its makers"
-	known = { program, makers, statics: KnownFunctions.statics_of(program, makers) }
-	KnownFunctions.constant_numbers(known, 0).to_list().map(|(slot, number)| (slot, number.to_bits()))
+	makers =
+		KnownFunctions.makers_of(program)
+			?? crash "KnownFunctions.first_function_numbers: its makers"
+	known = {
+		program,
+		makers,
+		statics: KnownFunctions.statics_of(program, makers),
+	}
+	KnownFunctions.constant_numbers(known, 0).to_list().map(
+		|(slot, number)| (slot, number.to_bits()),
+	)
 }
 
 # A top-level `const` set from a number literal, before any call: its number.
 expect {
-	found = first_function_numbers("const BASE = 7;\nfunction f() { return BASE; }\nconsole.log(f());")
+	found = first_function_numbers(
+		["const BASE = 7;", "function f() { return BASE; }", "console.log(f());"],
+	)
 	seven : F64
 	seven = 7
 	found.map(|(_, bits)| bits) == [seven.to_bits()]
 }
 
 # A `let` assigned again later holds no number for good.
-expect first_function_numbers("let BASE = 7;\nfunction f() { return BASE; }\nBASE = 8;\nconsole.log(f());") == []
+expect first_function_numbers(
+	["let BASE = 7;", "function f() { return BASE; }", "BASE = 8;", "console.log(f());"],
+) == []
 
 # Nor one the function itself assigns.
-expect first_function_numbers("let BASE = 7;\nfunction f() { BASE = 2; return BASE; }\nconsole.log(f());") == []
+expect first_function_numbers(
+	["let BASE = 7;", "function f() { BASE = 2; return BASE; }", "console.log(f());"],
+) == []
 
 # Nor one declared after a call, which may read it before it is set (node's
 # ReferenceError).
-expect first_function_numbers("console.log(f());\nconst BASE = 7;\nfunction f() { return BASE; }") == []
+expect first_function_numbers(
+	["console.log(f());", "const BASE = 7;", "function f() { return BASE; }"],
+) == []
 
 # Nor one set from anything but a number literal.
-expect first_function_numbers("const BASE = 7 / 2;\nfunction f() { return BASE; }\nconsole.log(f());") == []
+expect first_function_numbers(
+	["const BASE = 7 / 2;", "function f() { return BASE; }", "console.log(f());"],
+) == []
 
 # Nor one the function passes on to a closure of its own.
-expect first_function_numbers("const BASE = 7;\nfunction f() { return () => BASE; }\nconsole.log(f()());") == []
+expect first_function_numbers(
+	["const BASE = 7;", "function f() { return () => BASE; }", "console.log(f()());"],
+) == []

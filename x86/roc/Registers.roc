@@ -2,7 +2,7 @@
 ## The lowering moves every value through the frame, an instruction at a
 ## time, so a loop's variables and the bytecode's stack places are stored
 ## and loaded back again and again, each load waiting for its store.
-## `promoted` takes one function's statements and renames each of its three
+## `promote_statements` takes one function's statements and renames each of its three
 ## busiest places at `rbp` to a register of its own (`r9`, `r10`, `r11`,
 ## which no lowered instruction uses, only the runtime's routines): a load
 ## of the place becomes a move from the register, a store a move to it.
@@ -38,8 +38,12 @@ Registers :: [].{
 	## registers, with its frame of `frame_bytes` made room below for the
 	## registers it saves; the statements as they are when the rule above
 	## keeps it from renaming any.
-	promoted : { statements : List(Assembly.Statement), frame_bytes : U64, loops : Bool } -> List(Assembly.Statement)
-	promoted = |{ statements, frame_bytes, loops }| {
+	promote_statements : {
+		statements : List(Assembly.Statement),
+		frame_bytes : U64,
+		loops : Bool,
+	} -> List(Assembly.Statement)
+	promote_statements = |{ statements, frame_bytes, loops }| {
 		if !loops {
 			return statements
 		}
@@ -53,7 +57,13 @@ Registers :: [].{
 					}
 					match plain_place(instruction) {
 						Ok(displacement) => {
-							$counts = $counts.insert(displacement, ($counts.get(displacement) ?? 0) + 1)
+							$counts = $counts.insert(
+								displacement,
+								match $counts.get(displacement) {
+									Ok(count) => count + 1
+									Err(_) => 1
+								},
+							)
 						}
 						Err(NotPlain) =>
 							for mem in mems_named(instruction) {
@@ -65,7 +75,8 @@ Registers :: [].{
 								}
 							}
 					}
-					if direct_registers(instruction).any(|register| X86.register_index(register) == X86.register_index(Rbp)) and !is_frame_making(instruction) {
+					names_frame = direct_registers(instruction).any(is_frame_pointer)
+					if names_frame and !is_frame_making(instruction) {
 						return statements
 					}
 				}
@@ -75,21 +86,27 @@ Registers :: [].{
 		chosen =
 			$counts
 				.to_list()
-				.keep_if(|(displacement, count)| count >= 4 and displacement < 0 and !$barred.contains(displacement))
+				.keep_if(
+					|
+						(displacement, count),
+					| count >= 4 and displacement < 0 and !$barred.contains(displacement),
+				)
 				.sort_with(
-					|(_, a), (_, b)|
-						if a > b {
+					|(_, one_count), (_, other_count)|
+						if one_count > other_count {
 							Before
-						} else if a < b {
+						} else if one_count < other_count {
 							After
 						} else {
 							Same
 						},
 				)
-				.take_first(spare.len())
+				.take_first(spare_registers.len())
 				.map_with_index(
 					|(displacement, _), at| {
-						register = spare.get(at) ?? crash "Registers.promoted: a spare register"
+						register =
+							spare_registers.get(at)
+								?? crash "Registers.promote_statements: a spare register"
 						{ displacement, register }
 					},
 				)
@@ -102,8 +119,16 @@ Registers :: [].{
 				{ register, save }
 			},
 		)
-		spills = chosen.map(|{ displacement, register }| Instruction(MovMemReg({ to: place(displacement), from: register })))
-		reloads = chosen.map(|{ displacement, register }| Instruction(MovRegMem({ to: register, from: place(displacement) })))
+		spills = chosen.map(
+			|{ displacement, register }| Instruction(
+				MovMemReg({ to: place(displacement), from: register }),
+			),
+		)
+		reloads = chosen.map(
+			|{ displacement, register }| Instruction(
+				MovRegMem({ to: register, from: place(displacement) }),
+			),
+		)
 		var $out = List.with_capacity(statements.len())
 		var $after_frame_pointer = False
 		for statement in statements {
@@ -116,20 +141,43 @@ Registers :: [].{
 				Instruction(AluImm({ operation: Sub, to: Rsp, value })) if made_frame => {
 					$out =
 						$out
-							.append(Instruction(AluImm({ operation: Sub, to: Rsp, value: value + 8 * saved.len().to_i32_wrap() })))
-							.concat(saved.map(|{ register, save }| Instruction(MovMemReg({ to: save, from: register }))))
+							.append(
+								Instruction(
+									AluImm({
+										operation: Sub,
+										to: Rsp,
+										value: value + 8 * saved.len().to_i32_wrap(),
+									}),
+								),
+							)
+							.concat(
+								saved.map(
+									|{ register, save }| Instruction(
+										MovMemReg({ to: save, from: register }),
+									),
+								),
+							)
 				}
 				Instruction(MovRegReg({ to: Rsp, from: Rbp })) => {
 					$out =
 						$out
-							.concat(saved.map(|{ register, save }| Instruction(MovRegMem({ to: register, from: save }))))
+							.concat(
+								saved.map(
+									|{ register, save }| Instruction(
+										MovRegMem({ to: register, from: save }),
+									),
+								),
+							)
 							.append(statement)
 				}
-				Instruction(Call(_)) | Instruction(CallReg(_)) | Instruction(Syscall) | CallTo(_) => {
+				Instruction(Call(_)) | CallTo(_) => {
+					$out = $out.concat(spills).append(statement).concat(reloads)
+				}
+				Instruction(CallReg(_)) | Instruction(Syscall) => {
 					$out = $out.concat(spills).append(statement).concat(reloads)
 				}
 				Instruction(instruction) => {
-					$out = $out.append(Instruction(renamed(instruction, chosen)))
+					$out = $out.append(Instruction(rename_place(instruction, chosen)))
 				}
 				_ => {
 					$out = $out.append(statement)
@@ -141,19 +189,24 @@ Registers :: [].{
 }
 
 ## The registers a function's places may be kept in.
-spare : List(X86.Register)
-spare = [R9, R10, R11]
+spare_registers : List(X86.Register)
+spare_registers = [R9, R10, R11]
 
 ## Whether a register is one of the spare ones.
 is_spare : X86.Register -> Bool
-is_spare = |register| spare.any(|one| X86.register_index(one) == X86.register_index(register))
+is_spare = |register|
+	spare_registers.any(|one| X86.register_index(one) == X86.register_index(register))
+
+## Whether a register is `rbp`, the frame's.
+is_frame_pointer : X86.Register -> Bool
+is_frame_pointer = |register| X86.register_index(register) == X86.register_index(Rbp)
 
 ## Whether `promoted` makes of `statements` the code of `expected`, for the
 ## expects.
 promotes_to : List(Assembly.Statement), List(Assembly.Statement) -> Bool
 promotes_to = |statements, expected|
-	Assembly.assemble(Registers.promoted({ statements, frame_bytes: 16, loops: True }))
-	== Assembly.assemble(expected)
+	Assembly.assemble(Registers.promote_statements({ statements, frame_bytes: 16, loops: True }))
+		== Assembly.assemble(expected)
 
 ## The place at `displacement` from `rbp`.
 place : I32 -> X86.Mem
@@ -174,18 +227,32 @@ is_frame_making = |instruction|
 plain_place : X86.Instruction -> Try(I32, [NotPlain])
 plain_place = |instruction|
 	match instruction {
-		MovRegMem({ to: _, from: Based({ base: Rbp, index: NoIndex, displacement }) }) => Ok(displacement)
-		MovMemReg({ to: Based({ base: Rbp, index: NoIndex, displacement }), from: _ }) => Ok(displacement)
-		MovsdLoad({ to: _, from: Based({ base: Rbp, index: NoIndex, displacement }) }) => Ok(displacement)
-		MovsdStore({ to: Based({ base: Rbp, index: NoIndex, displacement }), from: _ }) => Ok(displacement)
+		MovRegMem(
+			{ to: _, from: Based({ base: Rbp, index: NoIndex, displacement }) },
+		) => Ok(displacement)
+		MovMemReg(
+			{ to: Based({ base: Rbp, index: NoIndex, displacement }), from: _ },
+		) => Ok(displacement)
+		MovsdLoad(
+			{ to: _, from: Based({ base: Rbp, index: NoIndex, displacement }) },
+		) => Ok(displacement)
+		MovsdStore(
+			{ to: Based({ base: Rbp, index: NoIndex, displacement }), from: _ },
+		) => Ok(displacement)
 		_ => Err(NotPlain)
 	}
 
 ## The instruction with each plain move of a chosen place made a move to or
 ## from its register.
-renamed : X86.Instruction, List({ displacement : I32, register : X86.Register }) -> X86.Instruction
-renamed = |instruction, chosen| {
-	held = |displacement| chosen.find_first(|pick| pick.displacement == displacement).map_ok(|pick| pick.register)
+rename_place : X86.Instruction,
+List(
+	{ displacement : I32, register : X86.Register },
+) -> X86.Instruction
+rename_place = |instruction, chosen| {
+	held = |displacement|
+		chosen
+			.find_first(|pick| pick.displacement == displacement)
+			.map_ok(|pick| pick.register)
 	match plain_place(instruction).map_ok(held) {
 		Ok(Ok(register)) =>
 			match instruction {
@@ -205,7 +272,9 @@ mems_named = |instruction|
 	match instruction {
 		MovRegMem({ to: _, from }) | Lea({ to: _, from }) | MovzxByteLoad({ to: _, from }) => [from]
 		MovsdLoad({ to: _, from }) => [from]
-		MovMemReg({ to, from: _ }) | MovByteStore({ to, from: _ }) | MovsdStore({ to, from: _ }) => [to]
+		MovMemReg({ to, from: _ })
+		| MovByteStore({ to, from: _ })
+		| MovsdStore({ to, from: _ }) => [to]
 		_ => []
 	}
 
@@ -217,7 +286,13 @@ registers_named = |instruction| {
 	based = mems_named(instruction).join_map(
 		|mem|
 			match mem {
-				Based({ base, index: Scaled({ reg, scale: _ }), displacement: _ }) => [base, reg]
+				Based(
+					{
+						base,
+						index: Scaled({ reg, scale: _ }),
+						displacement: _,
+					},
+				) => [base, reg]
 				Based({ base, index: NoIndex, displacement: _ }) => [base]
 				Rip(_) => []
 			},
@@ -234,9 +309,12 @@ direct_registers = |instruction|
 		MovRegImm({ to, value: _ }) | AluImm({ operation: _, to, value: _ }) => [to]
 		MovRegMem({ to, from: _ }) | Lea({ to, from: _ }) | MovzxByteLoad({ to, from: _ }) => [to]
 		MovMemReg({ to: _, from }) => [from]
-		MovzxByte({ to, from: _ }) | Cvttsd2si({ to, from: _ }) | MovqFromXmm({ to, from: _ }) => [to]
+		MovzxByte({ to, from: _ })
+		| Cvttsd2si({ to, from: _ })
+		| MovqFromXmm({ to, from: _ }) => [to]
 		Cvtsi2sd({ to: _, from }) | MovqToXmm({ to: _, from }) => [from]
-		Div(register) | Idiv(register) | Neg(register) | Push(register) | Pop(register) | CallReg(register) => [register]
+		Div(register) | Idiv(register) | Neg(register) => [register]
+		Push(register) | Pop(register) | CallReg(register) => [register]
 		Test({ left, right }) => [left, right]
 		Shift({ operation: _, reg, count: _ }) => [reg]
 		_ => []
@@ -249,7 +327,13 @@ expect {
 	body = [
 		Assembly.Statement.Instruction(Push(Rbp)),
 		Instruction(MovRegReg({ to: Rbp, from: Rsp })),
-		Instruction(AluImm({ operation: Sub, to: Rsp, value: 16 })),
+		Instruction(
+			AluImm({
+				operation: Sub,
+				to: Rsp,
+				value: 16,
+			}),
+		),
 		Instruction(MovMemReg({ to: slot, from: Rax })),
 		Instruction(MovRegMem({ to: Rcx, from: slot })),
 		Instruction(MovsdLoad({ to: Xmm0, from: slot })),
@@ -263,7 +347,13 @@ expect {
 	expected = [
 		Assembly.Statement.Instruction(Push(Rbp)),
 		Instruction(MovRegReg({ to: Rbp, from: Rsp })),
-		Instruction(AluImm({ operation: Sub, to: Rsp, value: 24 })),
+		Instruction(
+			AluImm({
+				operation: Sub,
+				to: Rsp,
+				value: 24,
+			}),
+		),
 		Instruction(MovMemReg({ to: save, from: R9 })),
 		Instruction(MovRegReg({ to: R9, from: Rax })),
 		Instruction(MovRegReg({ to: Rcx, from: R9 })),
@@ -292,6 +382,12 @@ expect {
 		Instruction(Lea({ to: Rdi, from: slot })),
 	]
 	unlooped = body.drop_last(1)
-	kept = Assembly.assemble(Registers.promoted({ statements: unlooped, frame_bytes: 16, loops: False }))
+	kept = Assembly.assemble(
+		Registers.promote_statements({
+			statements: unlooped,
+			frame_bytes: 16,
+			loops: False,
+		}),
+	)
 	promotes_to(body, body) and kept == Assembly.assemble(unlooped)
 }

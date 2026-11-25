@@ -597,7 +597,11 @@ code_walk = |context, heads| {
 		if context.trying {
 			made
 		} else {
-			Registers.promoted({ statements: made, frame_bytes, loops: !looped_to.is_empty() })
+			Registers.promote_statements({
+				statements: made,
+				frame_bytes,
+				loops: !looped_to.is_empty(),
+			})
 		}
 	Ok(
 		Walked({
@@ -1459,7 +1463,10 @@ instruction_items = |site, { instruction, state }| {
 				Ok(number) =>
 					return Ok(
 						LoweringBasics.falling(
-							LoweringBasics.constant_items({ bits: number.to_bits(), to: next_place }),
+							LoweringBasics.constant_items({
+								bits: number.to_bits(),
+								to: next_place,
+							}),
 							LoweringBasics.with_top(state, Number),
 						),
 					)
