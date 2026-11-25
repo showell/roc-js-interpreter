@@ -79,7 +79,12 @@ Instructions :: [].{
 	boxed_loaded = |machine, { slot, name, at }|
 		match Machine.box_content(machine, Machine.box_of(machine, slot)) {
 			Holding(value) => Machine.pushed(machine, value)
-			Unready => Machine.with_error(machine, ReferenceError, ValueRules.unready_message(name), at)
+			Unready => Machine.with_error(
+				machine,
+				ReferenceError,
+				ValueRules.unready_message(name),
+				at,
+			)
 		}
 
 	boxed_peeked : Machine.Machine, U64 -> Machine.Machine
@@ -210,7 +215,10 @@ Instructions :: [].{
 
 	jumped_if_same : Machine.Machine, U64 -> Machine.Machine
 	jumped_if_same = |machine, count| {
-		same = ValueRules.is_strictly_equal(Machine.value_at(machine, 2), Machine.value_at(machine, 1))
+		same = ValueRules.is_strictly_equal(
+			Machine.value_at(machine, 2),
+			Machine.value_at(machine, 1),
+		)
 		popped = Machine.dropped(machine, 2)
 		if same {
 			{ ..popped, pc: popped.pc + count }
@@ -263,7 +271,8 @@ Instructions :: [].{
 	held_place = |held|
 		match held {
 			Number(number) => number.to_u64_try() ?? crash "Instructions.held_place: a throw's line and column are whole numbers"
-			_ => crash "Instructions.held_place: a finally holds a throw's line and column as numbers"
+			_ => crash
+				"Instructions.held_place: a finally holds a throw's line and column as numbers"
 		}
 
 	# ---- patterns --------------------------------------------------------------
@@ -322,7 +331,10 @@ Instructions :: [].{
 				{ machine: made, id } = Machine.placed(machine, Object(left))
 				Machine.replaced(made, 1, Reference(id))
 			}
-			Err(Unsupported(why)) => Machine.with_fault(machine, "${why}${ValueRules.line_note(at)}")
+			Err(Unsupported(why)) => Machine.with_fault(
+				machine,
+				"${why}${ValueRules.line_note(at)}",
+			)
 		}
 
 	# ---- assignments and updates -----------------------------------------------
@@ -402,7 +414,12 @@ Instructions :: [].{
 	fixed_updated : Machine.Machine, Ast.Where -> Machine.Machine
 	fixed_updated = |machine, at|
 		match Machine.value_at(machine, 1) {
-			Number(_) => Machine.with_error(machine, TypeError, "Assignment to constant variable.", at)
+			Number(_) => Machine.with_error(
+				machine,
+				TypeError,
+				"Assignment to constant variable.",
+				at,
+			)
 			current => Instructions.not_a_number_update(machine, current, at)
 		}
 
@@ -432,7 +449,10 @@ Instructions :: [].{
 	index_updated = |machine, step| {
 		holder = Machine.value_at(machine, 2)
 		key = Machine.value_at(machine, 1)
-		read = Instructions.index_read(Machine.pushed(Machine.pushed(machine, holder), key), step.at)
+		read = Instructions.index_read(
+			Machine.pushed(Machine.pushed(machine, holder), key),
+			step.at,
+		)
 		if !Machine.is_running(read) {
 			read
 		} else {
@@ -509,7 +529,10 @@ Instructions :: [].{
 				}
 				Machine.dropped({ ..machine, cells: $cells }, 1)
 			}
-			Err(Unsupported(why)) => Machine.with_fault(machine, "${why}${ValueRules.line_note(at)}")
+			Err(Unsupported(why)) => Machine.with_fault(
+				machine,
+				"${why}${ValueRules.line_note(at)}",
+			)
 		}
 	}
 
@@ -520,7 +543,10 @@ Instructions :: [].{
 		holder = Machine.value_at(machine, 1)
 		found = match holder {
 			Reference(id) => match Heap.cell_at(machine.cells, id) {
-				Object(properties) | Namespace(_, properties) => Instructions.own_property(properties, key)
+				Object(properties) | Namespace(_, properties) => Instructions.own_property(
+					properties,
+					key,
+				)
 				Instance(_, properties) => Instructions.own_property(properties, key)
 				Array(items) if key == "length" => Found(Number(items.len().to_f64()))
 				_ => Elsewhere
@@ -603,7 +629,10 @@ Instructions :: [].{
 		key = Machine.value_at(machine, 2)
 		value = Machine.value_at(machine, 1)
 		# holder, key, value -> holder, value: the store takes the key apart.
-		Instructions.stored(Machine.pushed(Machine.dropped(machine, 2), value), { key: key, at: at })
+		Instructions.stored(
+			Machine.pushed(Machine.dropped(machine, 2), value),
+			{ key: key, at: at },
+		)
 	}
 
 	# ---- closures and calls ----------------------------------------------------
@@ -721,7 +750,9 @@ Instructions :: [].{
 			{ ..machine, status: Finished }
 		} else {
 			value = Machine.value_at(machine, 1)
-			caller = machine.frames.get(machine.depth - 1) ?? crash "Instructions.returned: a caller waits"
+			caller = machine.frames.get(
+				machine.depth - 1,
+			) ?? crash "Instructions.returned: a caller waits"
 			back = Machine.with_result(machine, caller.result_at, value)
 			{ ..back, depth: back.depth - 1, code: caller.code, pc: caller.pc, base: caller.base }
 		}
@@ -739,9 +770,10 @@ Instructions :: [].{
 		items = match Machine.value_at(machine, 1) {
 			Reference(id) => match Heap.cell_at(machine.cells, id) {
 				Array(values) => values
-				_ => crash "Instructions.spread_unpacked: the compiler builds a call's spread arguments as an array"
+				_ => crash "Instructions.spread_unpacked: the compiler builds spread arguments as an array"
 			}
-			_ => crash "Instructions.spread_unpacked: the compiler builds a call's spread arguments as an array"
+			_ => crash
+				"Instructions.spread_unpacked: the compiler builds spread arguments as an array"
 		}
 		var $machine = Machine.dropped(machine, 1)
 		for item in items {
@@ -785,7 +817,10 @@ Instructions :: [].{
 	timer_set = |machine, { repeats, arguments, calling }| {
 		{ cells, machine: rest } = Machine.lent(machine)
 		asked = { repeats: repeats, arguments: arguments, at: calling.at, timer: Box.unbox(rest.events).made, clock: Box.unbox(rest.events).clock }
-		{ machine: after, value, queued } = Events.timer_requested(Machine.shell(cells, rest), asked)
+		{ machine: after, value, queued } = Events.timer_requested(
+			Machine.shell(cells, rest),
+			asked,
+		)
 		back = match queued {
 			Queued(event) => { ..rest, events: Box.box(Events.with_event(Box.unbox(rest.events), event)) }
 			Refused => rest
