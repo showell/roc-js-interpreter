@@ -665,7 +665,8 @@ Instructions :: [].{
 
 	# The machine after a call too deep, as node throws it: a RangeError.
 	stack_exceeded : Machine.Machine, Ast.Where -> Machine.Machine
-	stack_exceeded = |machine, at| Machine.with_error(machine, RangeError, "Maximum call stack size exceeded", at)
+	stack_exceeded = |machine, at|
+		Machine.with_error(machine, RangeError, "Maximum call stack size exceeded", at)
 
 	closure_entered : Bytecode.Program, Machine.Machine, { environment : U64, calling : Instructions.Calling } -> Machine.Machine
 	closure_entered = |program, machine, { environment, calling }| {

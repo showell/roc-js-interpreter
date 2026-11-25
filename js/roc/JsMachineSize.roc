@@ -10,8 +10,8 @@
 import Machine
 
 main! = |arguments| {
-	passes = number_in(arguments.get(0) ?? crash "js-machine-size: usage: js-machine-size <passes> <room>")
-	room = number_in(arguments.get(1) ?? crash "js-machine-size: usage: js-machine-size <passes> <room>")
+	passes = number_in(arguments.get(0) ?? crash usage)
+	room = number_in(arguments.get(1) ?? crash usage)
 	var $held = 0
 	var $i = 0
 	while $i < passes {
@@ -21,6 +21,8 @@ main! = |arguments| {
 	echo!("machine-size: ${passes.to_str()} passes, ${$held.to_str()} machines held\n")
 	Ok({})
 }
+
+usage = "js-machine-size: usage: js-machine-size <passes> <room>"
 
 ## An empty list with room for `count` machines, in a function of its own:
 ## `where` names an allocation by the function that called the builtin, and
