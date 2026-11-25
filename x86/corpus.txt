@@ -29,6 +29,9 @@
 32-word-count.js
 33-string-append.js
 34-shadowing.js
+36-timeouts.js
+37-interval.js
+38-nested-timeouts.js
 39-destructuring.js
 40-parameters.js
 41-exceptions.js
@@ -37,6 +40,7 @@
 48-map-set.js
 49-loops-labels.js
 51-collector-roots.js
+52-collector-timers.js
 53-collector-callbacks.js
 55-garbage.js
 56-call-depth.js

@@ -162,6 +162,8 @@ Kind : [
 	ErrorClass(Str),
 	# `Map` or `Set`, which `new` makes one of.
 	CollectionClass(Str),
+	# `setTimeout`, `setInterval`, `clearTimeout` or `clearInterval`.
+	TimerFunction(Str),
 	Static(Str),
 	StaticMethod({ owner : Str, name : Str }),
 ]
@@ -214,7 +216,8 @@ is_value_kind = |kind|
 	match kind {
 		Number | Boolean | Undefined | Null | String | Array | Object | Value | Closure(_) => True
 		Function(_) | Console | Log | Method(_) => False
-		ErrorClass(_) | CollectionClass(_) | Static(_) | StaticMethod(_) => False
+		ErrorClass(_) | CollectionClass(_) | TimerFunction(_) => False
+		Static(_) | StaticMethod(_) => False
 	}
 
 ## The kind two ways give a place: their own when they agree, `Value` when
@@ -1675,7 +1678,7 @@ kind_text = |kind|
 		Function(_) | Closure(_) => "function"
 		Console => "console"
 		Log => "console.log"
-		ErrorClass(name) | CollectionClass(name) => "`${name}`"
+		ErrorClass(name) | CollectionClass(name) | TimerFunction(name) => "`${name}`"
 		Static(name) => "`${name}`"
 		StaticMethod({ owner, name }) => "`${owner}.${name}`"
 	}
@@ -1779,7 +1782,7 @@ unary_items = |site, { state, operator }| {
 				Null | Array | Object | Console => Named("runtime_text_type_object")
 				Function(_) | Closure(_) | Log | Method(_) => Named("runtime_text_type_function")
 				ErrorClass(_) | StaticMethod(_) => Named("runtime_text_type_function")
-				CollectionClass(_) => Named("runtime_text_type_function")
+				CollectionClass(_) | TimerFunction(_) => Named("runtime_text_type_function")
 				Static("Math") => Named("runtime_text_type_object")
 				Static(_) => Named("runtime_text_type_function")
 				Value => Unnamed
@@ -1895,6 +1898,7 @@ call_items = |site, { state, count }| {
 			}
 		}
 		Value => value_call_items(site, { state, count, taken: count + 1 })
+		TimerFunction(name) => timer_items(site, { state, count, name })
 		# node's TypeError for `Map()` or `Set()` without `new`.
 		CollectionClass(name) =>
 			Ok({
@@ -2180,6 +2184,9 @@ builtin_items = |site, { state, place }| {
 		Ok(name) if error_names.contains(name) => Ok(falling([], with_top(state, ErrorClass(name))))
 		Ok(name) if name == "Map" or name == "Set" =>
 			Ok(falling([], with_top(state, CollectionClass(name))))
+		Ok(name) if timer_names.contains(name) => Ok(
+			falling([], with_top(state, TimerFunction(name))),
+		)
 		Ok(name) if static_names.contains(name) => Ok(falling([], with_top(state, Static(name))))
 		Ok(name) => refusal(site, "the builtin `${name}` is not compiled yet")
 		Err(_) => crash "Lowering.builtin_items: a builtin's place"
@@ -3211,8 +3218,9 @@ instruction_items = |site, { instruction, state }| {
 				result: Gives(kind),
 			})
 		}
+		# The timers run once the program's own code is done.
 		Finish => {
-			items = [Emit.zero(Rdi), Emit.jmp(Runtime.exit)]
+			items = [Emit.jmp(Runtime.run_timers)]
 			Ok({
 				statements: items,
 				falls: Ends,
@@ -3594,6 +3602,73 @@ static_call_items = |site, { state, count, owner, name }| {
 		_ => {
 			given = count_text(count, "argument")
 			refusal(site, "`${owner}.${name}` with ${given} is not compiled yet")
+		}
+	}
+}
+
+## The timers' builtins.
+timer_names : List(Str)
+timer_names = ["setTimeout", "setInterval", "clearTimeout", "clearInterval"]
+
+## A call of a timer's builtin: `setTimeout(f, ms)` and `setInterval(f,
+## ms)` give the timer, `clearTimeout(t)` and `clearInterval(t)` clear it;
+## the answer takes the builtin's place.
+timer_items : Site,
+{
+	state : State,
+	count : U64,
+	name : Str,
+} -> Try(Lowered, [Refused(Str)])
+timer_items = |site, { state, count, name }| {
+	base = state.stack_kinds.len() - count
+	callee = stack_place(site.code, base - 1)
+	argument = |at| stack_place(site.code, base + at)
+	if !state.stack_kinds.take_last(count).all(is_value_kind) {
+		return refusal(site, "`${name}` of a value that is not one")
+	}
+	match (name, count) {
+		("setTimeout", 1) | ("setTimeout", 2) | ("setInterval", 1) | ("setInterval", 2) => {
+			delay =
+				if count == 2 {
+					Emit.load(Rsi, argument(1))
+				} else {
+					Emit.imm(Rsi, Boxing.undefined_bits)
+				}
+			repeated = if name == "setInterval" {
+				1
+			} else {
+				0
+			}
+			called = [
+				Emit.load(Rdi, argument(0)),
+				delay,
+				Emit.imm(Rdx, repeated),
+				Emit.call(Runtime.set_timer),
+				Emit.store(callee, Rax),
+			]
+			Ok(falling(called, with_top(without_top(state, count + 1), Value)))
+		}
+		("clearTimeout", _) | ("clearInterval", _) => {
+			cleared =
+				if count == 0 {
+					[]
+				} else {
+					[Emit.load(Rdi, argument(0)), Emit.call(Runtime.clear_timer)]
+				}
+			undefined = constant_items({ bits: Boxing.undefined_bits.to_u64_wrap(), to: callee })
+			Ok(
+				falling(
+					cleared.concat(undefined),
+					with_top(without_top(state, count + 1), Undefined),
+				),
+			)
+		}
+		_ => {
+			given = count_text(count, "argument")
+			refusal(
+				site,
+				"`${name}` with ${given} (a timer's arguments past its delay) is not compiled yet",
+			)
 		}
 	}
 }

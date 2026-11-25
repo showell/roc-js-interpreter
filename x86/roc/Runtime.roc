@@ -359,6 +359,21 @@ Runtime :: [].{
 	array_from : Str
 	array_from = "runtime_array_from"
 
+	## The routine that sets a timer, the function `rdi` called `rsi` ms on
+	## the virtual clock (`undefined` or below 1 is 1), once (`rdx` 0) or
+	## every `rsi` ms (1); it gives the timer, a handle `clear_timer` takes.
+	set_timer : Str
+	set_timer = "runtime_set_timer"
+
+	## The routine that clears the timer `rdi`; any other value is let be.
+	clear_timer : Str
+	clear_timer = "runtime_clear_timer"
+
+	## Where the program's code ends: each timer's callback runs, earliest
+	## first, then the program exits 0.
+	run_timers : Str
+	run_timers = "runtime_run_timers"
+
 	## The routine that gives a new Map (`rdi` 0) or Set (1) of the items of
 	## `rsi`, or of none when it is `undefined` or `null`.
 	new_collection : Str
@@ -451,6 +466,7 @@ Runtime :: [].{
 		spread_items,
 		edit_items,
 		collection_items,
+		timer_items,
 	]
 		.join()
 		.concat(text_statements)
@@ -467,10 +483,29 @@ stack_size : I64
 stack_size = 6 * 1024 * 1024
 
 ## Where the output buffer starts past `r13`, and its size. Before it are
-## the buffer's fill (`[r13]`), node's inspect depth (8) and the innermost
-## `try`'s handler (16, 0 when none waits).
+## the buffer's fill (`[r13]`), node's inspect depth (8), the innermost
+## `try`'s handler (16, 0 when none waits), and the timers' (`timer_items`):
+## their list (24, 0 before the first is set), the virtual clock (32), the
+## count of timers set (40) and of callbacks run (48).
 buffer_place : I64
-buffer_place = 24
+buffer_place = 56
+
+timers_place : X86.Mem
+timers_place = Emit.mem(R13, 24)
+
+clock_place : X86.Mem
+clock_place = Emit.mem(R13, 32)
+
+timers_set_place : X86.Mem
+timers_set_place = Emit.mem(R13, 40)
+
+callbacks_run_place : X86.Mem
+callbacks_run_place = Emit.mem(R13, 48)
+
+## How many timer callbacks run before the program stops: an interval
+## never cleared runs for good in node.
+callbacks_most : I64
+callbacks_most = 100000
 
 buffer_size : I64
 buffer_size = 65536
@@ -536,12 +571,22 @@ texts = [
 	(Runtime.new_required_text("Map"), "Constructor Map requires 'new'"),
 	(Runtime.new_required_text("Set"), "Constructor Set requires 'new'"),
 	(
+		"runtime_text_callbacks_most",
+		Str.concat(
+			"x86: 100,000 timer callbacks have run,",
+			" and an interval never cleared runs for good in node\n",
+		),
+	),
+	(
 		"runtime_text_collection_method",
 		"x86: this method of a Map, a Set or an iterator is not compiled yet\n",
 	),
 	(
 		"runtime_text_iterator_written",
-		"x86: console.log of an iterator, or a string made of one, is not compiled yet\n",
+		Str.concat(
+			"x86: console.log of an iterator or a timer,",
+			" or a string made of one, is not compiled yet\n",
+		),
 	),
 	("runtime_text_cannot_read", "Cannot read properties of "),
 	(Runtime.constant_assigned_text, "Assignment to constant variable."),
@@ -1364,7 +1409,7 @@ property_items =
 		.concat([
 			Emit.load(Rcx, Emit.mem(Rdi, 0)),
 			Emit.cmp_imm(Rcx, 2),
-			Emit.jcc(E, "runtime_get_undefined"),
+			Emit.jcc(Ae, "runtime_get_undefined"),
 			Emit.load(Rax, Emit.mem(Rdi, 8)),
 			Instruction(Cvtsi2sd({ to: Xmm0, from: Rax })),
 			Instruction(MovqFromXmm({ to: Rax, from: Xmm0 })),
@@ -2180,7 +2225,7 @@ inspect_items = {
 		.concat([
 			Emit.load(Rcx, Emit.mem(Rax, 0)),
 			Emit.cmp_imm(Rcx, 2),
-			Emit.jcc(E, "runtime_iterator_written"),
+			Emit.jcc(Ae, "runtime_iterator_written"),
 			Emit.save(Rsi),
 			Emit.save(Rcx),
 			Emit.call(Runtime.items_of),
@@ -3298,6 +3343,7 @@ loop_items = {
 			Emit.load(Rcx, Emit.mem(Rax, 0)),
 			Emit.cmp_imm(Rcx, 2),
 			Emit.jcc(E, "runtime_next_item_iterator"),
+			Emit.jcc(A, "runtime_not_iterable"),
 			Emit.imm(Rdx, 2),
 			Emit.minus(Rdx, Rcx),
 			Emit.to_xmm(Xmm0, Rsi),
@@ -5995,6 +6041,7 @@ collection_items = {
 				Emit.load(Rcx, Emit.mem(Rax, 0)),
 				Emit.cmp_imm(Rcx, 2),
 				Emit.jcc(E, "runtime_items_of_iterator"),
+				Emit.jcc(A, "runtime_not_iterable"),
 				Emit.imm(Rdx, 2),
 				Emit.minus(Rdx, Rcx),
 				Emit.store(local(24), Rdx),
@@ -6153,7 +6200,7 @@ collection_items = {
 			.concat([
 				Emit.load(Rcx, Emit.mem(Rax, 0)),
 				Emit.cmp_imm(Rcx, 2),
-				Emit.jcc(E, "runtime_collection_method_stop"),
+				Emit.jcc(Ae, "runtime_collection_method_stop"),
 				Emit.load(R10, local(24)),
 			])
 			.concat(unboxed_items(R10))
@@ -6274,4 +6321,203 @@ collection_items = {
 		for_each,
 		method,
 	].join()
+}
+
+## The timers, on a virtual clock that reads 0 while the program runs and
+## moves to each callback's time as it runs. A timer is a record with the
+## collection tag (`Boxing.collection_tag`), its kind 3: its time due (8),
+## its place in the order set (16), its function (24), its interval (32, 0
+## for a timeout) and whether it is cleared or done (40). `runtime_run_timers`
+## runs the earliest due that is neither, two due at once in the order set;
+## an interval is set again after its callback, from its time, unless the
+## callback cleared it. A throw nothing catches in a callback stops the
+## program, as node's ends it.
+timer_items : List(Assembly.Statement)
+timer_items = {
+	local = |offset| Emit.mem(Rbp, 0 - offset)
+	set_timer =
+		[
+			Emit.mark(Runtime.set_timer),
+			Emit.save(Rbp),
+			Emit.mov(Rbp, Rsp),
+			Emit.minus_imm(Rsp, 32),
+			Emit.store(local(8), Rdi),
+			Emit.store(local(16), Rdx),
+			Emit.mov(Rax, Rdi),
+			Emit.call(Runtime.check_function),
+			Emit.mov(Rdi, Rsi),
+		]
+			.concat(unless_number_items({ reg: Rdi, label: "runtime_set_timer_coerced" }))
+			.concat([
+				Emit.jmp("runtime_set_timer_numbered"),
+				Emit.mark("runtime_set_timer_coerced"),
+				Emit.call(Runtime.to_number),
+				Emit.mov(Rdi, Rax),
+				Emit.mark("runtime_set_timer_numbered"),
+				# A delay not between 1 and 2^31 - 1 (NaN among them) is 1, as
+				# node makes it; any other is its whole part.
+				Emit.imm(Rax, 1),
+				Emit.to_xmm(Xmm0, Rdi),
+			])
+			.concat(double_items({ to: Xmm1, value: 1.0 }))
+			.concat([
+				Emit.imm(Rax, 1),
+				Instruction(Ucomisd({ left: Xmm0, right: Xmm1 })),
+				Emit.jcc(P, "runtime_set_timer_delayed"),
+				Emit.jcc(B, "runtime_set_timer_delayed"),
+			])
+			.concat(double_items({ to: Xmm1, value: 2147483647.0 }))
+			.concat([
+				Emit.imm(Rax, 1),
+				Instruction(Ucomisd({ left: Xmm0, right: Xmm1 })),
+				Emit.jcc(A, "runtime_set_timer_delayed"),
+				Instruction(Cvttsd2si({ to: Rax, from: Xmm0 })),
+				Emit.mark("runtime_set_timer_delayed"),
+				Emit.store(local(24), Rax),
+				Emit.load(Rax, timers_place),
+				Emit.test(Rax, Rax),
+				Emit.jcc(Ne, "runtime_set_timer_listed"),
+				Emit.zero(Rdi),
+				Emit.call(Runtime.new_array),
+			])
+			.concat(unboxed_items(Rax))
+			.concat([
+				Emit.store(timers_place, Rax),
+				Emit.mark("runtime_set_timer_listed"),
+				Emit.imm(Rdi, 48),
+				Emit.call(Runtime.allocate),
+				Emit.imm(Rcx, 3),
+				Emit.store(Emit.mem(Rax, 0), Rcx),
+				Emit.load(Rcx, clock_place),
+				Emit.load(Rdx, local(24)),
+				Emit.plus(Rcx, Rdx),
+				Emit.store(Emit.mem(Rax, 8), Rcx),
+				Emit.load(Rcx, timers_set_place),
+				Emit.store(Emit.mem(Rax, 16), Rcx),
+				Emit.plus_imm(Rcx, 1),
+				Emit.store(timers_set_place, Rcx),
+				Emit.load(Rcx, local(8)),
+				Emit.store(Emit.mem(Rax, 24), Rcx),
+				Emit.zero(Rcx),
+				Emit.load(R8, local(16)),
+				Emit.test(R8, R8),
+				Emit.jcc(E, "runtime_set_timer_once"),
+				Emit.mov(Rcx, Rdx),
+				Emit.mark("runtime_set_timer_once"),
+				Emit.store(Emit.mem(Rax, 32), Rcx),
+				Emit.zero(Rcx),
+				Emit.store(Emit.mem(Rax, 40), Rcx),
+			])
+			.concat(boxed_items(Boxing.collection_tag))
+			.concat([
+				Emit.store(local(32), Rax),
+				Emit.load(Rdi, timers_place),
+				Emit.mov(Rsi, Rax),
+				Emit.call("runtime_push_item"),
+				Emit.load(Rax, local(32)),
+				Emit.mov(Rsp, Rbp),
+				Emit.restore(Rbp),
+				Emit.ret,
+			])
+	clear_timer =
+		[Emit.mark(Runtime.clear_timer)]
+			.concat(tag_load_items(Rdi))
+			.concat([
+				Emit.cmp_imm(Rcx, Boxing.collection_tag),
+				Emit.jcc(Ne, "runtime_clear_timer_done"),
+			])
+			.concat(unboxed_items(Rdi))
+			.concat([
+				Emit.load(Rcx, Emit.mem(Rdi, 0)),
+				Emit.cmp_imm(Rcx, 3),
+				Emit.jcc(Ne, "runtime_clear_timer_done"),
+				Emit.imm(Rcx, 1),
+				Emit.store(Emit.mem(Rdi, 40), Rcx),
+				Emit.mark("runtime_clear_timer_done"),
+				Emit.imm(Rax, Boxing.undefined_bits),
+				Emit.ret,
+			])
+	# r8: the timers' items; r9: their count; r10: the place; r11: the
+	# earliest so far, 0 before one; the timer run is at [rsp].
+	run_timers =
+		[
+			Emit.mark(Runtime.run_timers),
+			Emit.load(R10, timers_place),
+			Emit.test(R10, R10),
+			Emit.jcc(E, "runtime_run_timers_done"),
+			Emit.load(R8, Emit.mem(R10, 16)),
+			Emit.load(R9, Emit.mem(R10, 0)),
+			Emit.zero(R10),
+			Emit.zero(R11),
+			Emit.mark("runtime_run_timers_scan"),
+			Emit.cmp(R10, R9),
+			Emit.jcc(E, "runtime_run_timers_scanned"),
+			Emit.load(Rax, listed_item(R10)),
+			Emit.plus_imm(R10, 1),
+		]
+			.concat(unboxed_items(Rax))
+			.concat([
+				Emit.load(Rcx, Emit.mem(Rax, 40)),
+				Emit.test(Rcx, Rcx),
+				Emit.jcc(Ne, "runtime_run_timers_scan"),
+				Emit.test(R11, R11),
+				Emit.jcc(E, "runtime_run_timers_earlier"),
+				Emit.load(Rcx, Emit.mem(Rax, 8)),
+				Emit.load(Rdx, Emit.mem(R11, 8)),
+				Emit.cmp(Rcx, Rdx),
+				Emit.jcc(L, "runtime_run_timers_earlier"),
+				Emit.jcc(G, "runtime_run_timers_scan"),
+				Emit.load(Rcx, Emit.mem(Rax, 16)),
+				Emit.load(Rdx, Emit.mem(R11, 16)),
+				Emit.cmp(Rcx, Rdx),
+				Emit.jcc(Ge, "runtime_run_timers_scan"),
+				Emit.mark("runtime_run_timers_earlier"),
+				Emit.mov(R11, Rax),
+				Emit.jmp("runtime_run_timers_scan"),
+				Emit.mark("runtime_run_timers_scanned"),
+				Emit.test(R11, R11),
+				Emit.jcc(E, "runtime_run_timers_done"),
+				Emit.load(Rcx, callbacks_run_place),
+				Emit.cmp_imm(Rcx, callbacks_most),
+				Emit.jcc(Ae, "runtime_run_timers_most"),
+				Emit.plus_imm(Rcx, 1),
+				Emit.store(callbacks_run_place, Rcx),
+				Emit.load(Rcx, Emit.mem(R11, 8)),
+				Emit.store(clock_place, Rcx),
+				Emit.load(Rcx, Emit.mem(R11, 32)),
+				Emit.test(Rcx, Rcx),
+				Emit.jcc(Ne, "runtime_run_timers_call"),
+				Emit.imm(Rcx, 1),
+				Emit.store(Emit.mem(R11, 40), Rcx),
+				Emit.mark("runtime_run_timers_call"),
+				Emit.save(R11),
+				Emit.load(Rbx, Emit.mem(R11, 24)),
+			])
+			.concat(unboxed_items(Rbx))
+			.concat([
+				Emit.load(Rax, Emit.mem(Rbx, 0)),
+				Emit.plus(Rax, Rbx),
+				Emit.zero(Rcx),
+				Instruction(CallReg(Rax)),
+				Emit.restore(R11),
+				# An interval its callback didn't clear is due again.
+				Emit.load(Rcx, Emit.mem(R11, 40)),
+				Emit.test(Rcx, Rcx),
+				Emit.jcc(Ne, Runtime.run_timers),
+				Emit.load(Rcx, clock_place),
+				Emit.load(Rdx, Emit.mem(R11, 32)),
+				Emit.plus(Rcx, Rdx),
+				Emit.store(Emit.mem(R11, 8), Rcx),
+				Emit.load(Rcx, timers_set_place),
+				Emit.store(Emit.mem(R11, 16), Rcx),
+				Emit.plus_imm(Rcx, 1),
+				Emit.store(timers_set_place, Rcx),
+				Emit.jmp(Runtime.run_timers),
+				Emit.mark("runtime_run_timers_done"),
+				Emit.zero(Rdi),
+				Emit.jmp(Runtime.exit),
+				Emit.mark("runtime_run_timers_most"),
+			])
+			.concat(stopping_items("runtime_text_callbacks_most"))
+	[set_timer, clear_timer, run_timers].join()
 }
