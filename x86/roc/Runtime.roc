@@ -465,8 +465,8 @@ texts = [
 		"x86: an array method called on a value that is not an array is not compiled yet\n",
 	),
 	(
-		"runtime_text_columns",
-		"x86: console.log of an array that node lays out in columns is not compiled yet\n",
+		"runtime_text_many",
+		"x86: console.log of an array or object of more than 100 items is not compiled yet\n",
 	),
 	(
 		"runtime_text_quotes",
@@ -1863,7 +1863,7 @@ list_items = {
 		Emit.mark("runtime_inspect_list"),
 		Emit.save(Rbp),
 		Emit.mov(Rbp, Rsp),
-		Emit.minus_imm(Rsp, 96),
+		Emit.minus_imm(Rsp, list_frame_size),
 	]
 		.concat(unboxed_items(Rdi))
 		.concat([
@@ -1877,7 +1877,7 @@ list_items = {
 			Emit.cmp_imm(Rsi, 2),
 			Emit.jcc(A, "runtime_inspect_deep"),
 			Emit.cmp_imm(Rcx, 100),
-			Emit.jcc(A, "runtime_columns"),
+			Emit.jcc(A, "runtime_inspect_many"),
 			Emit.lea(Rax, Emit.mem(Rsi, 1)),
 			Emit.store(Emit.mem(R13, 8), Rax),
 			Emit.mov(Rdi, Rcx),
@@ -2138,10 +2138,312 @@ list_items = {
 			array: "runtime_text_deep_array",
 			object: "runtime_text_deep_object",
 		}),
-		[Emit.mark("runtime_columns")],
-		stopping_items("runtime_text_columns"),
+		columns_items,
+		[Emit.mark("runtime_inspect_many")],
+		stopping_items("runtime_text_many"),
 	]
 		.join()
+}
+
+## The bytes of `runtime_inspect_list`'s frame: its own places, then
+## `runtime_columns`', with the widest columns' 12 places last.
+list_frame_size : I64
+list_frame_size = 320
+
+## A double's bits put in an xmm register, through `rax`.
+double_items : { to : X86.Xmm, value : F64 } -> List(Assembly.Statement)
+double_items = |{ to, value }| [Emit.imm(Rax, value.to_bits().to_i64_wrap()), Emit.to_xmm(to, Rax)]
+
+## `runtime_columns`: node's `groupArrayElements`, for an array of more than
+## 6 items whose texts `runtime_inspect_list` has made and measured, and
+## that node's test lets be grouped. With n items, the longest `max` long
+## and `total` their lengths plus 2 each, `actual` is `max + 2`, the bias
+## `sqrt(actual - total / n)`, `biased` is `actual - 3 - bias` (at least 1),
+## and the columns are the least of `round(sqrt(2.5 * biased * n) /
+## biased)`, `floor((80 - indentation) / actual)`, 12 (node's `compact`, 3,
+## times 4) and 15. One column or none leaves the items as they were.
+## Otherwise each row is its items, each padded to its column's widest, on
+## the left when every item is a number and on the right otherwise, `, `
+## between; the rows take the entries' place in the frame and are written
+## one a line, as `runtime_inspect_lines` writes entries.
+columns_items : List(Assembly.Statement)
+columns_items = {
+	local = |offset| Emit.mem(Rbp, 0 - offset)
+	columns = local(88)
+	numbers_only = local(96)
+	rows = local(104)
+	row_start = local(112)
+	row_count = local(120)
+	rows_length = local(128)
+	item = local(144)
+	row_end = local(152)
+	row = local(160)
+	row_length = local(168)
+	written_row = local(176)
+	# The widest of column c is at [rbp + 8c - 304].
+	widest = |reg| Based({
+		base: Rbp,
+		index: Scaled({ reg, scale: Times8 }),
+		displacement: (0 - list_frame_size + 16).to_i32_wrap(),
+	})
+	# The length of entry `reg`'s text, in `rax`.
+	text_length = |reg| [
+		Emit.load(R8, local(40)),
+		Emit.load(Rax, listed_item(reg)),
+		Emit.load(Rax, Emit.mem(Rax, 0)),
+	]
+	counted = [
+		Emit.mark("runtime_columns"),
+		Emit.load(Rcx, local(32)),
+		Emit.load(R9, local(64)),
+		Emit.plus_imm(R9, 2),
+		Emit.load(R11, local(56)),
+		Emit.plus(R11, Rcx),
+		Emit.plus(R11, Rcx),
+		Instruction(Cvtsi2sd({ to: Xmm0, from: R9 })),
+		Instruction(Cvtsi2sd({ to: Xmm1, from: R11 })),
+		Instruction(Cvtsi2sd({ to: Xmm2, from: Rcx })),
+		Emit.double_quotient(Xmm1, Xmm2),
+		Emit.double_copy(Xmm3, Xmm0),
+		Emit.double_difference(Xmm3, Xmm1),
+		Emit.square_root(Xmm1, Xmm3),
+	]
+		.concat(double_items({ to: Xmm2, value: 3.0 }))
+		.concat([Emit.double_difference(Xmm0, Xmm2), Emit.double_difference(Xmm0, Xmm1)])
+		.concat(double_items({ to: Xmm2, value: 1.0 }))
+		.concat([
+			Instruction(Ucomisd({ left: Xmm0, right: Xmm2 })),
+			Emit.jcc(Ae, "runtime_columns_biased"),
+			Emit.double_copy(Xmm0, Xmm2),
+			Emit.mark("runtime_columns_biased"),
+		])
+		.concat(double_items({ to: Xmm1, value: 2.5 }))
+		.concat([
+			Emit.double_product(Xmm1, Xmm0),
+			Instruction(Cvtsi2sd({ to: Xmm2, from: Rcx })),
+			Emit.double_product(Xmm2, Xmm1),
+			Emit.square_root(Xmm3, Xmm2),
+			Emit.double_quotient(Xmm3, Xmm0),
+		])
+		# Rounded half up: the answer is positive, so a truncation of it plus
+		# a half.
+		.concat(double_items({ to: Xmm2, value: 0.5 }))
+		.concat([
+			Emit.double_sum(Xmm3, Xmm2),
+			Instruction(Cvttsd2si({ to: R8, from: Xmm3 })),
+			Emit.load(R10, local(16)),
+			Emit.plus(R10, R10),
+			Emit.imm(Rax, 80),
+			Emit.minus(Rax, R10),
+			Emit.zero(Rdx),
+			Instruction(Div(R9)),
+			Emit.cmp(R8, Rax),
+			Emit.jcc(Le, "runtime_columns_fit"),
+			Emit.mov(R8, Rax),
+			Emit.mark("runtime_columns_fit"),
+			Emit.cmp_imm(R8, 12),
+			Emit.jcc(Le, "runtime_columns_compact"),
+			Emit.imm(R8, 12),
+			Emit.mark("runtime_columns_compact"),
+			Emit.cmp_imm(R8, 1),
+			Emit.jcc(Le, "runtime_inspect_ungrouped"),
+			Emit.store(columns, R8),
+		])
+	# Each column's widest, and whether every item is a number.
+	measured = [
+		Emit.zero(R9),
+		Emit.mark("runtime_columns_cleared"),
+		Emit.zero(Rax),
+		Emit.store(widest(R9), Rax),
+		Emit.plus_imm(R9, 1),
+		Emit.cmp_imm(R9, 12),
+		Emit.jcc(B, "runtime_columns_cleared"),
+		Emit.zero(R9),
+		Emit.zero(R11),
+		Emit.mark("runtime_columns_widest"),
+		Emit.load(Rcx, local(32)),
+		Emit.cmp(R11, Rcx),
+		Emit.jcc(E, "runtime_columns_widened"),
+	]
+		.concat(text_length(R11))
+		.concat([
+			Emit.load(Rdx, widest(R9)),
+			Emit.cmp(Rax, Rdx),
+			Emit.jcc(Be, "runtime_columns_narrower"),
+			Emit.store(widest(R9), Rax),
+			Emit.mark("runtime_columns_narrower"),
+			Emit.plus_imm(R9, 1),
+			Emit.load(Rdx, columns),
+			Emit.cmp(R9, Rdx),
+			Emit.jcc(B, "runtime_columns_same_row"),
+			Emit.zero(R9),
+			Emit.mark("runtime_columns_same_row"),
+			Emit.plus_imm(R11, 1),
+			Emit.jmp("runtime_columns_widest"),
+			Emit.mark("runtime_columns_widened"),
+			Emit.imm(Rax, 1),
+			Emit.store(numbers_only, Rax),
+			Emit.load(Rdi, local(8)),
+			Emit.load(R8, Emit.mem(Rdi, 16)),
+			Emit.zero(R11),
+			Emit.mark("runtime_columns_kinds"),
+			Emit.cmp(R11, Rcx),
+			Emit.jcc(E, "runtime_columns_kinded"),
+			Emit.load(Rax, listed_item(R11)),
+			Emit.shr(Rax, Boxing.tag_shift),
+			Emit.plus_imm(R11, 1),
+			Emit.cmp_imm(Rax, Boxing.first_tag),
+			Emit.jcc(B, "runtime_columns_kinds"),
+			Emit.zero(Rax),
+			Emit.store(numbers_only, Rax),
+			Emit.mark("runtime_columns_kinded"),
+			# The rows: as many as the columns go into the items, rounded up.
+			Emit.mov(Rax, Rcx),
+			Emit.load(R8, columns),
+			Emit.plus(Rax, R8),
+			Emit.minus_imm(Rax, 1),
+			Emit.zero(Rdx),
+			Instruction(Div(R8)),
+			Emit.store(row_count, Rax),
+			Emit.mov(Rdi, Rax),
+			Emit.shl(Rdi, 3),
+			Emit.call(Runtime.allocate),
+			Emit.store(rows, Rax),
+			Emit.zero(Rax),
+			Emit.store(row_start, Rax),
+			Emit.store(row, Rax),
+			Emit.store(rows_length, Rax),
+		])
+	# A row's length: each item's column's widest and its `, `, but for the
+	# last item's `, ` (padded on the left), or all of the last but its own
+	# length (on the right).
+	row_measured = [
+		Emit.mark("runtime_columns_row"),
+		Emit.load(Rax, row),
+		Emit.load(Rcx, row_count),
+		Emit.cmp(Rax, Rcx),
+		Emit.jcc(E, "runtime_columns_done"),
+		Emit.load(Rax, row_start),
+		Emit.load(Rcx, columns),
+		Emit.plus(Rax, Rcx),
+		Emit.load(Rcx, local(32)),
+		Emit.cmp(Rax, Rcx),
+		Emit.jcc(Be, "runtime_columns_row_ended"),
+		Emit.mov(Rax, Rcx),
+		Emit.mark("runtime_columns_row_ended"),
+		Emit.store(row_end, Rax),
+		Emit.zero(R10),
+		Emit.load(R11, row_start),
+		Emit.zero(R9),
+		Emit.mark("runtime_columns_length_next"),
+		Emit.load(Rdx, widest(R9)),
+		Emit.plus(R10, Rdx),
+		Emit.plus_imm(R10, 2),
+		Emit.plus_imm(R11, 1),
+		Emit.plus_imm(R9, 1),
+		Emit.load(Rax, row_end),
+		Emit.cmp(R11, Rax),
+		Emit.jcc(B, "runtime_columns_length_next"),
+		Emit.minus_imm(R10, 2),
+		Emit.load(Rax, numbers_only),
+		Emit.test(Rax, Rax),
+		Emit.jcc(Ne, "runtime_columns_length_done"),
+		Emit.minus(R10, Rdx),
+		Emit.minus_imm(R11, 1),
+	]
+		.concat(text_length(R11))
+		.concat([
+			Emit.plus(R10, Rax),
+			Emit.mark("runtime_columns_length_done"),
+			Emit.store(row_length, R10),
+			Emit.lea(Rdi, Emit.mem(R10, 8)),
+			Emit.call(Runtime.allocate),
+			Emit.load(R10, row_length),
+			Emit.store(Emit.mem(Rax, 0), R10),
+			Emit.store(written_row, Rax),
+			Emit.lea(Rdi, Emit.mem(Rax, 8)),
+			Emit.load(R11, row_start),
+			Emit.store(item, R11),
+		])
+	# Each item: its padding, its text and its `, ` on the left; its text,
+	# its `, ` and its padding on the right.
+	padding = |label| [
+		Emit.load(R11, item),
+		Emit.load(R9, row_start),
+		Emit.mov(Rcx, R11),
+		Emit.minus(Rcx, R9),
+	]
+		.concat(text_length(R11))
+		.concat([Emit.load(R9, widest(Rcx)), Emit.minus(R9, Rax)])
+		.concat(spaces_written_items(label))
+	separator = |label|
+		[
+			Emit.load(R11, item),
+			Emit.plus_imm(R11, 1),
+			Emit.load(Rax, row_end),
+			Emit.cmp(R11, Rax),
+			Emit.jcc(E, label),
+		]
+			.concat(byte_written_items(','))
+			.concat(byte_written_items(' '))
+	text = [
+		Emit.load(R11, item),
+		Emit.load(R8, local(40)),
+		Emit.load(Rsi, listed_item(R11)),
+		Emit.load(Rcx, Emit.mem(Rsi, 0)),
+		Emit.plus_imm(Rsi, 8),
+		Instruction(RepMovsb),
+	]
+	cells =
+		[
+			Emit.mark("runtime_columns_item"),
+			Emit.load(Rax, numbers_only),
+			Emit.test(Rax, Rax),
+			Emit.jcc(E, "runtime_columns_on_the_right"),
+		]
+			.concat(padding("runtime_columns_left_pad"))
+			.concat(text)
+			.concat(separator("runtime_columns_item_written"))
+			.append(Emit.jmp("runtime_columns_item_written"))
+			.append(Emit.mark("runtime_columns_on_the_right"))
+			.concat(text)
+			.concat(separator("runtime_columns_item_written"))
+			.concat(padding("runtime_columns_right_pad"))
+			.concat([
+				Emit.mark("runtime_columns_item_written"),
+				Emit.load(R11, item),
+				Emit.plus_imm(R11, 1),
+				Emit.store(item, R11),
+				Emit.load(Rax, row_end),
+				Emit.cmp(R11, Rax),
+				Emit.jcc(B, "runtime_columns_item"),
+				Emit.load(R8, rows),
+				Emit.load(R11, row),
+				Emit.load(Rax, written_row),
+				Emit.store(listed_item(R11), Rax),
+				Emit.load(Rax, rows_length),
+				Emit.load(Rcx, row_length),
+				Emit.plus(Rax, Rcx),
+				Emit.store(rows_length, Rax),
+				Emit.plus_imm(R11, 1),
+				Emit.store(row, R11),
+				Emit.load(Rax, row_end),
+				Emit.store(row_start, Rax),
+				Emit.jmp("runtime_columns_row"),
+			])
+	done = [
+		Emit.mark("runtime_columns_done"),
+		Emit.load(Rax, rows),
+		Emit.store(local(40), Rax),
+		Emit.load(Rcx, row_count),
+		Emit.store(local(32), Rcx),
+		Emit.load(Rax, rows_length),
+		Emit.store(local(56), Rax),
+		Emit.load(R10, local(16)),
+		Emit.plus(R10, R10),
+		Emit.jmp("runtime_inspect_lines"),
+	]
+	[counted, measured, row_measured, cells, done].join()
 }
 
 ## The statements that leave the number in `reg`, as a whole number of at

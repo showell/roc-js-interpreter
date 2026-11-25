@@ -118,6 +118,28 @@ Emit :: [].{
 	syscall : Assembly.Statement
 	syscall = Instruction(Syscall)
 
+	## The doubles' arithmetic, `to` the first operand and the answer:
+	## `Emit.double_quotient(Xmm1, Xmm2)` is `divsd xmm1, xmm2`.
+	double_sum : X86.Xmm, X86.Xmm -> Assembly.Statement
+	double_sum = |to, from| Instruction(Sse({ operation: Addsd, to, from }))
+
+	double_difference : X86.Xmm, X86.Xmm -> Assembly.Statement
+	double_difference = |to, from| Instruction(Sse({ operation: Subsd, to, from }))
+
+	double_product : X86.Xmm, X86.Xmm -> Assembly.Statement
+	double_product = |to, from| Instruction(Sse({ operation: Mulsd, to, from }))
+
+	double_quotient : X86.Xmm, X86.Xmm -> Assembly.Statement
+	double_quotient = |to, from| Instruction(Sse({ operation: Divsd, to, from }))
+
+	## `to` set to the square root of `from`: `sqrtsd`.
+	square_root : X86.Xmm, X86.Xmm -> Assembly.Statement
+	square_root = |to, from| Instruction(Sse({ operation: Sqrtsd, to, from }))
+
+	## One xmm register's double copied to another: `movsd`.
+	double_copy : X86.Xmm, X86.Xmm -> Assembly.Statement
+	double_copy = |to, from| Instruction(MovsdRegReg({ to, from }))
+
 	## The general register's bits moved to an xmm register.
 	to_xmm : X86.Xmm, X86.Register -> Assembly.Statement
 	to_xmm = |to, from| Instruction(MovqToXmm({ to, from }))

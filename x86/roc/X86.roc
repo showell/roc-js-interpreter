@@ -63,7 +63,9 @@ X86 :: [].{
 
 	ShiftOperation := [Shl, Shr, Sar]
 
-	SseOperation := [Addsd, Subsd, Mulsd, Divsd]
+	## The doubles' arithmetic, `to` the first operand and the answer;
+	## `Sqrtsd` is the square root of `from` alone.
+	SseOperation := [Addsd, Subsd, Mulsd, Divsd, Sqrtsd]
 
 	## A jump's condition, as the flags read after a `Cmp`: `L`, `Le`, `G`,
 	## `Ge` for signed integers; `B`, `Be`, `A`, `Ae` for unsigned ones and
@@ -377,6 +379,7 @@ X86 :: [].{
 			)
 			Sse({ operation, to, from }) => {
 				opcode = match operation {
+					Sqrtsd => 0x51
 					Addsd => 0x58
 					Mulsd => 0x59
 					Subsd => 0x5C
@@ -730,6 +733,13 @@ X86 :: [].{
 			from: Xmm15,
 		}),
 	) == "f2 41 0f 5e d7"
+	expect hex_of(
+		Sse({
+			operation: Sqrtsd,
+			to: Xmm1,
+			from: Xmm8,
+		}),
+	) == "f2 41 0f 51 c8"
 	expect hex_of(Ucomisd({ left: Xmm0, right: Xmm1 })) == "66 0f 2e c1"
 	expect hex_of(Cvtsi2sd({ to: Xmm0, from: Rax })) == "f2 48 0f 2a c0"
 	expect hex_of(Cvtsi2sd({ to: Xmm9, from: R10 })) == "f2 4d 0f 2a ca"
