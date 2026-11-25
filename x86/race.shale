@@ -36,9 +36,9 @@ function raced(who, argv, want)
   local said = lines(r.out)
   local reached = re_find(r.out, "reached F\\(([0-9]+)\\): ([0-9]+) digits")
   local timed = re_find(r.out, "elapsed ([0-9]+) ms of")
-  if reached == nil or timed == nil or #said < 6 then fail(WHO .. ": " .. who .. " printed no summary: " .. sub(r.out, 1, 2000)) end
-  local n = re_find(said[2], "F\\(([0-9]+)\\)").group
-  return {who = who, out = r.out, lines = said, n = n, digits = re_find(said[2], ": ([0-9]+) digits").group, elapsed = tonumber(timed.group), verdict = said[5], ms = r.ms}
+  if reached == nil or timed == nil or #said < 7 then fail(WHO .. ": " .. who .. " printed no summary: " .. sub(r.out, 1, 2000)) end
+  local n = re_find(said[3], "F\\(([0-9]+)\\)").group
+  return {who = who, out = r.out, lines = said, n = n, digits = re_find(said[3], ": ([0-9]+) digits").group, elapsed = tonumber(timed.group), verdict = said[6], ms = r.ms}
 end
 
 -- Whether a contestant's answer is BigInt's: its summary lines (all but the
@@ -47,9 +47,9 @@ function verified(c)
   local v = run({"node", real(VERIFY), c.n}, {timeout_ms = RUN_MS, whole = 4000000, want = WANT_VERIFY, nice = 19})
   if v.code ~= 0 then fail(WHO .. ": verify.js exited " .. get(v, "code", -1) .. ": " .. sub(v.out, 1, 2000)) end
   local want = lines(v.out)
-  local got = {c.lines[1], c.lines[2], c.lines[3], c.lines[6]}
-  if #c.lines ~= 6 or #want ~= 4 then return "wrong (" .. #c.lines .. " lines, verify.js " .. #want .. ")" end
-  for i = 1, 4 do
+  local got = {c.lines[1], c.lines[2], c.lines[3], c.lines[4], c.lines[7]}
+  if #c.lines ~= 7 or #want ~= 5 then return "wrong (" .. #c.lines .. " lines, verify.js " .. #want .. ")" end
+  for i = 1, 5 do
     if got[i] ~= want[i] then return "WRONG at line " .. i .. ": " .. sub(got[i], 1, 80) .. ", BigInt's " .. sub(want[i], 1, 80) end
   end
   return "verified"

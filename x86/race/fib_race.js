@@ -11,7 +11,8 @@
 // per limb added), planning each batch to use at most a share of the time
 // left: so it gets more careful as the deadline nears. It stops when the
 // time left is too small to plan a batch in, and FAILS if its last clock
-// reading is past BUDGET_MS.
+// reading is past BUDGET_MS, or if its F(100) isn't the value computed
+// offline.
 //
 // Printing the number may come after the budget: the clock reading that
 // decides PASS or FAIL is taken before anything is printed, and after the
@@ -109,8 +110,14 @@ function hi() {
   return hiIsY ? y : x;
 }
 
+// F(100), computed once offline (node's BigInt): the program holds its own
+// arithmetic to it on the way, and a mismatch is a FAIL whatever the time.
+const F100 = "354224848179261915075";
+
 const start = Date.now();
-steps(999); // F(1000)
+steps(99); // F(100)
+const f100 = digitsOf(hi());
+steps(900); // F(1000)
 const f1000 = digitsOf(hi());
 let elapsed = Date.now() - start;
 let batches = 1;
@@ -158,9 +165,10 @@ while (bottom.length < 21 && j < h.length - 1) {
   bottom = seven(h[j]) + bottom;
   j = j + 1;
 }
+console.log(f100 === F100 ? "F(100) is " + F100 + ", as expected" : "F(100) is " + f100 + ", not " + F100);
 console.log("F(1000) ends " + f1000.slice(f1000.length - 12));
 console.log("reached F(" + n + "): " + digitCount(h) + " digits");
 console.log("first digits " + top.slice(0, 20) + ", last digits " + bottom.slice(bottom.length - 20));
 console.log("batches " + batches + ", elapsed " + elapsed + " ms of " + BUDGET_MS);
-console.log(elapsed <= BUDGET_MS ? "PASS" : "FAIL");
+console.log(elapsed <= BUDGET_MS && f100 === F100 ? "PASS" : "FAIL");
 console.log(digitsOf(h));
