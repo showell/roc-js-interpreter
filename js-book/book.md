@@ -99,7 +99,7 @@ Beside them, `Inspect.roc` formats `console.log`'s output as node's `util.inspec
 
 The VM's loop fetches the next instruction and hands the machine to `dispatch!`, whose match calls one top-level handler an arm. Each handler is a small function of its own, so the language grows by adding handlers and every function stays small. Here is the heart of the loop, a collection first when one is due:
 
-{{lines js/roc/Vm.roc from "while is_running($machine)" to "$machine = dispatch!("}}
+{{lines js/roc/Vm.roc from "while Machine.is_running($machine)" to "$machine = dispatch!("}}
 
 ### The heap is one Roc value
 
@@ -109,7 +109,7 @@ JavaScript shares arrays, objects and closures by reference, and Roc has only va
 
 Everything a run holds is one record, `Vm.Machine`, handed to each instruction's handler and handed back:
 
-{{lines js/roc/Vm.roc from "Machine : {" to "turtle : Box(Canvas.Turtle),"}}
+{{lines js/roc/Machine.roc from "Machine : {" to "turtle : Box(Canvas.Turtle),"}}
 
 The boxes in it are the subject of {{chapter What copies}}: each boxed part is one that most instructions leave alone.
 
@@ -162,7 +162,7 @@ digraph {
 
 A call's frame is a run of slots on the operand stack, from its base: its parameters, the variables its blocks declare, the hidden places of its `for ... of` loops, then the boxes it captures. An instruction names a slot by its place from the base, so a local is one index into the stack. The values being worked on sit above the slots, and the callers wait in `frames`. A push writes the place at `top`, and appends only past the stack's end:
 
-{{function js/roc/Vm.roc pushed}}
+{{function js/roc/Machine.roc pushed}}
 
 A variable a closure may capture lives in a box, a `Variable` cell the frame and its closures share; the parser marks each scope that holds a function literal (`Ast.Capture`), and only those box their variables. A closure's `Fun` cell names an `Environment` cell, its code's number and the boxes it captures.
 
@@ -253,7 +253,7 @@ The collector is shaped around Roc's copy cliff, where a write to a list that so
 - **The marks are a list of their own.** `marked` reads the cells and writes only its marks and its stack of cells waiting to be visited, each in place, so every list it writes is its own. A mark bit inside each cell would make the first mark copy the heap.
 - **The sweep owns the cells.** `collected` takes the cells out of the machine with `lent` before it calls `swept`, so each `set` in the sweep is the list's only reference and writes in place:
 
-{{function js/roc/Vm.roc collected}}
+{{function js/roc/Machine.roc collected}}
 
 - **The waiting stack reuses its places.** A visited cell's place is written over by the next one pushed, so the stack grows only to the mark's deepest point.
 
@@ -263,11 +263,11 @@ A count holds these three only loosely. On the dev build, 08-garbage-in-a-call's
 
 The roots are the machine's data:
 
-{{function js/roc/Vm.roc roots}}
+{{function js/roc/Machine.roc roots}}
 
 A collection is due when the free list is empty and the heap has reached its threshold. After each one, the threshold is twice what the collection kept, and at least 1,024 cells, so a collection's cost, O(heap), comes to amortized O(1) a cell allocated (unchecked by a timing):
 
-{{function js/roc/Vm.roc is_collection_due}}
+{{function js/roc/Machine.roc is_collection_due}}
 
 Between two instructions every value the program holds is in the machine. The one exception is a builtin that runs a callback, such as `filter` or `sort`: what it keeps across the callback waits on the stack, where the collections inside the callback see it. A live value that names a freed cell stops the run, since it means a root was missed.
 
