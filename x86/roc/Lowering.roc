@@ -545,7 +545,7 @@ code_walk = |context, heads| {
 	var $calls = []
 	# What the straight run so far has proved of its index checks
 	# (IndexLowering's header).
-	var $checked = IndexLowering.unchecked(0)
+	var $checked = IndexLowering.nothing_proved(0)
 	for at in 0..<code.ops.len() {
 		meets =
 			looped_to.contains(at)
@@ -584,7 +584,7 @@ code_walk = |context, heads| {
 				site = { context, code, at, skipped }
 				checked =
 					if meets {
-						IndexLowering.unchecked(state.stack_kinds.len())
+						IndexLowering.nothing_proved(state.stack_kinds.len())
 					} else {
 						$checked
 					}
@@ -627,7 +627,7 @@ code_walk = |context, heads| {
 						if $fused.contains(at) and depth == checked.origins.len() {
 							checked
 						} else if skipped.contains(at) or !valued.statements.is_empty() {
-							IndexLowering.unchecked(depth)
+							IndexLowering.nothing_proved(depth)
 						} else {
 							IndexLowering.checked_after(
 								checked,
@@ -635,7 +635,7 @@ code_walk = |context, heads| {
 							)
 						}
 					}
-					Ends => IndexLowering.unchecked(0)
+					Ends => IndexLowering.nothing_proved(0)
 				}
 				$flowing = match lowered.falls {
 					Falls(next) => {

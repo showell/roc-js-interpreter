@@ -48,16 +48,20 @@ IndexLowering :: [].{
 	## numbers, and the (array, index) slots proved in range.
 	Checked : {
 		origins : List([Local(U64), Other]),
-		whole : List(U64),
-		in_range : List((U64, U64)),
+		whole_slots : List(U64),
+		slots_in_range : List((U64, U64)),
 	}
 
 	## What an index's checks may skip.
 	Checks : { whole : Bool, in_range : Bool }
 
 	## Nothing proved, the stack `depth` places deep.
-	unchecked : U64 -> IndexLowering.Checked
-	unchecked = |depth| { origins: List.repeat(Other, depth), whole: [], in_range: [] }
+	nothing_proved : U64 -> IndexLowering.Checked
+	nothing_proved = |depth| {
+		origins: List.repeat(Other, depth),
+		whole_slots: [],
+		slots_in_range: [],
+	}
 
 	## Nothing skipped.
 	all_checks : IndexLowering.Checks
@@ -78,8 +82,8 @@ IndexLowering :: [].{
 		}
 		match (checked.origins.get(depth - below), checked.origins.get(depth - below + 1)) {
 			(Ok(Local(array)), Ok(Local(index))) => {
-				whole: checked.whole.contains(index),
-				in_range: checked.in_range.contains((array, index)),
+				whole: checked.whole_slots.contains(index),
+				in_range: checked.slots_in_range.contains((array, index)),
 			}
 			_ => all_checks
 		}
@@ -102,7 +106,7 @@ IndexLowering :: [].{
 		pushed = |count, origin| {
 			made = U64.min(count, depth)
 			if checked.origins.len() < depth - made {
-				IndexLowering.unchecked(depth)
+				IndexLowering.nothing_proved(depth)
 			} else {
 				kept = checked.origins.take_first(depth - made)
 				{ ..checked, origins: kept.concat(List.repeat(origin, made)) }
@@ -111,10 +115,13 @@ IndexLowering :: [].{
 		match instruction {
 			PushNumber(_) | PushText(_) | LoadBoxed(_) | Duplicate => pushed(1, Other)
 			LoadLocal(slot) => pushed(1, Local(slot))
-			StoreLocal(slot) => forgotten(pushed(1, Other), slot)
-			SetLocal(slot) => forgotten(pushed(0, Other), slot)
+			StoreLocal(slot) => without_slot(pushed(1, Other), slot)
+			SetLocal(slot) => without_slot(pushed(0, Other), slot)
 			Pop | JumpIfFalse(_) => pushed(0, Other)
-			Binary(operator, _) if is_arithmetic(operator) and numbers_on_top(before) => pushed(1, Other)
+			Binary(
+				operator,
+				_,
+			) if is_arithmetic(operator) and numbers_on_top(before) => pushed(1, Other)
 			GetIndex(_) if is_numbers(1) => {
 				read = pushed(1, Other)
 				count = checked.origins.len()
@@ -124,15 +131,15 @@ IndexLowering :: [].{
 					match (checked.origins.get(count - 2), checked.origins.get(count - 1)) {
 						(Ok(Local(array)), Ok(Local(index))) => {
 							..read,
-							whole: read.whole.append(index),
-							in_range: read.in_range.append((array, index)),
+							whole_slots: read.whole_slots.append(index),
+							slots_in_range: read.slots_in_range.append((array, index)),
 						}
 						_ => read
 					}
 				}
 			}
 			SetIndex(_) if is_numbers(2) => pushed(1, Other)
-			_ => IndexLowering.unchecked(depth)
+			_ => IndexLowering.nothing_proved(depth)
 		}
 	}
 
@@ -194,7 +201,13 @@ IndexLowering :: [].{
 	item_read_items = |site, { kinds, receiver, index, checks, slow_items }| {
 		slow_label = LoweringBasics.inner_label(site, "slow")
 		done_label = LoweringBasics.inner_label(site, "done")
-		match item_address_items({ kinds, receiver, index, checks, label: slow_label }) {
+		match item_address_items({
+			kinds,
+			receiver,
+			index,
+			checks,
+			label: slow_label,
+		}) {
 			Ok(addressed) =>
 				addressed
 					.concat([
@@ -221,10 +234,26 @@ IndexLowering :: [].{
 		checks : IndexLowering.Checks,
 		slow_items : List(Assembly.Statement),
 	} -> List(Assembly.Statement)
-	item_write_items = |site, { kinds, receiver, index, value_place, checks, slow_items }| {
+	item_write_items = |
+		site,
+		{
+			kinds,
+			receiver,
+			index,
+			value_place,
+			checks,
+			slow_items,
+		},
+	| {
 		slow_label = LoweringBasics.inner_label(site, "slow")
 		done_label = LoweringBasics.inner_label(site, "done")
-		match item_address_items({ kinds, receiver, index, checks, label: slow_label }) {
+		match item_address_items({
+			kinds,
+			receiver,
+			index,
+			checks,
+			label: slow_label,
+		}) {
 			Ok(addressed) =>
 				addressed
 					.concat([
@@ -242,8 +271,8 @@ IndexLowering :: [].{
 
 ## `checked` with what it proved of `slot` forgotten: the slot was written,
 ## so a stack place loaded from it before holds its old value.
-forgotten : IndexLowering.Checked, U64 -> IndexLowering.Checked
-forgotten = |checked, slot| {
+without_slot : IndexLowering.Checked, U64 -> IndexLowering.Checked
+without_slot = |checked, slot| {
 	origins: checked.origins.map(
 		|origin|
 			match origin {
@@ -251,8 +280,8 @@ forgotten = |checked, slot| {
 				_ => origin
 			},
 	),
-	whole: checked.whole.drop_if(|held| held == slot),
-	in_range: checked.in_range.drop_if(|(array, index)| array == slot or index == slot),
+	whole_slots: checked.whole_slots.drop_if(|held| held == slot),
+	slots_in_range: checked.slots_in_range.drop_if(|(array, index)| array == slot or index == slot),
 }
 
 ## Whether an operator is one of `+ - * /` or the four orderings, which on
@@ -354,9 +383,9 @@ item_address_items = |{ kinds, receiver, index, checks, label }| {
 ## A run of instructions walked as Lowering walks one with no meeting of
 ## ways, each with the stack's kinds before it; what it proved after.
 walked_checks : List((Bytecode.Op, List(LoweringBasics.Kind), U64)) -> IndexLowering.Checked
-walked_checks = |run| {
-	var $checked = IndexLowering.unchecked(0)
-	for (instruction, stack_kinds, depth) in run {
+walked_checks = |instructions| {
+	var $checked = IndexLowering.nothing_proved(0)
+	for (instruction, stack_kinds, depth) in instructions {
 		$checked = IndexLowering.checked_after(
 			$checked,
 			{ instruction, before: { slots: [], stack_kinds }, depth },
@@ -396,8 +425,18 @@ expect {
 		(LoadLocal(1), [Numbers], 2),
 		(PushNumber(7), [Numbers, Number], 3),
 	]
-	stored = [(PushNumber(2), [], 1), (StoreLocal(1), [Number], 1), (Pop, [Number], 0)]
-	called = [(Call({ count: 0, written: "f", at }), [], 0)]
+	stored = [
+		(PushNumber(2), [], 1),
+		(StoreLocal(1), [Number], 1),
+		(Pop, [Number], 0),
+	]
+	called = [
+		(
+			Call({ count: 0, written: "f", at }),
+			[],
+			0,
+		),
+	]
 	checks = |run| IndexLowering.checks_for(walked_checks(run), SetIndex(at))
 	checks(read.concat(stored).concat(write_of(0))) == IndexLowering.all_checks
 		and checks(read.concat(called).concat(write_of(0))) == IndexLowering.all_checks
