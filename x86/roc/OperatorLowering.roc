@@ -481,7 +481,7 @@ OperatorLowering :: [].{
 		target = LoweringBasics.forward(site, skip)
 		Ok({
 			statements: tested.append(
-				Emit.jcc(Ne, LoweringBasics.place_label(site.lowering, target)),
+				Emit.jcc(Ne, LoweringBasics.place_label(site.context, target)),
 			),
 			falls: Falls(LoweringBasics.without_top(state, 1)),
 			branch: Branch({ target, state }),
@@ -509,7 +509,7 @@ OperatorLowering :: [].{
 				Emit.load(Rax, LoweringBasics.stack_place(site.code, after.stack_kinds.len() - 1)),
 				Emit.imm(Rcx, Boxing.true_bits),
 				Emit.cmp(Rax, Rcx),
-				Emit.jcc(E, LoweringBasics.place_label(site.lowering, target)),
+				Emit.jcc(E, LoweringBasics.place_label(site.context, target)),
 			]),
 			falls: Falls(dropped),
 			branch: Branch({ target, state: dropped }),
@@ -529,13 +529,13 @@ OperatorLowering :: [].{
 		target = LoweringBasics.forward(site, skip)
 		top = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 1)
 		shorted = LoweringBasics.with_top(LoweringBasics.without_top(state, 1), Undefined)
-		short_label = "${LoweringBasics.place_label(site.lowering, site.at)}_short"
-		going_label = "${LoweringBasics.place_label(site.lowering, site.at)}_going"
+		short_label = "${LoweringBasics.place_label(site.context, site.at)}_short"
+		going_label = "${LoweringBasics.place_label(site.context, site.at)}_going"
 		jumped = LoweringBasics.constant_items({
 			bits: Boxing.undefined_bits.to_u64_wrap(),
 			to: top,
 		})
-			.append(JmpTo(LoweringBasics.place_label(site.lowering, target)))
+			.append(JmpTo(LoweringBasics.place_label(site.context, target)))
 		match LoweringBasics.kind_below(state, 0) {
 			Undefined | Null =>
 				Ok({
@@ -587,7 +587,7 @@ OperatorLowering :: [].{
 			Kept => state
 			Dropped => LoweringBasics.without_top(state, 1)
 		}
-		jump = JccTo({ condition, label: LoweringBasics.place_label(site.lowering, target) })
+		jump = JccTo({ condition, label: LoweringBasics.place_label(site.context, target) })
 		Ok({
 			statements: tested.append(jump),
 			falls: Falls(LoweringBasics.without_top(state, 1)),

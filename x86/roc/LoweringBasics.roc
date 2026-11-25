@@ -119,7 +119,7 @@ LoweringBasics :: [].{
 	## The label of a text the program names.
 	text_label : LoweringBasics.Site, Str -> Str
 	text_label = |site, text| {
-		number = match site.lowering.literals.get(text) {
+		number = match site.context.literals.get(text) {
 			Ok(numbered) => numbered
 			Err(_) => crash "LoweringBasics.text_label: every text is numbered"
 		}
@@ -128,7 +128,7 @@ LoweringBasics :: [].{
 
 	## One instruction's place, for the code it lowers to and its messages.
 	Site : {
-		lowering : LoweringBasics.Context,
+		context : LoweringBasics.Context,
 		code : Bytecode.Code,
 		at : U64,
 		skipped : List(U64),
@@ -144,11 +144,11 @@ LoweringBasics :: [].{
 	}
 
 	function_name : LoweringBasics.Context -> Str
-	function_name = |lowering|
-		if lowering.index == lowering.program.main {
+	function_name = |context|
+		if context.index == context.program.main {
 			"the program"
 		} else {
-			match lowering.makers.get(lowering.index) {
+			match context.makers.get(context.index) {
 				Ok(maker) => "the function `${maker.name}`"
 				Err(_) => "a function made nowhere"
 			}
@@ -175,7 +175,7 @@ LoweringBasics :: [].{
 
 	## The label of an instruction of the code being lowered.
 	place_label : LoweringBasics.Context, U64 -> Str
-	place_label = |lowering, at| "code_${lowering.index.to_str()}_${at.to_str()}"
+	place_label = |context, at| "code_${context.index.to_str()}_${at.to_str()}"
 
 	slot_place : U64 -> X86.Mem
 	slot_place = |slot| Based({
@@ -191,7 +191,7 @@ LoweringBasics :: [].{
 	## The instruction's refusal, naming its function and place.
 	refusal : LoweringBasics.Site, Str -> Try(a, [Refused(Str)])
 	refusal = |site, why| {
-		named = LoweringBasics.function_name(site.lowering)
+		named = LoweringBasics.function_name(site.context)
 		Err(Refused("${named}, instruction ${site.at.to_str()}: ${why}"))
 	}
 
@@ -281,7 +281,7 @@ LoweringBasics :: [].{
 		# A cell is shared with the closures that capture it, whose writes no
 		# walk of this code sees.
 		kind =
-			if site.lowering.cells.contains(slot) {
+			if site.context.cells.contains(slot) {
 				Value
 			} else {
 				given
@@ -481,12 +481,13 @@ LoweringBasics :: [].{
 	kind_phrase : LoweringBasics.Kind -> Str
 	kind_phrase = |kind|
 		match kind {
-			Array | Object | Undefined => "an ${LoweringBasics.kind_text(kind)}"
-			_ => "a ${LoweringBasics.kind_text(kind)}"
+			Array | Object | Undefined => "an ${LoweringBasics.kind_noun(kind)}"
+			_ => "a ${LoweringBasics.kind_noun(kind)}"
 		}
 
-	kind_text : LoweringBasics.Kind -> Str
-	kind_text = |kind|
+	## A kind's words with no article: `number`, `array`.
+	kind_noun : LoweringBasics.Kind -> Str
+	kind_noun = |kind|
 		match kind {
 			Number => "number"
 			Boolean => "boolean"

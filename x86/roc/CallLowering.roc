@@ -33,7 +33,7 @@ CallLowering :: [].{
 		match LoweringBasics.kind_below(state, count) {
 			Function(made) => direct_call_items(site, { state, count, made, record_statements: [] })
 			Closure(made) => {
-				codes = site.lowering.program.codes
+				codes = site.context.program.codes
 				callee = codes.get(made) ?? crash "CallLowering.call_items: a function's code"
 				takes_count = match callee.arguments {
 					Each(parameters) => parameters == count
@@ -111,9 +111,9 @@ CallLowering :: [].{
 		record_statements : List(Assembly.Statement),
 	} -> Try(LoweringBasics.Lowered, [Refused(Str)])
 	direct_call_items = |site, { state, count, made, record_statements }| {
-		callee = match site.lowering.program.codes.get(made) {
+		callee = match site.context.program.codes.get(made) {
 			Ok(code) => code
-			Err(_) => crash "CallLowering.call_items: a function's code"
+			Err(_) => crash "CallLowering.direct_call_items: a function's code"
 		}
 		counted = match callee.arguments {
 			Each(parameters) =>
@@ -133,7 +133,7 @@ CallLowering :: [].{
 		if count > 0 {
 			$items = $items.append(Emit.plus_imm(Rsp, (8 * count).to_i64_wrap()))
 		}
-		result = site.lowering.returns.get(made) ?? crash "CallLowering.call_items: a result"
+		result = site.context.returns.get(made) ?? crash "CallLowering.direct_call_items: a result"
 		Ok(
 			LoweringBasics.falling(
 				$items.append(
@@ -238,7 +238,7 @@ CallLowering :: [].{
 		]
 		for (capture, from) in captures.map_with_index(|from, capture| (capture, from)) {
 			held =
-				if site.lowering.cells.contains(from) {
+				if site.context.cells.contains(from) {
 					Emit.load(Rcx, LoweringBasics.slot_place(from))
 				} else {
 					Emit.zero(Rcx)
@@ -260,7 +260,7 @@ CallLowering :: [].{
 		slot : U64,
 	} -> List(Assembly.Statement)
 	boxed_load_items = |site, { state, slot }|
-		if site.lowering.cells.contains(slot) {
+		if site.context.cells.contains(slot) {
 			[
 				Emit.load(Rax, LoweringBasics.slot_place(slot)),
 				Emit.load(Rax, Emit.mem(Rax, 0)),
@@ -277,7 +277,7 @@ CallLowering :: [].{
 		slot : U64,
 	} -> List(Assembly.Statement)
 	boxed_store_items = |site, { state, slot }|
-		if site.lowering.cells.contains(slot) {
+		if site.context.cells.contains(slot) {
 			[
 				Emit.load(Rcx, LoweringBasics.slot_place(slot)),
 				Emit.load(Rax, LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 1)),
@@ -490,8 +490,8 @@ CallLowering :: [].{
 	try_items = |site, { state, skip, handling }| {
 		target = LoweringBasics.forward(site, skip)
 		depth = state.stack_kinds.len()
-		landing = "${LoweringBasics.place_label(site.lowering, site.at)}_thrown"
-		after = "${LoweringBasics.place_label(site.lowering, site.at)}_tried"
+		landing = "${LoweringBasics.place_label(site.context, site.at)}_thrown"
+		after = "${LoweringBasics.place_label(site.context, site.at)}_tried"
 		widened = {
 			..state,
 			slots: state.slots.map(
@@ -533,7 +533,7 @@ CallLowering :: [].{
 			Emit.mark(landing),
 		]
 			.concat(placed)
-			.concat([Emit.jmp(LoweringBasics.place_label(site.lowering, target)), Emit.mark(after)])
+			.concat([Emit.jmp(LoweringBasics.place_label(site.context, target)), Emit.mark(after)])
 		Ok({
 			statements,
 			falls: Falls(state),

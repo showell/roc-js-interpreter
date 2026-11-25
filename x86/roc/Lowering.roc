@@ -1,10 +1,13 @@
 ## This module lowers a compiled JavaScript program (`Bytecode`) to x86-64
 ## (`Assembly` statements), one instruction's machine code after another, as
-## the VM would run them. It compiles a numeric subset: numbers, booleans and
-## `undefined` in variables and on the stack, arithmetic and comparisons,
-## `if`, the loops and the logical operators, function declarations called
-## by name (recursion included), and `console.log`. Anything else is refused,
-## by name, before a byte is written.
+## the VM would run them. It holds the passes over the program's functions
+## until their kinds settle (`program_items`), the walk over one function's
+## instructions, and the match that hands each instruction to the module
+## that lowers its family: `OperatorLowering`, `BuiltinLowering` and
+## `CallLowering`, beside `KnownFunctions`, which finds the functions known
+## before the program runs, and `LoweringBasics`, the types and basics they
+## all share. What it can't lower yet, a class for one, is refused by name
+## before a byte is written.
 ##
 ## **EVERY VALUE'S KIND IS KNOWN BEFORE THE PROGRAM RUNS.** The lowering
 ## walks each function's instructions in order and keeps, for each slot of
@@ -22,20 +25,21 @@
 ## slot; the result comes back in `rax`.
 ##
 ## **A FUNCTION KNOWN BEFORE THE PROGRAM RUNS TAKES NO BYTES.** A function
-## whose captures are all names of such functions (`statics_of`: fib, which
-## captures only itself) is known by its code alone, as `Function(code)`,
-## and called directly. Where it is used as a value (stored, passed,
-## returned) it becomes its closure record in the read-only segment, boxed
-## with `Boxing.function_tag`, and it is `escaped_codes`. Any other function is
-## made as it runs: `MakeClosure` takes a record from the heap and fills it
-## with the cells of the variables it captures (`Boxing.roc` has the
-## layout). A variable a closure captures, and that holds a value, lives in a
-## cell of 8 bytes on the heap, its slot holding the cell's address, as the
-## VM's box; its kind is `Value`. A call of a function known by its code is a
-## direct call, `rbx` holding the record when it has one; any other is a
-## call through the value, which enters the code at its value entry with
-## `rcx` the count of arguments. A function a value may hold takes `Value`
-## parameters, since no call shows what reaches it that way.
+## whose captures are all names of such functions (`KnownFunctions.statics_of`:
+## fib, which captures only itself) is known by its code alone, as
+## `Function(code)`, and called directly. Where it is used as a value
+## (stored, passed, returned) it becomes its closure record in the read-only
+## segment, boxed with `Boxing.function_tag`, and it is `escaped_codes`.
+## Any other function is made as it runs: `MakeClosure` takes a record from
+## the heap and fills it with the cells of the variables it captures
+## (`Boxing.roc` has the layout). A variable a closure captures, and that
+## holds a value, lives in a cell of 8 bytes on the heap, its slot holding
+## the cell's address, as the VM's box; its kind is `Value`. A call of a
+## function known by its code is a direct call, `rbx` holding the record
+## when it has one; any other is a call through the value, which enters the
+## code at its value entry with `rcx` the count of arguments. A function a
+## value may hold takes `Value` parameters, since no call shows what reaches
+## it that way.
 import js.Bytecode
 import js.ValueRules
 import Assembly
@@ -68,7 +72,8 @@ Lowering :: [].{
 			$returns = $returns.insert(index, Number)
 		}
 		var $parameters = Dict.empty()
-		for _ in 0..<8 {
+		known = { program, makers, statics }
+		for _ in 0..<most_passes {
 			var $items = Runtime.start_items(LoweringBasics.code_label(program.main))
 			var $found = $returns
 			var $called = Dict.empty()
@@ -80,7 +85,7 @@ Lowering :: [].{
 					makers,
 					statics,
 					escaped_codes: $escaped_codes,
-					cells: KnownFunctions.celled_slots({ program, makers, statics }, index),
+					cells: KnownFunctions.celled_slots(known, index),
 					returns: $returns,
 					parameters: $parameters,
 					literals,
@@ -144,6 +149,18 @@ Lowering :: [].{
 	}
 }
 
+## The most passes over every function before the kinds of their parameters
+## and results must have settled: a program that needs more is refused, so
+## the passes end.
+most_passes : U64
+most_passes = 8
+
+## The most times one function's walk widens a loop's head to `Value` before
+## the loop's kinds must have settled: a loop that keeps changing them is
+## refused, so the walks end.
+most_widenings : U64
+most_widenings = 16
+
 ## The parameters' kinds of every call so far, with one more call met in.
 with_call_kinds : Dict(
 	U64,
@@ -171,11 +188,11 @@ with_call_kinds = |called, { code, kinds }|
 ## pass, or `Value` for a function a value may hold, or that no lowered
 ## call reaches.
 parameter_kind : LoweringBasics.Context, U64 -> LoweringBasics.Kind
-parameter_kind = |lowering, slot|
-	if lowering.escaped_codes.contains(lowering.index) {
+parameter_kind = |context, slot|
+	if context.escaped_codes.contains(context.index) {
 		Value
 	} else {
-		match lowering.parameters.get(lowering.index) {
+		match context.parameters.get(context.index) {
 			Ok(kinds) => kinds.get(slot) ?? crash "Lowering.parameter_kind: a call passes each"
 			Err(_) => Value
 		}
@@ -243,21 +260,13 @@ literal_statements = |literals| {
 ## functions it captures are ready, its other captures hold values, and the
 ## rest are unready.
 start_state : LoweringBasics.Context, Bytecode.Code -> Try(LoweringBasics.State, [Refused(Str)])
-start_state = |lowering, code| {
-	parameters = match code.arguments {
-		Each(count) => count
-		Packed(_) => 0
-	}
-	known = {
-		program: lowering.program,
-		makers: lowering.makers,
-		statics: lowering.statics,
-	}
+start_state = |context, code| {
+	known = known_functions(context)
 	var $slots = List.repeat(Unready, code.frame_size)
-	for slot in 0..<parameters {
+	for slot in 0..<parameter_count(code) {
 		$slots = $slots.set(
 			slot,
-			Ready(parameter_kind(lowering, slot)),
+			Ready(parameter_kind(context, slot)),
 		) ?? crash "Lowering.start_state: a parameter has a slot"
 	}
 	match code.arguments {
@@ -271,10 +280,10 @@ start_state = |lowering, code| {
 			FreshBox(_) => {}
 			FilledBox(slot) => {
 				kind =
-					if lowering.cells.contains(slot) {
+					if context.cells.contains(slot) {
 						Value
 					} else {
-						parameter_kind(lowering, slot)
+						parameter_kind(context, slot)
 					}
 				$slots = $slots.set(
 					slot,
@@ -282,7 +291,7 @@ start_state = |lowering, code| {
 				) ?? crash "Lowering.start_state: a boxed parameter has a slot"
 			}
 			CapturedBox({ slot, capture: _ }) => {
-				kind = match KnownFunctions.held_function(known, { code: lowering.index, slot }) {
+				kind = match KnownFunctions.held_function(known, { code: context.index, slot }) {
 					Ok(made) => Function(made)
 					Err(Unheld) => Value
 				}
@@ -294,7 +303,7 @@ start_state = |lowering, code| {
 		}
 	}
 	for (slot, made) in KnownFunctions.declared_functions(code).to_list() {
-		if lowering.statics.contains(made) {
+		if context.statics.contains(made) {
 			$slots = $slots.set(
 				slot,
 				Ready(Function(made)),
@@ -304,14 +313,31 @@ start_state = |lowering, code| {
 	Ok({ slots: $slots, stack_kinds: [] })
 }
 
+## The count of parameters a code copies to their own slots: none for one
+## that packs its arguments into an array.
+parameter_count : Bytecode.Code -> U64
+parameter_count = |code|
+	match code.arguments {
+		Each(count) => count
+		Packed(_) => 0
+	}
+
+## What `KnownFunctions` reads of a function's context (`Known`).
+known_functions : LoweringBasics.Context -> LoweringBasics.Known
+known_functions = |context| {
+	program: context.program,
+	makers: context.makers,
+	statics: context.statics,
+}
+
 ## The places of the instructions a code starts with that declare its
 ## functions known before the program runs: they make no code, since the
 ## name holds the function from the start.
 skipped_places : LoweringBasics.Context, Bytecode.Code -> List(U64)
-skipped_places = |lowering, code| {
+skipped_places = |context, code| {
 	var $out = []
 	for (slot, made) in KnownFunctions.declared_functions(code).to_list() {
-		if lowering.statics.contains(made) {
+		if context.statics.contains(made) {
 			# Each declaration is a `MakeClosure` then its `SetBoxed`.
 			at = code.ops.find_first_index(
 				|instruction|
@@ -337,7 +363,7 @@ CodeFault : [
 
 ## The refusal of a function's fault, the function named.
 code_refusal : LoweringBasics.Context, CodeFault -> [Refused(Str)]
-code_refusal = |lowering, fault| {
+code_refusal = |context, fault| {
 	why = match fault {
 		LoopChangesKinds(at) => "a loop's kinds never settle, at instruction ${at.to_str()}"
 		TwoResultKinds => "it returns a value and a function"
@@ -345,7 +371,7 @@ code_refusal = |lowering, fault| {
 		TwoSlotKinds(at) => "a variable holds values of two kinds at instruction ${at.to_str()}"
 		FrameTooLarge => "its frame is over a megabyte"
 	}
-	Refused("${LoweringBasics.function_name(lowering)}: ${why}")
+	Refused("${LoweringBasics.function_name(context)}: ${why}")
 }
 
 ## What a function lowers to: its machine code, the kind of what it
@@ -368,19 +394,23 @@ code_items : LoweringBasics.Context -> Try(
 	CodeItems,
 	{ refused : [Refused(Str)], calls : List(LoweringBasics.CallKinds) },
 )
-code_items = |lowering| {
+code_items = |context| {
 	var $heads = Dict.empty()
-	for _ in 0..<16 {
-		match code_walk(lowering, $heads) {
+	# Every walk that doesn't return widens a loop's head, so after the last
+	# one this is the head of the loop whose kinds never settle.
+	var $widened_head = 0
+	for _ in 0..<most_widenings {
+		match code_walk(context, $heads) {
 			Ok(Walked(done)) => return Ok(done)
 			Ok(Widened({ at, state })) => {
 				$heads = $heads.insert(at, state)
+				$widened_head = at
 			}
 			Ok(Halted(halted)) => return Err(halted)
 			Err(refused) => return Err({ refused, calls: [] })
 		}
 	}
-	Err({ refused: code_refusal(lowering, LoopChangesKinds(0)), calls: [] })
+	Err({ refused: code_refusal(context, LoopChangesKinds($widened_head)), calls: [] })
 }
 
 ## One pass of `code_items` with the loop heads widened so far.
@@ -393,17 +423,17 @@ Dict(U64, LoweringBasics.State) -> Try(
 	],
 	[Refused(Str)],
 )
-code_walk = |lowering, heads| {
-	code = lowering.program.codes.get(lowering.index) ?? crash "Lowering.code_items: a code's index"
-	match lowering.makers.get(lowering.index) {
+code_walk = |context, heads| {
+	code = context.program.codes.get(context.index) ?? crash "Lowering.code_walk: a code's index"
+	match context.makers.get(context.index) {
 		Ok({ form: MakesInstances, .. }) => {
-			named = LoweringBasics.function_name(lowering)
+			named = LoweringBasics.function_name(context)
 			return Err(Refused("${named}: a class is not compiled yet"))
 		}
 		_ => {}
 	}
-	start = start_state(lowering, code)?
-	skipped = skipped_places(lowering, code)
+	start = start_state(context, code)?
+	skipped = skipped_places(context, code)
 	var $escaped = []
 	var $body = []
 	var $pending = Dict.empty()
@@ -417,28 +447,28 @@ code_walk = |lowering, heads| {
 			(Flowing(state), Ok(waiting)) => {
 				# A function known by its code that falls to where a jump
 				# brings a value is made a value first.
-				made = values_met(lowering, { state, waiting })
+				made = values_met(context, { state, waiting })
 				$body = $body.concat(made.statements)
 				$escaped = $escaped.concat(made.escaped)
-				Arrives(meeting_state(lowering, { at, one: made.state, other: waiting })?)
+				Arrives(meeting_state(context, { at, one: made.state, other: waiting })?)
 			}
 			(Flowing(state), Err(_)) => Arrives(state)
 			(Stopped, Ok(waiting)) => Arrives(waiting)
 			(Stopped, Err(_)) => Unreached
 		}
-		$body = $body.append(Mark(LoweringBasics.place_label(lowering, at)))
+		$body = $body.append(Mark(LoweringBasics.place_label(context, at)))
 		match arriving {
 			Unreached => {
 				$flowing = Stopped
 			}
 			Arrives(reached) => {
 				state = match heads.get(at) {
-					Ok(head) => meeting_state(lowering, { at, one: reached, other: head })?
+					Ok(head) => meeting_state(context, { at, one: reached, other: head })?
 					Err(_) => reached
 				}
 				$seen = $seen.insert(at, state)
-				instruction = code.ops.get(at) ?? crash "Lowering.code_items: an instruction"
-				site = { lowering, code, at, skipped }
+				instruction = code.ops.get(at) ?? crash "Lowering.code_walk: an instruction"
+				site = { context, code, at, skipped }
 				valued =
 					if skipped.contains(at) {
 						{ statements: [], state, escaped: [] }
@@ -446,7 +476,7 @@ code_walk = |lowering, heads| {
 						values_made(site, { instruction, state })
 					}
 				$escaped = $escaped.concat(valued.escaped)
-				$calls = match call_kinds(lowering, { instruction, state: valued.state }) {
+				$calls = match call_kinds(context, { instruction, state: valued.state }) {
 					Ok(call) => $calls.append(call)
 					Err(NoCall) => $calls
 				}
@@ -471,7 +501,7 @@ code_walk = |lowering, heads| {
 								Ok(waiting) => $pending.insert(
 									target,
 									meeting_state(
-										lowering,
+										context,
 										{
 											at: target,
 											one: waiting,
@@ -482,9 +512,9 @@ code_walk = |lowering, heads| {
 								Err(_) => $pending.insert(target, sent)
 							}
 						} else {
-							head = $seen.get(target) ?? crash "Lowering.code_items: a loop's head"
+							head = $seen.get(target) ?? crash "Lowering.code_walk: a loop's head"
 							again = meeting_state(
-								lowering,
+								context,
 								{
 									at: target,
 									one: head,
@@ -502,7 +532,7 @@ code_walk = |lowering, heads| {
 					(Gives(kind), Gives(before)) =>
 						match LoweringBasics.met_kind(kind, before) {
 							Ok(met) => Gives(met)
-							Err(Apart) => return Err(code_refusal(lowering, TwoResultKinds))
+							Err(Apart) => return Err(code_refusal(context, TwoResultKinds))
 						}
 				}
 			}
@@ -510,9 +540,9 @@ code_walk = |lowering, heads| {
 	}
 	frame_bytes = 8 * (code.frame_size + $deepest)
 	if frame_bytes > 1048576 {
-		return Err(code_refusal(lowering, FrameTooLarge))
+		return Err(code_refusal(context, FrameTooLarge))
 	}
-	statements = entry_items(lowering, { code, frame_bytes }).concat($body)
+	statements = entry_items(context, { code, frame_bytes }).concat($body)
 	Ok(
 		Walked({
 			statements,
@@ -530,12 +560,12 @@ call_kinds : LoweringBasics.Context,
 	instruction : Bytecode.Op,
 	state : LoweringBasics.State,
 } -> Try(LoweringBasics.CallKinds, [NoCall])
-call_kinds = |lowering, { instruction, state }|
+call_kinds = |context, { instruction, state }|
 	match instruction {
 		Call({ count, written: _, at: _ }) =>
 			match LoweringBasics.kind_below(state, count) {
 				Function(made) | Closure(made) => {
-					callee = lowering.program.codes.get(made) ?? crash "Lowering.call_kinds: a code"
+					callee = context.program.codes.get(made) ?? crash "Lowering.call_kinds: a code"
 					kinds = state.stack_kinds.take_last(count)
 					if callee.arguments == Each(count) and kinds.all(LoweringBasics.is_value_kind) {
 						Ok({ code: made, kinds })
@@ -563,12 +593,9 @@ entry_items : LoweringBasics.Context,
 	code : Bytecode.Code,
 	frame_bytes : U64,
 } -> List(Assembly.Statement)
-entry_items = |lowering, { code, frame_bytes }| {
-	index = lowering.index
-	parameters = match code.arguments {
-		Each(count) => count
-		Packed(_) => 0
-	}
+entry_items = |context, { code, frame_bytes }| {
+	index = context.index
+	parameters = parameter_count(code)
 	prologue = [
 		Instruction(Push(Rbp)),
 		Instruction(MovRegReg({ to: Rbp, from: Rsp })),
@@ -588,14 +615,14 @@ entry_items = |lowering, { code, frame_bytes }| {
 	for step in code.entry {
 		match step {
 			CapturedBox({ slot, capture }) =>
-				if lowering.cells.contains(slot) {
+				if context.cells.contains(slot) {
 					$captured = $captured.concat([
 						Emit.load(Rax, Emit.mem(Rbx, (24 + 8 * capture).to_i64_wrap())),
 						Emit.store(LoweringBasics.slot_place(slot), Rax),
 					])
 				}
 			FreshBox(slot) =>
-				if lowering.cells.contains(slot) {
+				if context.cells.contains(slot) {
 					$cells = $cells.concat([
 						Emit.imm(Rsi, Boxing.undefined_bits),
 						Emit.call(Runtime.new_cell),
@@ -603,7 +630,7 @@ entry_items = |lowering, { code, frame_bytes }| {
 					])
 				}
 			FilledBox(slot) =>
-				if lowering.cells.contains(slot) {
+				if context.cells.contains(slot) {
 					$cells = $cells.concat([
 						Emit.load(Rsi, LoweringBasics.slot_place(slot)),
 						Emit.call(Runtime.new_cell),
@@ -642,7 +669,7 @@ entry_items = |lowering, { code, frame_bytes }| {
 		])
 	}
 	through_value =
-		if lowering.escaped_codes.contains(index) {
+		if context.escaped_codes.contains(index) {
 			[Mark(LoweringBasics.value_label(index))]
 				.concat(prologue)
 				.concat($captured)
@@ -709,8 +736,8 @@ values_met : LoweringBasics.Context,
 	state : LoweringBasics.State,
 	waiting : LoweringBasics.State,
 } -> Valued
-values_met = |lowering, { state, waiting }| {
-	code = lowering.program.codes.get(lowering.index) ?? crash "Lowering.values_met: a code's index"
+values_met = |context, { state, waiting }| {
+	code = context.program.codes.get(context.index) ?? crash "Lowering.values_met: a code's index"
 	var $items = []
 	var $kinds = state.stack_kinds
 	var $escaped = []
@@ -772,9 +799,9 @@ meeting_state : LoweringBasics.Context,
 	one : LoweringBasics.State,
 	other : LoweringBasics.State,
 } -> Try(LoweringBasics.State, [Refused(Str)])
-meeting_state = |lowering, { at, one, other }| {
+meeting_state = |context, { at, one, other }| {
 	if one.stack_kinds.len() != other.stack_kinds.len() {
-		return Err(code_refusal(lowering, TwoStacks(at)))
+		return Err(code_refusal(context, TwoStacks(at)))
 	}
 	var $stack_kinds = []
 	for (a, b) in List.map2(
@@ -786,7 +813,7 @@ meeting_state = |lowering, { at, one, other }| {
 			Ok(kind) => {
 				$stack_kinds = $stack_kinds.append(kind)
 			}
-			Err(Apart) => return Err(code_refusal(lowering, TwoStacks(at)))
+			Err(Apart) => return Err(code_refusal(context, TwoStacks(at)))
 		}
 	}
 	var $slots = []
@@ -799,7 +826,7 @@ meeting_state = |lowering, { at, one, other }| {
 			(Ready(left), Ready(right)) =>
 				match LoweringBasics.met_kind(left, right) {
 					Ok(kind) => Ready(kind)
-					Err(Apart) => return Err(code_refusal(lowering, TwoSlotKinds(at)))
+					Err(Apart) => return Err(code_refusal(context, TwoSlotKinds(at)))
 				}
 			(Unready, Unready) => Unready
 			_ => Unsure
@@ -1142,7 +1169,7 @@ instruction_items = |site, { instruction, state }| {
 				Emit.load(Rsi, LoweringBasics.slot_place(slot + 1)),
 				Emit.call(Runtime.next_item),
 				Emit.test(Rdx, Rdx),
-				Emit.jcc(E, LoweringBasics.place_label(site.lowering, target)),
+				Emit.jcc(E, LoweringBasics.place_label(site.context, target)),
 				Emit.store(next_place, Rax),
 				Emit.store(LoweringBasics.slot_place(slot + 1), Rcx),
 			]
@@ -1320,7 +1347,7 @@ instruction_items = |site, { instruction, state }| {
 						Unready,
 					) ?? crash "Lowering.instruction_items: a slot of the frame"
 					made =
-						if site.lowering.cells.contains(slot) {
+						if site.context.cells.contains(slot) {
 							[
 								Emit.imm(Rsi, Boxing.undefined_bits),
 								Emit.call(Runtime.new_cell),
@@ -1333,7 +1360,7 @@ instruction_items = |site, { instruction, state }| {
 				}
 			}
 		CopyBox(slot) =>
-			if site.lowering.cells.contains(slot) {
+			if site.context.cells.contains(slot) {
 				copied = [
 					Emit.load(Rax, LoweringBasics.slot_place(slot)),
 					Emit.load(Rsi, Emit.mem(Rax, 0)),
@@ -1350,7 +1377,7 @@ instruction_items = |site, { instruction, state }| {
 			match kind {
 				Fixed => Ok(BuiltinLowering.constant_assigned_items)
 				Mutable =>
-					if site.lowering.cells.contains(slot) {
+					if site.context.cells.contains(slot) {
 						CallLowering.cell_update_items(site, { state, slot, step })
 					} else {
 						LoweringBasics.update_items(site, { state, slot, step })
@@ -1381,7 +1408,7 @@ instruction_items = |site, { instruction, state }| {
 		Jump(skip) => {
 			target = LoweringBasics.forward(site, skip)
 			Ok({
-				statements: [JmpTo(LoweringBasics.place_label(site.lowering, target))],
+				statements: [JmpTo(LoweringBasics.place_label(site.context, target))],
 				falls: Ends,
 				branch: Branch({ target, state }),
 				result: GivesNothing,
@@ -1390,7 +1417,7 @@ instruction_items = |site, { instruction, state }| {
 		Loop(back) => {
 			target = site.at + 1 - back
 			Ok({
-				statements: [JmpTo(LoweringBasics.place_label(site.lowering, target))],
+				statements: [JmpTo(LoweringBasics.place_label(site.context, target))],
 				falls: Ends,
 				branch: Branch({ target, state }),
 				result: GivesNothing,
@@ -1510,7 +1537,7 @@ instruction_items = |site, { instruction, state }| {
 		MakeClosure({ code: made, captures, definition }) =>
 			if definition.unbox().form == MakesInstances {
 				LoweringBasics.refusal(site, "a class is not compiled yet")
-			} else if site.lowering.statics.contains(made) {
+			} else if site.context.statics.contains(made) {
 				Ok(LoweringBasics.falling([], LoweringBasics.with_top(state, Function(made))))
 			} else {
 				Ok(
