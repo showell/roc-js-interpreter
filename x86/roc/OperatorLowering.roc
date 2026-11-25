@@ -159,9 +159,8 @@ OperatorLowering :: [].{
 						]
 						# Two values that may be numbers are added in line when they
 						# are, and by `runtime_add` when either isn't.
-						both_numeric = LoweringBasics.is_numeric(kinds.0) and LoweringBasics.is_numeric(kinds.1)
 						statements =
-							if both_numeric {
+							if LoweringBasics.are_numeric(kinds) {
 								numbers_first_items(
 									site,
 									{
@@ -254,7 +253,7 @@ OperatorLowering :: [].{
 				# Two values that may be numbers are ordered in line when they are,
 				# and by `runtime_compare` when either isn't (two strings).
 				statements =
-					if LoweringBasics.is_numeric(kinds.0) and LoweringBasics.is_numeric(kinds.1) {
+					if LoweringBasics.are_numeric(kinds) {
 						numbers_first_items(
 							site,
 							{

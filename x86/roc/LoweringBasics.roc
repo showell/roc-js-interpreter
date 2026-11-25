@@ -416,6 +416,10 @@ LoweringBasics :: [].{
 			_ => False
 		}
 
+	## Whether two kinds may each be a number.
+	are_numeric : (LoweringBasics.Kind, LoweringBasics.Kind) -> Bool
+	are_numeric = |(one, other)| LoweringBasics.is_numeric(one) and LoweringBasics.is_numeric(other)
+
 	## Whether two kinds may be ordered by `runtime_compare`: two numbers or two
 	## strings, as far as is known.
 	is_ordered : (LoweringBasics.Kind, LoweringBasics.Kind) -> Bool
