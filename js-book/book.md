@@ -273,7 +273,9 @@ Between two instructions every value the program holds is in the machine. The on
 
 ## JavaScript's rules for values
 
-In JavaScript, one operator means different things for different values. `1 + 2` adds, and gives `3`. `"a" + 1` turns the number into text, and gives `"a1"`. `"5" * 2` asks for a string to become a number. A property read varies too: with `o` holding `{ x: 1 }`, `o.x` gives `1`, `o.y` gives `undefined`, and `[1, 2].length` reads a property every array has. Every interpreter carries all of this meaning somewhere.
+This chapter is about the interpreter, the bytecode VM in `js/roc/`. The compiler to x86-64 in `x86/` gives values the same meanings in its runtime's machine code, as `x86/README.md` describes.
+
+In JavaScript, one operator means different things for different values. `1 + 2` adds, and gives `3`. `"a" + 1` turns the number into text, and gives `"a1"`. `"5" * 2` asks for a string to become a number. A property read varies too: with `o` holding `{ x: 1 }`, `o.x` gives `1`, `o.y` gives `undefined`, and `[1, 2].length` reads a property every array has.
 
 Here it is carried by plain Roc functions, one for each piece of meaning: what `+` makes of two values, what a property read gives, what a store does, and the words of each error. The project calls each of these functions a rule. A rule takes values and gives back a value, or stops the run with a message, or throws. The rules live in `ValueRules.roc` and four modules built on it, so each piece of meaning, and each message, has one home.
 
@@ -297,52 +299,55 @@ For `+` and the other operators, the check is one match on two numbers:
 
 The left value is a `Text`, so the match falls through to `Instructions.combined`, which calls `ValueRules.binary`, whose `Add` arm calls `ValueRules.add`. There a string on either side makes both sides text. `ValueRules.text_of` writes the number 1 as `"1"`, as `String(1)` does, and the two join into `Text("a1")`. The VM puts that value in place of the two operands.
 
-The same rules mark the edge of the subset. `true + 1` and `"5" * 2` reach them too, and each stops the run with a message that names the coercion.
+`true + 1` and `"5" * 2` reach the same rules, which mark the subset's edge: each stops the run with a message naming the coercion.
 
 ### A missing property
 
 For `o.y`, `Instructions.property_read` looks through the object's own properties, finds `x` alone, and hands the read to `ValueRules.property`. For an object, that rule gives `Undefined` for a missing name, so `console.log(o.y)` prints `undefined`, as node does.
 
-That rule guards the subset's edge as well. The eight names of `Object.prototype` that `ValueRules.is_prototype_name` lists, `toString`, `hasOwnProperty` and six others, stop the run with a message naming the name, since the subset leaves prototypes out.
+The eight names of `Object.prototype` in `ValueRules.is_prototype_name`, such as `toString`, stop the run with a message, since the subset leaves prototypes out.
 
 ### The cells are lent
 
-Some rules write the heap: a method that makes a new array allocates a cell, and a store that reaches a rule may set a property. So a rule needs the cells, the one list where every shared value lives ({{chapter Memory strategy}}).
+A Roc value stays as it was made, so a write to a list makes a new list. Roc makes that fast with one trick: while exactly one value refers to the list, the write changes it in place. While two do, Roc first copies the whole list, since the other holder must still see the old one. That copy is the copy cliff of {{chapter What copies}}.
 
-Roc writes a list in place only while one value refers to it, and copies the whole list otherwise ({{chapter What copies}}). If the VM's machine and the rule both held the cells, each write a rule made would copy the whole heap. So the VM lends the cells: it takes them out of its own machine, hands them to the rule, and takes them back after.
+The heap is one list of cells, and the VM's machine record holds it ({{chapter Memory strategy}}). Some rules write it: `a.push(1)` reaches `ArrayRules.array_method`, which writes the array's cell, and a method that makes a new array allocates a cell.
 
-`Machine.lent` takes them out, and leaves an empty list in their place:
+If a rule received the cells while the machine still held them, two values would refer to the heap, and the rule's first write would copy all of it. Every `push` would cost the whole heap.
+
+So the VM takes the cells out of its machine, which is left holding an empty list, and hands them to the rule as their one holder. The rule writes in place, and the VM puts back the cells the rule returns. That is all lending means: a hand-off of the only reference, for one call. `Machine.lent` takes the cells out:
 
 {{function js/roc/Machine.roc lent}}
 
-The rule gets a small machine of three fields, `ValueRules.Machine`: the cells, the free list, and the run's status, which the rule may set to a fault or a thrown value. `Machine.shell` builds it. The rule answers a `ValueRules.Got`, its value and the small machine after it. `Machine.with_got` puts the cells and the free list back into the VM's machine, and the value on the stack, or takes on the fault or the throw.
+`Machine.shell` makes what the rule receives, a `ValueRules.Machine` of three fields: the cells, the free list, and the run's status, which the rule may set to a fault or a thrown value:
 
-The VM lends the cells to a rule
+{{function js/roc/Machine.roc shell}}
+
+The rule answers a `ValueRules.Got`, its value and that record after it. `Machine.with_got` puts the cells and the free list back, and the value on the stack, or takes on the fault or the throw.
+
+Who holds the cells around a rule
 ```dot
 digraph {
-  rankdir=LR;
   node [shape=box, style=rounded];
-  vm [label="the VM's machine"];
-  rule [label="a rule"];
-  stack [label="the stack"];
-  vm -> rule [label="Machine.lent"];
-  rule -> vm [label="Machine.with_got"];
-  rule -> stack [label="its value"];
+  before [label="before: the machine\nholds the cells"];
+  during [label="during: the machine holds []\nthe rule holds the cells"];
+  after [label="after: the machine holds\nthe rule's cells"];
+  before -> during [label="Machine.lent"];
+  during -> after [label="Machine.with_got"];
 }
 ```
 
-While the rule runs, its small machine is the one value that refers to the cells, so each write it makes is in place. `ValueRules.roc`'s header records a shorter design that was set aside: a rule that takes the VM's whole machine, as an open record, is shorter to call, but the dev build ({{chapter Dev and release builds disagree}}) copies the cells a rule writes through one.
-
+The allocation controls check it ({{chapter Dev and release builds disagree}}). 05-array-push pushes through this path, and the release build is held to exactly one allocation a pass, its list of arguments (`js/controls/expected.txt`); a copy of the heap at each push would be a second.
 ### The four modules on it
 
-`ValueRules` holds the operators, the property reads and writes, and the patterns. Four modules hold the rest, one kind of value each, and each takes the lent machine first and answers a `Got`:
+`ValueRules` holds the operators, the property reads and writes, and the patterns. Four modules hold the rest, one kind of value each, and each takes the lent cells and answers a `Got`:
 
-- **`StringRules`** holds the methods of strings (`text_method`). Those that count by position take ASCII text alone, since JavaScript counts UTF-16 units and the interpreter's strings are UTF-8.
-- **`ArrayRules`** holds `push`, `pop`, `splice` and the other array methods that take only values (`array_method`). The methods that call a function of the program, `map`, `filter`, `sort` and the rest, run the VM's loop, so the VM runs them itself.
-- **`CollectionRules`** holds the walks over arrays, strings, Maps and Sets that a spread, a pattern and `for ... of` make, and the methods of Maps and Sets.
-- **`BuiltinRules`** holds the globals a program starts with, what `new` makes, and the builtins that give a value alone. `console.log`, the canvas's calls and the timers make an effect or call back, and the VM runs them.
+- **`StringRules`**: the methods of strings (`text_method`), those that count by position on ASCII text alone.
+- **`ArrayRules`**: `push`, `pop`, `splice` and the other array methods that take only values. `map`, `filter`, `sort` and the others that call the program back run the VM's loop, so the VM runs them.
+- **`CollectionRules`**: the walks that a spread, a pattern and `for ... of` make, and the methods of Maps and Sets.
+- **`BuiltinRules`**: the starting globals, what `new` makes, and the builtins that give a value alone.
 
-The program's own functions and the host stay with the VM.
+`console.log`, the canvas, the timers, the program's own functions and the host stay with the VM.
 
 ## A canvas in the browser
 
