@@ -87,7 +87,12 @@ BuiltinLowering :: [].{
 				LoweringBasics.falling([], LoweringBasics.with_top(state, ErrorClass(name))),
 			)
 			Ok(name) if name == "Map" or name == "Set" =>
-				Ok(LoweringBasics.falling([], LoweringBasics.with_top(state, CollectionClass(name))))
+				Ok(
+					LoweringBasics.falling(
+						[],
+						LoweringBasics.with_top(state, CollectionClass(name)),
+					),
+				)
 			Ok(name) if timer_names.contains(name) => Ok(
 				LoweringBasics.falling([], LoweringBasics.with_top(state, TimerFunction(name))),
 			)
@@ -165,7 +170,15 @@ BuiltinLowering :: [].{
 
 	## The methods of a string compiled here.
 	string_methods : List(Str)
-	string_methods = ["charAt", "charCodeAt", "indexOf", "includes", "split", "slice", "lastIndexOf"]
+	string_methods = [
+		"charAt",
+		"charCodeAt",
+		"indexOf",
+		"includes",
+		"split",
+		"slice",
+		"lastIndexOf",
+	]
 
 	## An array's `push` of each argument in turn, its answer the length
 	## after the last, its `pop`, its `map`, `filter`, `forEach` and `reduce`
@@ -444,10 +457,10 @@ BuiltinLowering :: [].{
 				]
 				Ok(LoweringBasics.falling(called, after(String)))
 			}
-			_ => LoweringBasics.refusal(
-				site,
-				"`${name}` with ${LoweringBasics.count_text(count, "argument")} is not compiled yet",
-			)
+			_ => {
+				given = LoweringBasics.count_text(count, "argument")
+				LoweringBasics.refusal(site, "`${name}` with ${given} is not compiled yet")
+			}
 		}
 	}
 
@@ -532,7 +545,10 @@ BuiltinLowering :: [].{
 						),
 					),
 				)
-			_ => LoweringBasics.refusal(site, "the property `${key}` of `${owner}` is not compiled yet")
+			_ => LoweringBasics.refusal(
+				site,
+				"the property `${key}` of `${owner}` is not compiled yet",
+			)
 		}
 	}
 
@@ -645,11 +661,10 @@ BuiltinLowering :: [].{
 					])
 				Ok(LoweringBasics.falling(called, after(String)))
 			}
-			("Math", "sin") | ("Math", "cos") | ("Math", "tan") | ("Math", "atan") =>
-				LoweringBasics.refusal(
-					site,
-					"`Math.${name}` is not compiled yet: node's last digits are V8's port of fdlibm's",
-				)
+			("Math", "sin") | ("Math", "cos") | ("Math", "tan") | ("Math", "atan") => {
+				why = "node's last digits are V8's port of fdlibm's"
+				LoweringBasics.refusal(site, "`Math.${name}` is not compiled yet: ${why}")
+			}
 			("Object", _) if count >= 1 and LoweringBasics.is_value_kind(
 				LoweringBasics.kind_below(state, count - 1),
 			) => {
@@ -716,7 +731,10 @@ BuiltinLowering :: [].{
 				Ok(
 					LoweringBasics.falling(
 						called,
-						LoweringBasics.with_top(LoweringBasics.without_top(state, count + 1), Value),
+						LoweringBasics.with_top(
+							LoweringBasics.without_top(state, count + 1),
+							Value,
+						),
 					),
 				)
 			}
@@ -743,10 +761,8 @@ BuiltinLowering :: [].{
 			}
 			_ => {
 				given = LoweringBasics.count_text(count, "argument")
-				LoweringBasics.refusal(
-					site,
-					"`${name}` with ${given} (a timer's arguments past its delay) is not compiled yet",
-				)
+				counted = "${given} (a timer's arguments past its delay)"
+				LoweringBasics.refusal(site, "`${name}` with ${counted} is not compiled yet")
 			}
 		}
 	}

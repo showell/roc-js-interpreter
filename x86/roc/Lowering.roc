@@ -2396,7 +2396,10 @@ instruction_items = |site, { instruction, state }| {
 		}
 		Construct({ count, callee: _, at: _ }) =>
 			match LoweringBasics.kind_below(state, count) {
-				ErrorClass(name) if count <= 1 => BuiltinLowering.error_items(site, { state, count, name })
+				ErrorClass(name) if count <= 1 => BuiltinLowering.error_items(
+					site,
+					{ state, count, name },
+				)
 				CollectionClass(name) if count <= 1 => {
 					given =
 						if count == 0 {
