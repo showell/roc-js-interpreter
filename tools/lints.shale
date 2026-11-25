@@ -79,13 +79,16 @@ const HELD = {
   ["js/find_awkward_names/short_name"] = 32,
   ["js/find_awkward_names/worker_name"] = 3,
   ["js/find_awkward_names/bare_participle"] = 34,
-  ["js/find_awkward_names/phrase_name"] = 7,
+  -- 9: the 7 at the move, and Parser.roc's `for_statement` and
+  -- `for_of_rest`, which the recipe passed as makers of Parser's own type
+  -- (`Parser.Parsed`) until that type moved to ParserBasics.
+  ["js/find_awkward_names/phrase_name"] = 9,
   ["js/find_awkward_names/singular_list"] = 10,
   ["js/find_awkward_names/stale_doc_name"] = 1,
-  ["js/check_and_fix_group_stacking/to stack"] = 414,
+  ["js/check_and_fix_group_stacking/to stack"] = 413,
   ["js/check_and_fix_group_stacking/to unstack"] = 3,
-  ["js/check_and_fix_group_stacking/long"] = 122,
-  ["js/check_and_fix_group_stacking/wide string"] = 152,
+  ["js/check_and_fix_group_stacking/long"] = 119,
+  ["js/check_and_fix_group_stacking/wide string"] = 143,
   ["js-book/check_and_fix_group_stacking/long"] = 1,
   ["js/find_and_remove_extra_parentheses/paren_if"] = 1,
   ["js/find_and_remove_extra_parentheses/lambda_if"] = 1,

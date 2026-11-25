@@ -35,7 +35,12 @@ ParserBasics :: [].{
 		receiver : ParserBasics.Receiver,
 	}
 
-	Enclosure : [Looping, Switching, LoopLabel(Str), BlockLabel(Str)]
+	Enclosure : [
+		Looping,
+		Switching,
+		LoopLabel(Str),
+		BlockLabel(Str),
+	]
 
 	# The parser inside one more statement a `break` or a `continue` may
 	# leave, and back out of it after, to where it was before.
@@ -160,7 +165,10 @@ ParserBasics :: [].{
 		current = ParserBasics.token(parser)
 		if ParserBasics.is_punct(parser, ";") {
 			Ok(ParserBasics.advance(parser))
-		} else if ParserBasics.is_punct(parser, "}") or current.kind == End or current.before == NewLine {
+		} else if ParserBasics.is_punct(
+			parser,
+			"}",
+		) or current.kind == End or current.before == NewLine {
 			Ok(parser)
 		} else {
 			Err(
@@ -177,7 +185,12 @@ ParserBasics :: [].{
 		match ParserBasics.token(parser).kind {
 			Name(text) => {
 				if ParserBasics.is_reserved(text) {
-					Err(ParserBasics.fault_here(parser, "`${text}` is a reserved word, not ${what}"))
+					Err(
+						ParserBasics.fault_here(
+							parser,
+							"`${text}` is a reserved word, not ${what}",
+						),
+					)
 				} else if parser.class_names.contains(text) {
 					Err(ParserBasics.fault_here(parser, ParserBasics.class_redeclared(text)))
 				} else {
@@ -185,7 +198,10 @@ ParserBasics :: [].{
 				}
 			}
 			other => Err(
-				ParserBasics.fault_here(parser, "expected ${what}, found ${ParserBasics.token_text(other)}"),
+				ParserBasics.fault_here(
+					parser,
+					"expected ${what}, found ${ParserBasics.token_text(other)}",
+				),
 			)
 		}
 
@@ -319,7 +335,10 @@ ParserBasics :: [].{
 	after_binding : ParserBasics.State -> ParserBasics.State
 	after_binding = |parser|
 		if ParserBasics.is_punct(parser, "[") or ParserBasics.is_punct(parser, "{") {
-			{ ..parser, at: U64.min(ParserBasics.matching_close(parser) + 1, parser.tokens.len() - 1) }
+			{
+				..parser,
+				at: U64.min(ParserBasics.matching_close(parser) + 1, parser.tokens.len() - 1),
+			}
 		} else {
 			ParserBasics.advance(parser)
 		}

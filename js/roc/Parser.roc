@@ -84,7 +84,9 @@ Parser :: [].{
 					for d in declarations {
 						for name in Ast.pattern_names(d.pattern) {
 							if $names.contains(name) {
-								return Err(ParserBasics.fault_at(d.at, Parser.redeclared_message(name)))
+								return Err(
+									ParserBasics.fault_at(d.at, Parser.redeclared_message(name)),
+								)
 							}
 							$names = $names.append(name)
 							$lexical = $lexical.append(name)
@@ -158,11 +160,21 @@ Parser :: [].{
 				})
 			}
 			Name("do") => {
-				body = Parser.body_statement(ParserBasics.inside(ParserBasics.advance(parser), Looping))?
+				body = Parser.body_statement(
+					ParserBasics.inside(ParserBasics.advance(parser), Looping),
+				)?
 				if !ParserBasics.is_word(body.parser, "while") {
-					return Err(ParserBasics.fault_here(body.parser, "expected `while` after a `do` loop's body"))
+					return Err(
+						ParserBasics.fault_here(
+							body.parser,
+							"expected `while` after a `do` loop's body",
+						),
+					)
 				}
-				onward = ParserBasics.expect_punct(ParserBasics.advance(ParserBasics.outside(body.parser, parser)), "(")?
+				onward = ParserBasics.expect_punct(
+					ParserBasics.advance(ParserBasics.outside(body.parser, parser)),
+					"(",
+				)?
 				test = Parser.expression(onward)?
 				closed = ParserBasics.expect_punct(test.parser, ")")?
 				# JavaScript ends a `do ... while` at its `)`, with or without a `;`.
@@ -209,7 +221,10 @@ Parser :: [].{
 				} else {
 					parsed_expression = Parser.expression(onward)?
 					q2 = ParserBasics.end_of_statement(parsed_expression.parser)?
-					Ok({ parser: q2, value: Throw(parsed_expression.value, ParserBasics.where_of(current)) })
+					Ok({
+						parser: q2,
+						value: Throw(parsed_expression.value, ParserBasics.where_of(current)),
+					})
 				}
 			}
 			Name("break") => Parser.jump(parser, Breaking)
@@ -257,15 +272,24 @@ Parser :: [].{
 		while !ParserBasics.is_punct($at, "}") {
 			test = if ParserBasics.is_word($at, "case") {
 				parsed = Parser.expression(ParserBasics.advance($at))?
-				{ parser: ParserBasics.expect_punct(parsed.parser, ":")?, value: Matches(parsed.value) }
+				{
+					parser: ParserBasics.expect_punct(parsed.parser, ":")?,
+					value: Matches(parsed.value),
+				}
 			} else if ParserBasics.is_word($at, "default") {
 				if $defaults > 0 {
 					return Err(
-						ParserBasics.fault_here($at, "SyntaxError: More than one default clause in switch statement"),
+						ParserBasics.fault_here(
+							$at,
+							"SyntaxError: More than one default clause in switch statement",
+						),
 					)
 				}
 				$defaults = $defaults + 1
-				{ parser: ParserBasics.expect_punct(ParserBasics.advance($at), ":")?, value: Otherwise }
+				{
+					parser: ParserBasics.expect_punct(ParserBasics.advance($at), ":")?,
+					value: Otherwise,
+				}
 			} else {
 				return Err(
 					ParserBasics.fault_here(
@@ -276,9 +300,14 @@ Parser :: [].{
 			}
 			var $body = []
 			var $p = test.parser
-			while !ParserBasics.is_punct($p, "}") and !ParserBasics.is_word($p, "case") and !ParserBasics.is_word($p, "default") {
+			while !ParserBasics.is_punct($p, "}") and !ParserBasics.is_word(
+				$p,
+				"case",
+			) and !ParserBasics.is_word($p, "default") {
 				if ParserBasics.is_end($p) {
-					return Err(ParserBasics.fault_here($p, "a `switch` that never ends (expected `}`)"))
+					return Err(
+						ParserBasics.fault_here($p, "a `switch` that never ends (expected `}`)"),
+					)
 				}
 				parsed = Parser.statement($p)?
 				$body = $body.append(parsed.value)
@@ -315,7 +344,10 @@ Parser :: [].{
 		}
 		match (handler.value, finalizer.value) {
 			(Uncaught, NoFinally) => Err(
-				ParserBasics.fault_here(finalizer.parser, "SyntaxError: Missing catch or finally after try"),
+				ParserBasics.fault_here(
+					finalizer.parser,
+					"SyntaxError: Missing catch or finally after try",
+				),
 			)
 			_ => Ok({
 				parser: finalizer.parser,
@@ -330,7 +362,10 @@ Parser :: [].{
 
 	# A `catch` and its block, the name or pattern it binds in parentheses, or
 	# none.
-	catch_clause : ParserBasics.State -> Try(ParserBasics.Parsed([Caught(Ast.CatchClause), Uncaught]), Lexer.Fault)
+	catch_clause : ParserBasics.State -> Try(
+		ParserBasics.Parsed([Caught(Ast.CatchClause), Uncaught]),
+		Lexer.Fault,
+	)
 	catch_clause = |parser| {
 		site = ParserBasics.here(parser)
 		before = parser.functions
@@ -381,10 +416,19 @@ Parser :: [].{
 
 	# A statement with a label: a loop holds the label itself, and any other
 	# statement is `Labelled`.
-	labelled_statement : ParserBasics.State, Str -> Try(ParserBasics.Parsed(Ast.Statement), Lexer.Fault)
+	labelled_statement : ParserBasics.State,
+	Str -> Try(
+		ParserBasics.Parsed(Ast.Statement),
+		Lexer.Fault,
+	)
 	labelled_statement = |parser, name| {
 		if parser.enclosing.contains(LoopLabel(name)) or parser.enclosing.contains(BlockLabel(name)) {
-			return Err(ParserBasics.fault_here(parser, "SyntaxError: Label '${name}' has already been declared"))
+			return Err(
+				ParserBasics.fault_here(
+					parser,
+					"SyntaxError: Label '${name}' has already been declared",
+				),
+			)
 		}
 		after_colon = ParserBasics.advance(ParserBasics.advance(parser))
 		enclosure = if ParserBasics.is_loop_start(after_colon) {
@@ -450,7 +494,9 @@ Parser :: [].{
 		var $statements = []
 		while !ParserBasics.is_punct($onward, "}") {
 			if ParserBasics.is_end($onward) {
-				return Err(ParserBasics.fault_here($onward, "a block that never ends (expected `}`)"))
+				return Err(
+					ParserBasics.fault_here($onward, "a block that never ends (expected `}`)"),
+				)
 			}
 			parsed = Parser.statement($onward)?
 			$onward = parsed.parser
@@ -482,14 +528,22 @@ Parser :: [].{
 		}
 	}
 
-	declaration : ParserBasics.State, Ast.Binding -> Try(ParserBasics.Parsed(Ast.Statement), Lexer.Fault)
+	declaration : ParserBasics.State,
+	Ast.Binding -> Try(
+		ParserBasics.Parsed(Ast.Statement),
+		Lexer.Fault,
+	)
 	declaration = |parser, binding| {
 		parsed = Parser.declarators(ParserBasics.advance(parser), binding)?
 		onward = ParserBasics.end_of_statement(parsed.parser)?
 		Ok({ parser: onward, value: Declare(binding, parsed.value) })
 	}
 
-	declarators : ParserBasics.State, Ast.Binding -> Try(ParserBasics.Parsed(List(Ast.Declarator)), Lexer.Fault)
+	declarators : ParserBasics.State,
+	Ast.Binding -> Try(
+		ParserBasics.Parsed(List(Ast.Declarator)),
+		Lexer.Fault,
+	)
 	declarators = |parser, binding| {
 		var $onward = parser
 		var $out = []
@@ -566,7 +620,11 @@ Parser :: [].{
 	# are names; an assignment's may be any target.
 	PatternMode : [Declaring, Assigning]
 
-	pattern : ParserBasics.State, Parser.PatternMode -> Try(ParserBasics.Parsed(Ast.Pattern), Lexer.Fault)
+	pattern : ParserBasics.State,
+	Parser.PatternMode -> Try(
+		ParserBasics.Parsed(Ast.Pattern),
+		Lexer.Fault,
+	)
 	pattern = |parser, mode|
 		if ParserBasics.is_punct(parser, "[") {
 			Parser.array_pattern(ParserBasics.advance(parser), mode)
@@ -591,7 +649,11 @@ Parser :: [].{
 		}
 
 	# An array pattern after its `[`.
-	array_pattern : ParserBasics.State, Parser.PatternMode -> Try(ParserBasics.Parsed(Ast.Pattern), Lexer.Fault)
+	array_pattern : ParserBasics.State,
+	Parser.PatternMode -> Try(
+		ParserBasics.Parsed(Ast.Pattern),
+		Lexer.Fault,
+	)
 	array_pattern = |parser, mode| {
 		var $onward = parser
 		var $items = []
@@ -603,7 +665,12 @@ Parser :: [].{
 			} else if ParserBasics.is_punct($onward, "...") {
 				parsed = Parser.pattern(ParserBasics.advance($onward), mode)?
 				if !ParserBasics.is_punct(parsed.parser, "]") {
-					return Err(ParserBasics.fault_here(parsed.parser, "SyntaxError: Rest element must be last element"))
+					return Err(
+						ParserBasics.fault_here(
+							parsed.parser,
+							"SyntaxError: Rest element must be last element",
+						),
+					)
 				}
 				$rest = RestOf(parsed.value)
 				$onward = parsed.parser
@@ -618,7 +685,11 @@ Parser :: [].{
 	}
 
 	# An object pattern after its `{`.
-	object_pattern : ParserBasics.State, Parser.PatternMode -> Try(ParserBasics.Parsed(Ast.Pattern), Lexer.Fault)
+	object_pattern : ParserBasics.State,
+	Parser.PatternMode -> Try(
+		ParserBasics.Parsed(Ast.Pattern),
+		Lexer.Fault,
+	)
 	object_pattern = |parser, mode| {
 		var $onward = parser
 		var $properties = []
@@ -635,7 +706,12 @@ Parser :: [].{
 					)
 				}
 				if !ParserBasics.is_punct(parsed.parser, "}") {
-					return Err(ParserBasics.fault_here(parsed.parser, "SyntaxError: Rest element must be last element"))
+					return Err(
+						ParserBasics.fault_here(
+							parsed.parser,
+							"SyntaxError: Rest element must be last element",
+						),
+					)
 				}
 				$rest = RestOf(parsed.value)
 				$onward = parsed.parser
@@ -646,7 +722,9 @@ Parser :: [].{
 					Name(text) => Ok(text)
 					Text(text) => Ok(text)
 					Number(number) => Ok(NumberText.text_for(number))
-					Punct("[") => Err(ParserBasics.fault_here($onward, "unsupported: computed property names"))
+					Punct("[") => Err(
+						ParserBasics.fault_here($onward, "unsupported: computed property names"),
+					)
 					other => Err(
 						ParserBasics.fault_here(
 							$onward,
@@ -667,7 +745,9 @@ Parser :: [].{
 							parser: after,
 							value: Leaf(ToName(text, Unresolved, site)),
 						}
-						_ => return Err(ParserBasics.fault_here(after, "expected `:` after a property's name"))
+						_ => return Err(
+							ParserBasics.fault_here(after, "expected `:` after a property's name"),
+						)
 					}
 				}
 				defaulted = Parser.default_after(bound.parser, bound.value)?
@@ -683,7 +763,11 @@ Parser :: [].{
 	}
 
 	# A pattern's default, `= value`, if one follows it.
-	default_after : ParserBasics.State, Ast.Pattern -> Try(ParserBasics.Parsed(Ast.Default), Lexer.Fault)
+	default_after : ParserBasics.State,
+	Ast.Pattern -> Try(
+		ParserBasics.Parsed(Ast.Default),
+		Lexer.Fault,
+	)
 	default_after = |parser, bound|
 		if ParserBasics.is_punct(parser, "=") {
 			parsed = Parser.assignment(ParserBasics.advance(parser))?
@@ -777,7 +861,11 @@ Parser :: [].{
 		}
 	}
 
-	for_of_rest : ParserBasics.State, Ast.Binding -> Try(ParserBasics.Parsed(Ast.Statement), Lexer.Fault)
+	for_of_rest : ParserBasics.State,
+	Ast.Binding -> Try(
+		ParserBasics.Parsed(Ast.Statement),
+		Lexer.Fault,
+	)
 	for_of_rest = |parser, binding| {
 		site = ParserBasics.here(parser)
 		bound = Parser.pattern(parser, Declaring)?
@@ -905,7 +993,9 @@ Parser :: [].{
 	}
 
 	class_refused : ParserBasics.State, Parser.ClassRefusal -> Try(a, Lexer.Fault)
-	class_refused = |parser, refusal| Err(ParserBasics.fault_here(parser, Parser.class_refusal(refusal)))
+	class_refused = |parser, refusal| Err(
+		ParserBasics.fault_here(parser, Parser.class_refusal(refusal)),
+	)
 
 	# Every name written after `class`, each declared once.
 	class_names_in : List(Lexer.Token) -> Try(List(Str), Lexer.Fault)
@@ -967,7 +1057,10 @@ Parser :: [].{
 			onward = ParserBasics.advance(parser)
 			match ParserBasics.token(onward).kind {
 				Name(text) => match parser.classes.find_first(|parsed| parsed.name == text) {
-					Ok(parent) => Ok({ parser: ParserBasics.advance(onward), value: Extends(parent) })
+					Ok(parent) => Ok({
+						parser: ParserBasics.advance(onward),
+						value: Extends(parent),
+					})
 					Err(NotFound) => Parser.class_refused(onward, ExtendsOther)
 				}
 				_ => Parser.class_refused(onward, ExtendsOther)
@@ -978,7 +1071,11 @@ Parser :: [].{
 
 	# A class's members after its `{`: a constructor, methods and static
 	# methods, each a name, its parameters and its body.
-	class_body : ParserBasics.State, ParserBasics.Parent -> Try(ParserBasics.Parsed(Parser.ClassBody), Lexer.Fault)
+	class_body : ParserBasics.State,
+	ParserBasics.Parent -> Try(
+		ParserBasics.Parsed(Parser.ClassBody),
+		Lexer.Fault,
+	)
 	class_body = |parser, parent| {
 		var $at = parser
 		var $constructor = Default
@@ -1484,7 +1581,9 @@ Parser :: [].{
 				Ok(name_found)
 			}
 			_ => match naming {
-				Declared => Err(ParserBasics.fault_here(parser, "a function declaration without a name"))
+				Declared => Err(
+					ParserBasics.fault_here(parser, "a function declaration without a name"),
+				)
 				Expressed => Ok({ parser: parser, value: "" })
 			}
 		}?
@@ -1521,7 +1620,12 @@ Parser :: [].{
 			}
 			for name in Ast.pattern_names(bound.value) {
 				if $names.contains(name) {
-					return Err(ParserBasics.fault_here(start, "unsupported: two parameters named `${name}`"))
+					return Err(
+						ParserBasics.fault_here(
+							start,
+							"unsupported: two parameters named `${name}`",
+						),
+					)
 				}
 				$names = $names.append(name)
 			}
@@ -1636,7 +1740,12 @@ Parser :: [].{
 	expression = |parser| {
 		parsed_expression = Parser.assignment(parser)?
 		if ParserBasics.is_punct(parsed_expression.parser, ",") {
-			Err(ParserBasics.fault_here(parsed_expression.parser, "unsupported: the comma operator"))
+			Err(
+				ParserBasics.fault_here(
+					parsed_expression.parser,
+					"unsupported: the comma operator",
+				),
+			)
 		} else {
 			Ok(parsed_expression)
 		}
@@ -1671,7 +1780,9 @@ Parser :: [].{
 		Index(object, key, _) => Ok(ToIndex(object, key))
 		ArrayLit(_) => Err(ParserBasics.fault_at(site, "unsupported: destructuring"))
 		ObjectLit(_) => Err(ParserBasics.fault_at(site, "unsupported: destructuring"))
-		Chain(_) => Err(ParserBasics.fault_at(site, "SyntaxError: Invalid left-hand side in assignment"))
+		Chain(_) => Err(
+			ParserBasics.fault_at(site, "SyntaxError: Invalid left-hand side in assignment"),
+		)
 		_ => Err(ParserBasics.fault_at(site, "this can't be assigned to"))
 	}
 
@@ -1687,7 +1798,12 @@ Parser :: [].{
 		match target {
 			ToName(text, _, _) => {
 				if text == "this" {
-					Err(ParserBasics.fault_at(at, "SyntaxError: Invalid left-hand side in assignment"))
+					Err(
+						ParserBasics.fault_at(
+							at,
+							"SyntaxError: Invalid left-hand side in assignment",
+						),
+					)
 				} else if parser.class_names.contains(text) {
 					refused(AssignsClass(text))
 				} else if text.to_utf8().contains('.') {
@@ -1819,7 +1935,11 @@ Parser :: [].{
 			["==", "!="],
 			"unsupported: loose equality, use `===` or `!==`",
 		)?
-		ParserBasics.refuse_operator(parsed.parser, ["&", "|", "^"], "unsupported: bitwise operators")?
+		ParserBasics.refuse_operator(
+			parsed.parser,
+			["&", "|", "^"],
+			"unsupported: bitwise operators",
+		)?
 		Ok(parsed)
 	}
 
@@ -1905,7 +2025,9 @@ Parser :: [].{
 			Name("typeof") => Ok(Operator(TypeOf))
 			Punct("++") => Ok(Prefixed(Increment))
 			Punct("--") => Ok(Prefixed(Decrement))
-			Punct("~") => Err(ParserBasics.fault_here(parser, "unsupported: bitwise operators (`~`)"))
+			Punct("~") => Err(
+				ParserBasics.fault_here(parser, "unsupported: bitwise operators (`~`)"),
+			)
 			_ => Ok(NoOperator)
 		}?
 		match operator {
@@ -2300,7 +2422,9 @@ Parser :: [].{
 			}
 			Text(text) => Ok(text)
 			Number(number) => Ok(NumberText.text_for(number))
-			Punct("[") => Err(ParserBasics.fault_here(parser, "unsupported: computed property names"))
+			Punct("[") => Err(
+				ParserBasics.fault_here(parser, "unsupported: computed property names"),
+			)
 			Punct("*") => Err(ParserBasics.fault_here(parser, "unsupported: generators"))
 			other => Err(
 				ParserBasics.fault_here(
@@ -2336,7 +2460,12 @@ Parser :: [].{
 			match current.kind {
 				Name(text) => {
 					if ParserBasics.is_reserved(text) {
-						Err(ParserBasics.fault_here(parser, "`${text}` is a reserved word, not a name"))
+						Err(
+							ParserBasics.fault_here(
+								parser,
+								"`${text}` is a reserved word, not a name",
+							),
+						)
 					} else {
 						Ok({
 							parser: after,
