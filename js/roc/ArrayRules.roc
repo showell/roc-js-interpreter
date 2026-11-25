@@ -32,12 +32,12 @@ ArrayRules :: [].{
 	first_place : List(Heap.Value), U64, (Heap.Value -> Bool) -> [Place(U64), NoPlace]
 	first_place = |items, from, test| {
 		var $found = NoPlace
-		var $i = 0
+		var $position = 0
 		for item in items {
-			if $found == NoPlace and $i >= from and test(item) {
-				$found = Place($i)
+			if $found == NoPlace and $position >= from and test(item) {
+				$found = Place($position)
 			}
-			$i = $i + 1
+			$position = $position + 1
 		}
 		$found
 	}
@@ -158,12 +158,12 @@ ArrayRules :: [].{
 					target = arguments.first() ?? Undefined
 					items = ValueRules.items_of(machine.cells, id)
 					var $found = -1.0
-					var $i = 0
+					var $position = 0
 					for item in items {
 						if ValueRules.is_strictly_equal(item, target) {
-							$found = $i.to_f64()
+							$found = $position.to_f64()
 						}
-						$i = $i + 1
+						$position = $position + 1
 					}
 					{ machine: machine, value: Number($found) }
 				}

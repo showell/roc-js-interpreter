@@ -1,11 +1,13 @@
 ## This module holds the rules JavaScript's values follow, which the
 ## bytecode VM (`Vm`) calls where its own fast paths stop: what a property
-## read gives and a property write does, what an
-## operator makes of two values, the methods of strings, arrays, Maps and
-## Sets, the builtins that make no effect and call nothing back, and the
-## errors those throw and the faults they stop at, each message in its
-## words. None of them runs a function of the program or reaches the host,
-## so a message has one home.
+## read gives and a property write does, what an operator makes of two
+## values, the walks over arrays, strings, Maps and Sets, the methods of
+## Maps and Sets, the builtins that make no effect and call nothing back,
+## and the errors those throw and the faults they stop at, each message in
+## its words. None of them runs a function of the program or reaches the
+## host, so a message has one home. The methods of strings are
+## StringRules', and those of arrays ArrayRules': each follows the rules
+## below.
 ##
 ## **THE VM LENDS A RULE ITS CELLS.** A rule reads and writes the heap
 ## (`cells`) and the run's `status` (a fault, or a value thrown), and
@@ -25,8 +27,7 @@
 ## **THE RULES TAKE SEVERAL ARGUMENTS, A NAMED EXCEPTION.** As the VM's
 ## handlers do, a rule takes the machine first, then the rest, where the
 ## style guide would take one record: a record holding the machine is a
-## second reference to the heap. `array_method` and `collection_method`,
-## the methods by name, follow it too.
+## second reference to the heap. The methods by name follow it too.
 import Ast
 import Heap
 import Inspect
