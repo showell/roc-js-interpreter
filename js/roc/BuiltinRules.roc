@@ -9,6 +9,7 @@
 ## A builtin follows ValueRules' rules (its module doc): it takes the machine
 ## the VM lends it first, then the rest, and answers a `ValueRules.Got`.
 import Ast
+import CollectionRules
 import Heap
 import Inspect
 import ValueRules
@@ -34,7 +35,7 @@ BuiltinRules :: [].{
 			}
 			match made {
 				Errors(name) => BuiltinRules.error_made(machine, name, arguments, site)
-				Collected(collection) => ValueRules.collection_made(machine, collection, arguments, site)
+				Collected(collection) => CollectionRules.collection_made(machine, collection, arguments, site)
 				Program => ValueRules.fault_got(
 					machine,
 					"unsupported: `new` on a function of the program (constructors and prototypes)${ValueRules.line_note(site)}",
@@ -410,7 +411,7 @@ BuiltinRules :: [].{
 	# a `length` (`{ length: 3 }`, its properties "0" to "2").
 	array_from_values : ValueRules.Machine, Heap.Value -> { machine : ValueRules.Machine, listed : Try(List(Heap.Value), [Unsupported(Str)]) }
 	array_from_values = |machine, source| {
-		{ machine: walked, values: found } = ValueRules.iterated(machine, source)
+		{ machine: walked, values: found } = CollectionRules.iterated(machine, source)
 		listed = match found {
 			Ok(values) => Ok(values)
 			Err(NotIterable) => BuiltinRules.array_like(walked.cells, source)

@@ -75,6 +75,7 @@ import Ast
 import BuiltinRules
 import Bytecode
 import Canvas
+import CollectionRules
 import Collector
 import Events
 import Heap
@@ -1034,7 +1035,7 @@ items_destructured = |machine, origin, at| {
 		machine
 	} else {
 		{ cells, machine: rest } = lent(machine)
-		{ machine: rules, values } = ValueRules.iterated(shell(cells, rest), given)
+		{ machine: rules, values } = CollectionRules.iterated(shell(cells, rest), given)
 		back = with_rules(rest, rules)
 		match values {
 			Ok(items) => {
@@ -1217,7 +1218,7 @@ spread_appended = |machine, source, at| {
 	id = reference_id(value_at(machine, 2))
 	given = value_at(machine, 1)
 	{ cells, machine: rest } = lent(machine)
-	{ machine: ruled, values } = ValueRules.iterated(shell(cells, rest), given)
+	{ machine: ruled, values } = CollectionRules.iterated(shell(cells, rest), given)
 	match values {
 		Ok(items) => dropped({ ..rest, cells: Heap.with_items_pushed(ruled.cells, id, items), free: ruled.free }, 1)
 		Err(NotIterable) => {
@@ -1579,7 +1580,7 @@ method_called! = |host, program, machine, { name, site }| {
 		CollectionMethod(place) => {
 			arguments = arguments_of(machine, count)
 			{ cells, machine: rest } = lent(machine)
-			with_got(rest, ValueRules.collection_method(shell(cells, rest), place, name, arguments, site.at), result_at)
+			with_got(rest, CollectionRules.collection_method(shell(cells, rest), place, name, arguments, site.at), result_at)
 		}
 		Held => called!(host, program, machine, { count: count, result_at: result_at, naming: Written(site.written), at: site.at })
 	}
@@ -2240,7 +2241,7 @@ collection_walk! = |host, program, machine, { id, count, result_at, at }| {
 	var $i = 0
 	var $going = True
 	while $going and is_running($machine) {
-		{ step, after: place } = ValueRules.step_at($machine.cells, id, Entries, $i)
+		{ step, after: place } = CollectionRules.step_at($machine.cells, id, Entries, $i)
 		$i = place
 		match step {
 			YieldPair(key, value) => {
@@ -2310,11 +2311,11 @@ iterated = |machine, slot, exit| {
 
 walk_stepped : Vm.Machine, U64, U64 -> Vm.Machine
 walk_stepped = |machine, id, exit| {
-	{ source, view, next } = ValueRules.iteration_of(machine.cells, id)
+	{ source, view, next } = CollectionRules.iteration_of(machine.cells, id)
 	var $i = next
 	var $step = Skip
 	while $step == Skip {
-		{ step, after } = ValueRules.step_at(machine.cells, source, view, $i)
+		{ step, after } = CollectionRules.step_at(machine.cells, source, view, $i)
 		$step = step
 		$i = after
 	}
