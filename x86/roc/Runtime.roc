@@ -259,6 +259,44 @@ Runtime :: [].{
 	object_listing : Str
 	object_listing = "runtime_object_listing"
 
+	## The routine of `some`, `every`, `find` and `findIndex` (`rdx` 0 to 3)
+	## of the array `rdi` and the function `rsi`, which it calls as `map`
+	## does; it stops at the first item that settles the answer.
+	search : Str
+	search = "runtime_search"
+
+	## The routine of `indexOf` (`r8` 0) and `includes` (1) of the array or
+	## string `rdi`, the value `rsi` sought from the place `rdx` (a number,
+	## when `rcx` is 2): the place, or -1, or whether it was found.
+	index_of : Str
+	index_of = "runtime_index_of"
+
+	## The routine that appends to the array `rdi` (unboxed) the items of
+	## `rsi` when it is an array, else `rsi` itself, as `concat` does.
+	concat_item : Str
+	concat_item = "runtime_concat_item"
+
+	## The routine that sorts the array `rdi` in place, by the function
+	## `rsi`, or by the items' texts when `rsi` is `undefined`, stably, the
+	## `undefined` items last: the array in `rax`.
+	sort : Str
+	sort = "runtime_sort"
+
+	## The routine that reverses the array `rdi` in place: the array in `rax`.
+	reverse : Str
+	reverse = "runtime_reverse"
+
+	## The routine that gives the code of the character of the string `rdi`
+	## at the place `rsi` (a number), or NaN past its end.
+	char_code_at : Str
+	char_code_at = "runtime_char_code_at"
+
+	## The routine that splits the string `rdi` at each place the string
+	## `rsi` is found, a new array of the pieces in `rax`; `""` splits it
+	## into its characters.
+	split : Str
+	split = "runtime_split"
+
 	## The routine that gives `String(v)` of the value `rdi`, boxed, in `rax`.
 	text_of : Str
 	text_of = "runtime_text_of_boxed"
@@ -328,6 +366,9 @@ Runtime :: [].{
 		language_items,
 		exception_items,
 		builtin_items,
+		search_items,
+		sort_items,
+		string_method_items,
 	]
 		.join()
 		.concat(text_statements)
@@ -505,6 +546,28 @@ texts = [
 		),
 	),
 	("runtime_text_object_object", "[object Object]"),
+	(
+		"runtime_text_index_of_place",
+		"x86: `indexOf` or `includes` from a place that is not a number is not compiled yet\n",
+	),
+	(
+		"runtime_text_index_of_sought",
+		Str.concat(
+			"x86: a string's `indexOf` or `includes` of a value that is not a string",
+			" is not compiled yet\n",
+		),
+	),
+	(
+		"runtime_text_sort_answer",
+		Str.concat(
+			"x86: a `sort` whose function gives a value that is not a number, a boolean",
+			" or undefined is not compiled yet\n",
+		),
+	),
+	(
+		"runtime_text_split_separator",
+		"x86: `split` at a value that is not a string is not compiled yet\n",
+	),
 	(
 		"runtime_text_text_of_function",
 		"x86: a string made of a function, its source's text, is not compiled yet\n",
@@ -3432,6 +3495,735 @@ builtin_items = {
 		text_of_boxed,
 		listing,
 	].join()
+}
+
+## `runtime_search`, `runtime_index_of`, `runtime_concat_item` and
+## `runtime_reverse`. A search's frame holds the array (`[rbp - 8]`), the
+## function (16), the kind (24), the place (32), the length it started with
+## (40) and the item (48): `find` and `findIndex` go on to that length,
+## reading `undefined` past the end, while `some` and `every` stop at the end.
+search_items : List(Assembly.Statement)
+search_items = {
+	local = |offset| Emit.mem(Rbp, 0 - offset)
+	answers = |{ label, values }|
+		values
+			.map_with_index(
+				|value, kind| [
+					Emit.cmp_imm(Rdx, kind.to_i64_wrap()),
+					Emit.jcc(Ne, "${label}_not_${kind.to_str()}"),
+					Emit.imm(Rax, value),
+					Emit.jmp("runtime_search_leave"),
+					Emit.mark("${label}_not_${kind.to_str()}"),
+				],
+			)
+			.join()
+	search = [
+		Emit.mark(Runtime.search),
+		Emit.save(Rbp),
+		Emit.mov(Rbp, Rsp),
+		Emit.minus_imm(Rsp, 48),
+	]
+		.concat(array_check_items)
+		.concat([
+			Emit.mov(Rax, Rsi),
+			Emit.call(Runtime.check_function),
+			Emit.store(local(8), Rdi),
+			Emit.store(local(16), Rsi),
+			Emit.store(local(24), Rdx),
+			Emit.zero(Rax),
+			Emit.store(local(32), Rax),
+		])
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.load(Rcx, Emit.mem(Rdi, 0)),
+			Emit.store(local(40), Rcx),
+			Emit.mark("runtime_search_next"),
+			Emit.load(Rdx, local(32)),
+			Emit.load(Rcx, local(40)),
+			Emit.cmp(Rdx, Rcx),
+			Emit.jcc(Ae, "runtime_search_ended"),
+			Emit.load(Rdi, local(8)),
+		])
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.load(R8, Emit.mem(Rdi, 16)),
+			Emit.load(Rcx, Emit.mem(Rdi, 0)),
+			Emit.imm(Rsi, Boxing.undefined_bits),
+			Emit.cmp(Rdx, Rcx),
+			Emit.jcc(Ae, "runtime_search_past"),
+			Emit.load(Rsi, listed_item(Rdx)),
+			Emit.jmp("runtime_search_call"),
+			Emit.mark("runtime_search_past"),
+			Emit.load(Rax, local(24)),
+			Emit.cmp_imm(Rax, 2),
+			Emit.jcc(B, "runtime_search_ended"),
+			Emit.mark("runtime_search_call"),
+			Emit.store(local(48), Rsi),
+			Emit.load(Rdi, local(16)),
+			Emit.load(Rcx, local(8)),
+			Emit.call("runtime_call_back"),
+			Emit.mov(Rdi, Rax),
+			Emit.call(Runtime.truthy),
+			Emit.load(Rdx, local(24)),
+			Emit.cmp_imm(Rdx, 1),
+			Emit.jcc(E, "runtime_search_every"),
+			Emit.test(Rax, Rax),
+			Emit.jcc(Ne, "runtime_search_found"),
+			Emit.jmp("runtime_search_step"),
+			Emit.mark("runtime_search_every"),
+			Emit.test(Rax, Rax),
+			Emit.jcc(E, "runtime_search_found"),
+			Emit.mark("runtime_search_step"),
+			Emit.load(Rax, local(32)),
+			Emit.plus_imm(Rax, 1),
+			Emit.store(local(32), Rax),
+			Emit.jmp("runtime_search_next"),
+			Emit.mark("runtime_search_found"),
+			Emit.load(Rax, local(48)),
+			Emit.cmp_imm(Rdx, 2),
+			Emit.jcc(E, "runtime_search_leave"),
+			Emit.load(Rax, local(32)),
+			Instruction(Cvtsi2sd({ to: Xmm0, from: Rax })),
+			Instruction(MovqFromXmm({ to: Rax, from: Xmm0 })),
+			Emit.cmp_imm(Rdx, 3),
+			Emit.jcc(E, "runtime_search_leave"),
+		])
+		.concat(
+			answers({
+				label: "runtime_search_found",
+				values: [Boxing.true_bits, Boxing.false_bits],
+			}),
+		)
+		.concat([Emit.mark("runtime_search_ended"), Emit.load(Rdx, local(24))])
+		.concat(
+			answers({
+				label: "runtime_search_ended",
+				values: [
+					Boxing.false_bits,
+					Boxing.true_bits,
+					Boxing.undefined_bits,
+					double_bits(-1.0),
+				],
+			}),
+		)
+		.concat([
+			Emit.mark("runtime_search_leave"),
+			Emit.mov(Rsp, Rbp),
+			Emit.restore(Rbp),
+			Emit.ret,
+		])
+	# r9: the place to start from, made whole, NaN 0, held to 2^53 in size;
+	# r11: the kind; r10: the length.
+	start = [
+		Emit.mark(Runtime.index_of),
+		Emit.mov(R11, R8),
+		Emit.zero(R9),
+		Emit.cmp_imm(Rcx, 2),
+		Emit.jcc(B, "runtime_index_of_started"),
+	]
+		.concat(unless_number_items({ reg: Rdx, label: "runtime_index_of_place_stop" }))
+		.concat([
+			Emit.to_xmm(Xmm0, Rdx),
+			Instruction(Ucomisd({ left: Xmm0, right: Xmm0 })),
+			Emit.jcc(P, "runtime_index_of_started"),
+		])
+		.concat(double_items({ to: Xmm1, value: 9007199254740992.0 }))
+		.concat([
+			Emit.imm(R9, 9007199254740992),
+			Instruction(Ucomisd({ left: Xmm0, right: Xmm1 })),
+			Emit.jcc(Ae, "runtime_index_of_started"),
+		])
+		.concat(double_items({ to: Xmm1, value: -9007199254740992.0 }))
+		.concat([
+			Emit.imm(R9, -9007199254740992),
+			Instruction(Ucomisd({ left: Xmm1, right: Xmm0 })),
+			Emit.jcc(Ae, "runtime_index_of_started"),
+			Instruction(Cvttsd2si({ to: R9, from: Xmm0 })),
+			Emit.mark("runtime_index_of_started"),
+		])
+		.concat(tag_load_items(Rdi))
+		.concat([
+			Emit.cmp_imm(Rcx, Boxing.string_tag),
+			Emit.jcc(E, "runtime_index_of_string"),
+			Emit.cmp_imm(Rcx, Boxing.array_tag),
+			Emit.jcc(Ne, "runtime_not_an_array"),
+		])
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.load(R10, Emit.mem(Rdi, 0)),
+			Emit.test(R9, R9),
+			Emit.jcc(Ns, "runtime_index_of_item"),
+			Emit.plus(R9, R10),
+			Emit.test(R9, R9),
+			Emit.jcc(Ns, "runtime_index_of_item"),
+			Emit.zero(R9),
+		])
+	# Each item from r9 on compared by `===`, or as `includes` compares,
+	# NaN the same as NaN.
+	items = [
+		Emit.mark("runtime_index_of_item"),
+		Emit.cmp(R9, R10),
+		Emit.jcc(Ge, "runtime_index_of_none"),
+		Emit.load(R8, Emit.mem(Rdi, 16)),
+		Emit.save(Rdi),
+		Emit.save(Rsi),
+		Emit.save(R9),
+		Emit.save(R10),
+		Emit.save(R11),
+		Emit.load(Rdi, listed_item(R9)),
+		Emit.call(Runtime.strict_equal),
+		Emit.restore(R11),
+		Emit.restore(R10),
+		Emit.restore(R9),
+		Emit.restore(Rsi),
+		Emit.restore(Rdi),
+		Emit.imm(Rcx, Boxing.true_bits),
+		Emit.cmp(Rax, Rcx),
+		Emit.jcc(E, "runtime_index_of_found"),
+		Emit.test(R11, R11),
+		Emit.jcc(E, "runtime_index_of_next"),
+	]
+		.concat(unless_number_items({ reg: Rsi, label: "runtime_index_of_next" }))
+		.concat([
+			Emit.to_xmm(Xmm0, Rsi),
+			Instruction(Ucomisd({ left: Xmm0, right: Xmm0 })),
+			Emit.jcc(Np, "runtime_index_of_next"),
+			Emit.load(R8, Emit.mem(Rdi, 16)),
+			Emit.load(Rax, listed_item(R9)),
+		])
+		.concat(unless_number_items({ reg: Rax, label: "runtime_index_of_next" }))
+		.concat([
+			Emit.to_xmm(Xmm0, Rax),
+			Instruction(Ucomisd({ left: Xmm0, right: Xmm0 })),
+			Emit.jcc(P, "runtime_index_of_found"),
+			Emit.mark("runtime_index_of_next"),
+			Emit.plus_imm(R9, 1),
+			Emit.jmp("runtime_index_of_item"),
+		])
+	# A string: the place held between 0 and the length, then each place
+	# from it where the string sought fits, compared byte by byte.
+	string_search =
+		[Emit.mark("runtime_index_of_string")]
+			.concat(unless_string_items({ reg: Rsi, label: "runtime_index_of_sought_stop" }))
+			.concat(unboxed_items(Rdi))
+			.concat(unboxed_items(Rsi))
+			.concat([
+				Emit.load(R10, Emit.mem(Rdi, 0)),
+				Emit.test(R9, R9),
+				Emit.jcc(Ns, "runtime_index_of_low"),
+				Emit.zero(R9),
+				Emit.mark("runtime_index_of_low"),
+				Emit.cmp(R9, R10),
+				Emit.jcc(Le, "runtime_index_of_place"),
+				Emit.mov(R9, R10),
+				Emit.mark("runtime_index_of_place"),
+				Emit.load(Rdx, Emit.mem(Rsi, 0)),
+				Emit.mov(Rax, R9),
+				Emit.plus(Rax, Rdx),
+				Emit.cmp(Rax, R10),
+				Emit.jcc(G, "runtime_index_of_none"),
+				Emit.zero(Rcx),
+				Emit.mark("runtime_index_of_byte"),
+				Emit.cmp(Rcx, Rdx),
+				Emit.jcc(E, "runtime_index_of_found"),
+				Emit.mov(R8, R9),
+				Emit.plus(R8, Rcx),
+				text_byte_item({ reg: Rax, base: Rdi }),
+				Emit.mov(R8, Rcx),
+				text_byte_item({ reg: R8, base: Rsi }),
+				Emit.cmp(Rax, R8),
+				Emit.jcc(Ne, "runtime_index_of_string_next"),
+				Emit.plus_imm(Rcx, 1),
+				Emit.jmp("runtime_index_of_byte"),
+				Emit.mark("runtime_index_of_string_next"),
+				Emit.plus_imm(R9, 1),
+				Emit.jmp("runtime_index_of_place"),
+			])
+	answered = [
+		Emit.mark("runtime_index_of_found"),
+		Emit.imm(Rax, Boxing.true_bits),
+		Emit.test(R11, R11),
+		Emit.jcc(Ne, "runtime_index_of_done"),
+		Instruction(Cvtsi2sd({ to: Xmm0, from: R9 })),
+		Instruction(MovqFromXmm({ to: Rax, from: Xmm0 })),
+		Emit.ret,
+		Emit.mark("runtime_index_of_none"),
+		Emit.imm(Rax, Boxing.false_bits),
+		Emit.test(R11, R11),
+		Emit.jcc(Ne, "runtime_index_of_done"),
+		Emit.imm(Rax, double_bits(-1.0)),
+		Emit.mark("runtime_index_of_done"),
+		Emit.ret,
+		Emit.mark("runtime_index_of_place_stop"),
+	]
+		.concat(stopping_items("runtime_text_index_of_place"))
+		.append(Emit.mark("runtime_index_of_sought_stop"))
+		.concat(stopping_items("runtime_text_index_of_sought"))
+	# r9: the items appended, r10 their count, r11 the place.
+	concat_item =
+		[Emit.mark(Runtime.concat_item)]
+			.concat(tag_load_items(Rsi))
+			.concat([
+				Emit.cmp_imm(Rcx, Boxing.array_tag),
+				Emit.jcc(E, "runtime_concat_items"),
+				Emit.jmp("runtime_push_item"),
+				Emit.mark("runtime_concat_items"),
+			])
+			.concat(unboxed_items(Rsi))
+			.concat([
+				Emit.mov(R9, Rsi),
+				Emit.zero(R11),
+				Emit.mark("runtime_concat_next"),
+				Emit.load(R10, Emit.mem(R9, 0)),
+				Emit.cmp(R11, R10),
+				Emit.jcc(E, "runtime_concat_done"),
+				Emit.load(R8, Emit.mem(R9, 16)),
+				Emit.load(Rsi, listed_item(R11)),
+				Emit.save(R9),
+				Emit.save(R11),
+				Emit.call("runtime_push_item"),
+				Emit.restore(R11),
+				Emit.restore(R9),
+				Emit.plus_imm(R11, 1),
+				Emit.jmp("runtime_concat_next"),
+				Emit.mark("runtime_concat_done"),
+				Emit.ret,
+			])
+	# rdx and r9 walk in from both ends, swapping.
+	reverse =
+		[Emit.mark(Runtime.reverse), Emit.mov(Rax, Rdi)]
+			.concat(array_check_items)
+			.concat(unboxed_items(Rdi))
+			.concat([
+				Emit.load(R8, Emit.mem(Rdi, 16)),
+				Emit.zero(Rdx),
+				Emit.load(R9, Emit.mem(Rdi, 0)),
+				Emit.mark("runtime_reverse_next"),
+				Emit.minus_imm(R9, 1),
+				Emit.cmp(Rdx, R9),
+				Emit.jcc(Ge, "runtime_reverse_done"),
+				Emit.load(Rcx, listed_item(Rdx)),
+				Emit.load(R10, listed_item(R9)),
+				Emit.store(listed_item(Rdx), R10),
+				Emit.store(listed_item(R9), Rcx),
+				Emit.plus_imm(Rdx, 1),
+				Emit.jmp("runtime_reverse_next"),
+				Emit.mark("runtime_reverse_done"),
+				Emit.ret,
+			])
+	[
+		search,
+		start,
+		items,
+		string_search,
+		answered,
+		concat_item,
+		reverse,
+	].join()
+}
+
+## `runtime_sort`: a merge sort, stable, of the items that aren't
+## `undefined`, from one list to another in runs of 1, 2, 4 and on, a
+## run's item taken from the right only when the comparison says the left
+## one is greater; then the `undefined` items after them. Its frame holds
+## the array (`[rbp - 8]`), the function or `undefined` (16), the count
+## sorted (24), the list read (32), the list written (40), the run's width
+## (48), its start (56), its middle (64) and its end (72), the left place
+## (80), the right one (88) and the place written (96). A comparison's
+## function may change every register but `rbp`, `rsp` and `r12` to `r15`,
+## so every place is in the frame.
+sort_items : List(Assembly.Statement)
+sort_items = {
+	local = |offset| Emit.mem(Rbp, 0 - offset)
+	listed = |{ list, place }| [Emit.load(R8, local(list)), Emit.load(Rcx, local(place))]
+	start = [
+		Emit.mark(Runtime.sort),
+		Emit.save(Rbp),
+		Emit.mov(Rbp, Rsp),
+		Emit.minus_imm(Rsp, 96),
+	]
+		.concat(array_check_items)
+		.concat([
+			Emit.store(local(8), Rdi),
+			Emit.store(local(16), Rsi),
+			Emit.imm(Rcx, Boxing.undefined_bits),
+			Emit.cmp(Rsi, Rcx),
+			Emit.jcc(E, "runtime_sort_by_text"),
+			Emit.mov(Rax, Rsi),
+			Emit.call(Runtime.check_function),
+			Emit.mark("runtime_sort_by_text"),
+		])
+		.concat(unboxed_items(Rdi))
+		# The items that aren't `undefined` copied to a list of their own,
+		# and a second list as long.
+		.concat([
+			Emit.load(Rdi, Emit.mem(Rdi, 0)),
+			Emit.shl(Rdi, 3),
+			Emit.save(Rdi),
+			Emit.call(Runtime.allocate),
+			Emit.store(local(32), Rax),
+			Emit.restore(Rdi),
+			Emit.call(Runtime.allocate),
+			Emit.store(local(40), Rax),
+			Emit.load(Rdi, local(8)),
+		])
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.load(R8, Emit.mem(Rdi, 16)),
+			Emit.load(R9, Emit.mem(Rdi, 0)),
+			Emit.load(R10, local(32)),
+			Emit.zero(Rcx),
+			Emit.zero(Rdx),
+			Emit.imm(R11, Boxing.undefined_bits),
+			Emit.mark("runtime_sort_kept"),
+			Emit.cmp(Rcx, R9),
+			Emit.jcc(E, "runtime_sort_counted"),
+			Emit.load(Rax, listed_item(Rcx)),
+			Emit.plus_imm(Rcx, 1),
+			Emit.cmp(Rax, R11),
+			Emit.jcc(E, "runtime_sort_kept"),
+			Emit.store(
+				Based({
+					base: R10,
+					index: Scaled({ reg: Rdx, scale: Times8 }),
+					displacement: 0,
+				}),
+				Rax,
+			),
+			Emit.plus_imm(Rdx, 1),
+			Emit.jmp("runtime_sort_kept"),
+			Emit.mark("runtime_sort_counted"),
+			Emit.store(local(24), Rdx),
+			Emit.imm(Rax, 1),
+			Emit.store(local(48), Rax),
+		])
+	# One pass of runs of the width: each pair of runs merged into the list
+	# written, then the two lists change places.
+	passes = [
+		Emit.mark("runtime_sort_pass"),
+		Emit.load(Rax, local(48)),
+		Emit.load(Rcx, local(24)),
+		Emit.cmp(Rax, Rcx),
+		Emit.jcc(Ae, "runtime_sort_sorted"),
+		Emit.zero(Rax),
+		Emit.store(local(56), Rax),
+		Emit.mark("runtime_sort_run"),
+		Emit.load(Rax, local(56)),
+		Emit.load(Rcx, local(24)),
+		Emit.cmp(Rax, Rcx),
+		Emit.jcc(Ae, "runtime_sort_passed"),
+		Emit.store(local(80), Rax),
+		Emit.store(local(96), Rax),
+		Emit.load(Rdx, local(48)),
+		Emit.plus(Rax, Rdx),
+		Emit.cmp(Rax, Rcx),
+		Emit.jcc(Be, "runtime_sort_middle"),
+		Emit.mov(Rax, Rcx),
+		Emit.mark("runtime_sort_middle"),
+		Emit.store(local(64), Rax),
+		Emit.store(local(88), Rax),
+		Emit.plus(Rax, Rdx),
+		Emit.cmp(Rax, Rcx),
+		Emit.jcc(Be, "runtime_sort_end"),
+		Emit.mov(Rax, Rcx),
+		Emit.mark("runtime_sort_end"),
+		Emit.store(local(72), Rax),
+	]
+	merge =
+		[
+			Emit.mark("runtime_sort_merge"),
+			Emit.load(Rax, local(96)),
+			Emit.load(Rcx, local(72)),
+			Emit.cmp(Rax, Rcx),
+			Emit.jcc(Ae, "runtime_sort_merged"),
+			Emit.load(Rax, local(80)),
+			Emit.load(Rcx, local(64)),
+			Emit.cmp(Rax, Rcx),
+			Emit.jcc(Ae, "runtime_sort_right"),
+			Emit.load(Rax, local(88)),
+			Emit.load(Rcx, local(72)),
+			Emit.cmp(Rax, Rcx),
+			Emit.jcc(Ae, "runtime_sort_left"),
+		]
+			.concat(listed({ list: 32, place: 80 }))
+			.append(Emit.load(Rdi, listed_item(Rcx)))
+			.concat(listed({ list: 32, place: 88 }))
+			.concat([
+				Emit.load(Rsi, listed_item(Rcx)),
+				Emit.call("runtime_sort_greater"),
+				Emit.test(Rax, Rax),
+				Emit.jcc(Ne, "runtime_sort_right"),
+				Emit.mark("runtime_sort_left"),
+			])
+			.concat(listed({ list: 32, place: 80 }))
+			.concat([
+				Emit.load(Rax, listed_item(Rcx)),
+				Emit.plus_imm(Rcx, 1),
+				Emit.store(local(80), Rcx),
+				Emit.jmp("runtime_sort_written"),
+				Emit.mark("runtime_sort_right"),
+			])
+			.concat(listed({ list: 32, place: 88 }))
+			.concat([
+				Emit.load(Rax, listed_item(Rcx)),
+				Emit.plus_imm(Rcx, 1),
+				Emit.store(local(88), Rcx),
+				Emit.mark("runtime_sort_written"),
+			])
+			.concat(listed({ list: 40, place: 96 }))
+			.concat([
+				Emit.store(listed_item(Rcx), Rax),
+				Emit.plus_imm(Rcx, 1),
+				Emit.store(local(96), Rcx),
+				Emit.jmp("runtime_sort_merge"),
+				Emit.mark("runtime_sort_merged"),
+				Emit.load(Rax, local(72)),
+				Emit.store(local(56), Rax),
+				Emit.jmp("runtime_sort_run"),
+				Emit.mark("runtime_sort_passed"),
+				Emit.load(Rax, local(32)),
+				Emit.load(Rcx, local(40)),
+				Emit.store(local(32), Rcx),
+				Emit.store(local(40), Rax),
+				Emit.load(Rax, local(48)),
+				Emit.plus(Rax, Rax),
+				Emit.store(local(48), Rax),
+				Emit.jmp("runtime_sort_pass"),
+			])
+	# The sorted items back in the array, then its `undefined` ones.
+	finish = [Emit.mark("runtime_sort_sorted"), Emit.load(Rdi, local(8))]
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.load(R8, Emit.mem(Rdi, 16)),
+			Emit.load(R9, Emit.mem(Rdi, 0)),
+			Emit.load(R10, local(32)),
+			Emit.load(R11, local(24)),
+			Emit.zero(Rcx),
+			Emit.mark("runtime_sort_copied"),
+			Emit.cmp(Rcx, R9),
+			Emit.jcc(E, "runtime_sort_done"),
+			Emit.imm(Rax, Boxing.undefined_bits),
+			Emit.cmp(Rcx, R11),
+			Emit.jcc(Ae, "runtime_sort_copy"),
+			Emit.load(
+				Rax,
+				Based({
+					base: R10,
+					index: Scaled({ reg: Rcx, scale: Times8 }),
+					displacement: 0,
+				}),
+			),
+			Emit.mark("runtime_sort_copy"),
+			Emit.store(listed_item(Rcx), Rax),
+			Emit.plus_imm(Rcx, 1),
+			Emit.jmp("runtime_sort_copied"),
+			Emit.mark("runtime_sort_done"),
+			Emit.load(Rax, local(8)),
+			Emit.mov(Rsp, Rbp),
+			Emit.restore(Rbp),
+			Emit.ret,
+		])
+	# 1 in `rax` when `rdi` goes after `rsi`: the function's answer above
+	# 0 (a number, or `true`), or the first's text after the second's.
+	greater = [
+		Emit.mark("runtime_sort_greater"),
+		Emit.load(Rax, local(16)),
+		Emit.imm(Rcx, Boxing.undefined_bits),
+		Emit.cmp(Rax, Rcx),
+		Emit.jcc(E, "runtime_sort_texts"),
+		Emit.save(Rsi),
+		Emit.save(Rdi),
+		Emit.mov(Rbx, Rax),
+	]
+		.concat(unboxed_items(Rbx))
+		.concat([
+			Emit.load(Rax, Emit.mem(Rbx, 0)),
+			Emit.plus(Rax, Rbx),
+			Emit.imm(Rcx, 2),
+			Instruction(CallReg(Rax)),
+			Emit.plus_imm(Rsp, 16),
+			Emit.imm(Rcx, Boxing.true_bits),
+			Emit.cmp(Rax, Rcx),
+			Emit.jcc(E, "runtime_sort_yes"),
+		])
+		.concat(unless_number_items({ reg: Rax, label: "runtime_sort_not_a_number" }))
+		.concat([
+			Emit.to_xmm(Xmm0, Rax),
+			Emit.zero(Rcx),
+			Emit.to_xmm(Xmm1, Rcx),
+			Instruction(Ucomisd({ left: Xmm0, right: Xmm1 })),
+			Emit.jcc(P, "runtime_sort_no"),
+			Emit.jcc(A, "runtime_sort_yes"),
+			Emit.mark("runtime_sort_no"),
+			Emit.zero(Rax),
+			Emit.ret,
+			Emit.mark("runtime_sort_yes"),
+			Emit.imm(Rax, 1),
+			Emit.ret,
+			Emit.mark("runtime_sort_not_a_number"),
+			Emit.imm(Rcx, Boxing.false_bits),
+			Emit.cmp(Rax, Rcx),
+			Emit.jcc(E, "runtime_sort_no"),
+			Emit.imm(Rcx, Boxing.undefined_bits),
+			Emit.cmp(Rax, Rcx),
+			Emit.jcc(E, "runtime_sort_no"),
+		])
+		.concat(stopping_items("runtime_text_sort_answer"))
+		.concat([
+			Emit.mark("runtime_sort_texts"),
+			Emit.save(Rsi),
+			Emit.call(Runtime.text_of),
+			Emit.restore(Rdi),
+			Emit.save(Rax),
+			Emit.call(Runtime.text_of),
+			Emit.mov(Rsi, Rax),
+			Emit.restore(Rdi),
+			Emit.call(Runtime.compare),
+			Emit.cmp_imm(Rax, 2),
+			Emit.jcc(E, "runtime_sort_yes"),
+			Emit.jmp("runtime_sort_no"),
+		])
+	[start, passes, merge, finish, greater].join()
+}
+
+## `runtime_char_code_at` and `runtime_split`. A split's frame holds the
+## string (`[rbp - 8]`), the separator (16), the array (24), the piece's
+## start (32) and the place (40).
+string_method_items : List(Assembly.Statement)
+string_method_items = {
+	local = |offset| Emit.mem(Rbp, 0 - offset)
+	char_code =
+		[Emit.mark(Runtime.char_code_at)]
+			.concat(unless_string_items({ reg: Rdi, label: "runtime_index_not_compiled" }))
+			.concat(unless_number_items({ reg: Rsi, label: "runtime_index_not_compiled" }))
+			.concat(unboxed_items(Rdi))
+			.concat([
+				Emit.zero(R8),
+				Emit.to_xmm(Xmm0, Rsi),
+				Instruction(Ucomisd({ left: Xmm0, right: Xmm0 })),
+				Emit.jcc(P, "runtime_char_code_place"),
+				Instruction(Cvttsd2si({ to: R8, from: Xmm0 })),
+				Emit.mark("runtime_char_code_place"),
+				Emit.imm(Rax, 0x7FF8000000000000),
+				Emit.load(Rcx, Emit.mem(Rdi, 0)),
+				Emit.cmp(R8, Rcx),
+				Emit.jcc(Ae, "runtime_char_code_done"),
+				text_byte_item({ reg: Rax, base: Rdi }),
+				Instruction(Cvtsi2sd({ to: Xmm0, from: Rax })),
+				Instruction(MovqFromXmm({ to: Rax, from: Xmm0 })),
+				Emit.mark("runtime_char_code_done"),
+				Emit.ret,
+			])
+	# The piece of the string from the start to the place, pushed.
+	piece = [
+		Emit.mark("runtime_split_piece"),
+		Emit.load(Rdx, local(40)),
+		Emit.load(Rcx, local(32)),
+		Emit.minus(Rdx, Rcx),
+		Emit.save(Rdx),
+		Emit.lea(Rdi, Emit.mem(Rdx, 8)),
+		Emit.call(Runtime.allocate),
+		Emit.restore(Rcx),
+		Emit.store(Emit.mem(Rax, 0), Rcx),
+		Emit.lea(Rdi, Emit.mem(Rax, 8)),
+		Emit.load(Rsi, local(8)),
+		Emit.load(Rdx, local(32)),
+		Emit.plus(Rsi, Rdx),
+		Emit.plus_imm(Rsi, 8),
+		Instruction(RepMovsb),
+	]
+		.concat(boxed_string_items)
+		.concat([Emit.mov(Rsi, Rax), Emit.load(Rdi, local(24))])
+		.concat(unboxed_items(Rdi))
+		.concat([Emit.call("runtime_push_item"), Emit.ret])
+	split =
+		[
+			Emit.mark(Runtime.split),
+			Emit.save(Rbp),
+			Emit.mov(Rbp, Rsp),
+			Emit.minus_imm(Rsp, 48),
+		]
+			.concat(unless_string_items({ reg: Rdi, label: "runtime_index_not_compiled" }))
+			.concat(unless_string_items({ reg: Rsi, label: "runtime_split_stop" }))
+			.concat(unboxed_items(Rdi))
+			.concat(unboxed_items(Rsi))
+			.concat([
+				Emit.store(local(8), Rdi),
+				Emit.store(local(16), Rsi),
+				Emit.zero(Rdi),
+				Emit.call(Runtime.new_array),
+				Emit.store(local(24), Rax),
+				Emit.zero(Rax),
+				Emit.store(local(32), Rax),
+				Emit.store(local(40), Rax),
+				Emit.load(Rsi, local(16)),
+				Emit.load(Rcx, Emit.mem(Rsi, 0)),
+				Emit.test(Rcx, Rcx),
+				Emit.jcc(E, "runtime_split_characters"),
+				# A place where the separator's bytes are the string's: the
+				# piece before it pushed, the next starting past it.
+				Emit.mark("runtime_split_scan"),
+				Emit.load(Rdi, local(8)),
+				Emit.load(Rsi, local(16)),
+				Emit.load(R9, local(40)),
+				Emit.load(Rdx, Emit.mem(Rsi, 0)),
+				Emit.mov(Rax, R9),
+				Emit.plus(Rax, Rdx),
+				Emit.load(R10, Emit.mem(Rdi, 0)),
+				Emit.cmp(Rax, R10),
+				Emit.jcc(A, "runtime_split_last"),
+				Emit.zero(Rcx),
+				Emit.mark("runtime_split_byte"),
+				Emit.cmp(Rcx, Rdx),
+				Emit.jcc(E, "runtime_split_found"),
+				Emit.mov(R8, R9),
+				Emit.plus(R8, Rcx),
+				text_byte_item({ reg: Rax, base: Rdi }),
+				Emit.mov(R8, Rcx),
+				text_byte_item({ reg: R8, base: Rsi }),
+				Emit.cmp(Rax, R8),
+				Emit.jcc(Ne, "runtime_split_on"),
+				Emit.plus_imm(Rcx, 1),
+				Emit.jmp("runtime_split_byte"),
+				Emit.mark("runtime_split_on"),
+				Emit.plus_imm(R9, 1),
+				Emit.store(local(40), R9),
+				Emit.jmp("runtime_split_scan"),
+				Emit.mark("runtime_split_found"),
+				Emit.call("runtime_split_piece"),
+				Emit.load(Rax, local(40)),
+				Emit.load(Rsi, local(16)),
+				Emit.load(Rcx, Emit.mem(Rsi, 0)),
+				Emit.plus(Rax, Rcx),
+				Emit.store(local(40), Rax),
+				Emit.store(local(32), Rax),
+				Emit.jmp("runtime_split_scan"),
+				Emit.mark("runtime_split_last"),
+				Emit.load(Rax, Emit.mem(Rdi, 0)),
+				Emit.store(local(40), Rax),
+				Emit.call("runtime_split_piece"),
+				Emit.jmp("runtime_split_done"),
+				# Each character a piece of its own.
+				Emit.mark("runtime_split_characters"),
+				Emit.load(Rdi, local(8)),
+				Emit.load(Rax, local(40)),
+				Emit.load(Rcx, Emit.mem(Rdi, 0)),
+				Emit.cmp(Rax, Rcx),
+				Emit.jcc(E, "runtime_split_done"),
+				Emit.store(local(32), Rax),
+				Emit.plus_imm(Rax, 1),
+				Emit.store(local(40), Rax),
+				Emit.call("runtime_split_piece"),
+				Emit.jmp("runtime_split_characters"),
+				Emit.mark("runtime_split_done"),
+				Emit.load(Rax, local(24)),
+				Emit.mov(Rsp, Rbp),
+				Emit.restore(Rbp),
+				Emit.ret,
+				Emit.mark("runtime_split_stop"),
+			])
+			.concat(stopping_items("runtime_text_split_separator"))
+	[char_code, piece, split].join()
 }
 
 ## `runtime_throw`, `runtime_new_error` and `runtime_error_message`. A

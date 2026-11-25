@@ -101,6 +101,11 @@ Lowering :: [].{
 						for call in calls {
 							$called = with_call_kinds($called, call)
 						}
+						# A refusal may come of a kind not settled yet (a call's
+						# result taken as a number on the first pass), so the
+						# function's result is widened for the next pass to see
+						# what follows it.
+						$found = $found.insert(index, Value)
 						if $first_refusal == Ok({}) {
 							$first_refusal = Err(refused)
 						}
@@ -2123,7 +2128,29 @@ test_jump_items = |site, { state, skip, condition, kept }| {
 
 ## The methods of an array compiled here.
 array_methods : List(Str)
-array_methods = ["push", "pop", "map", "filter", "forEach", "reduce", "join", "slice"]
+array_methods = [
+	"push",
+	"pop",
+	"map",
+	"filter",
+	"forEach",
+	"reduce",
+	"join",
+	"slice",
+	"concat",
+	"some",
+	"every",
+	"find",
+	"findIndex",
+	"indexOf",
+	"includes",
+	"sort",
+	"reverse",
+]
+
+## The methods of a string compiled here.
+string_methods : List(Str)
+string_methods = ["charAt", "charCodeAt", "indexOf", "includes", "split"]
 
 ## An array's `push` of each argument in turn, its answer the length
 ## after the last, its `pop`, its `map`, `filter`, `forEach` and `reduce`
@@ -2213,6 +2240,98 @@ array_method_items = |site, { state, name, count }| {
 				.concat(separator)
 				.concat([Emit.call(Runtime.join), Emit.store(receiver, Rax)])
 			Ok(falling(called, after(String)))
+		}
+		("some", 1) | ("every", 1) | ("find", 1) | ("findIndex", 1) => {
+			(searched, kind) = match name {
+				"some" => (0, Boolean)
+				"every" => (1, Boolean)
+				"find" => (2, Value)
+				_ => (3, Number)
+			}
+			called = [
+				Emit.load(Rdi, receiver),
+				Emit.load(Rsi, argument(0)),
+				Emit.imm(Rdx, searched),
+				Emit.call(Runtime.search),
+				Emit.store(receiver, Rax),
+			]
+			Ok(falling(called, after(kind)))
+		}
+		("indexOf", 1) | ("indexOf", 2) | ("includes", 1) | ("includes", 2) => {
+			(sought, kind) = if name == "indexOf" {
+				(0, Number)
+			} else {
+				(1, Boolean)
+			}
+			from = if count == 2 {
+				[Emit.load(Rdx, argument(1))]
+			} else {
+				[]
+			}
+			called = [Emit.load(Rdi, receiver), Emit.load(Rsi, argument(0))]
+				.concat(from)
+				.concat([
+					Emit.imm(Rcx, count.to_i64_wrap()),
+					Emit.imm(R8, sought),
+					Emit.call(Runtime.index_of),
+					Emit.store(receiver, Rax),
+				])
+			Ok(falling(called, after(kind)))
+		}
+		("concat", _) => {
+			var $made = [
+				Emit.load(Rdi, receiver),
+				Emit.zero(Rcx),
+				Emit.call(Runtime.slice),
+				Emit.store(receiver, Rax),
+			]
+			for at in 0..<count {
+				$made = $made.concat([
+					Emit.load(Rdi, receiver),
+					Emit.shl(Rdi, 16),
+					Emit.shr(Rdi, 16),
+					Emit.load(Rsi, argument(at)),
+					Emit.call(Runtime.concat_item),
+				])
+			}
+			Ok(falling($made, after(Array)))
+		}
+		("sort", 0) | ("sort", 1) | ("reverse", 0) => {
+			(routine, compared) =
+				if name == "reverse" {
+					(Runtime.reverse, [])
+				} else if count == 1 {
+					(Runtime.sort, [Emit.load(Rsi, argument(0))])
+				} else {
+					(Runtime.sort, [Emit.imm(Rsi, Boxing.undefined_bits)])
+				}
+			called = [Emit.load(Rdi, receiver)]
+				.concat(compared)
+				.concat([Emit.call(routine), Emit.store(receiver, Rax)])
+			Ok(falling(called, after(Array)))
+		}
+		("charCodeAt", 0) | ("charCodeAt", 1) => {
+			place = if count == 1 {
+				Emit.load(Rsi, argument(0))
+			} else {
+				Emit.zero(Rsi)
+			}
+			called = [
+				Emit.load(Rdi, receiver),
+				place,
+				Emit.call(Runtime.char_code_at),
+				Emit.store(receiver, Rax),
+			]
+			Ok(falling(called, after(Number)))
+		}
+		("split", 1) => {
+			called = [
+				Emit.load(Rdi, receiver),
+				Emit.load(Rsi, argument(0)),
+				Emit.call(Runtime.split),
+				Emit.store(receiver, Rax),
+			]
+			Ok(falling(called, after(Array)))
 		}
 		("charAt", 1) => {
 			called = [
@@ -2729,7 +2848,7 @@ instruction_items = |site, { instruction, state }| {
 				(Console, "log") => Ok(falling([], with_top(state, Log)))
 				(Array, _) | (Value, _) if array_methods.contains(name) =>
 					Ok(falling([], with_top(state, Method(name))))
-				(String, "charAt") | (Value, "charAt") =>
+				(String, _) | (Value, _) if string_methods.contains(name) =>
 					Ok(falling([], with_top(state, Method(name))))
 				(Static(owner), _) if static_members(owner).contains(name) =>
 					Ok(falling([], with_top(state, StaticMethod({ owner, name }))))
