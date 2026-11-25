@@ -1,0 +1,75 @@
+-- budget: steps=50000000
+-- x86/race.shale: the fib race, x86/race/fib_race.js, compiled by js-x86
+-- against node. check.shale does not run it: it takes about a minute, and
+-- its numbers are timings. From the repository's root:
+--
+--   shale x86/race.shale
+--
+-- (It sits beside x86/bench.shale, not in x86/race/, since a library is
+-- named only beside a script's own file or below it, and both name
+-- x86/executables.shale.)
+--
+-- It builds js-x86 on the dev backend (the executable's bytes are the same
+-- whatever the driver's build), writes the race's executable under the build
+-- mount, then runs the executable and node's `node fib_race.js`, niced, one
+-- after the other, never at once (the box has 2 cores). Each contestant's
+-- answer is checked by x86/race/verify.js, BigInt's F(n) for the n it
+-- reached: its summary lines and its last line, the whole of F(n) in
+-- decimal, must be verify.js's exactly. Each contestant's line says how far
+-- it got, its digits, the elapsed time the program measured itself, its
+-- PASS or FAIL, whether its answer is right, and the time after its verdict
+-- (the run's wall time less its elapsed: chiefly the building and printing
+-- of the whole number, with the start and the exit).
+
+use("./executables.shale")
+
+const WHO = "x86/race.shale"
+const RACE = "x86/race/fib_race.js"
+const VERIFY = "x86/race/verify.js"
+const WANT_VERIFY = "node: verify.js, BigInt's answer for the race"
+const RUN_MS = 120000
+
+-- A contestant's run: its wall time and what it printed, its summary parsed.
+function raced(who, argv, want)
+  local r = run(argv, {timeout_ms = RUN_MS, whole = 4000000, want = want, nice = 19})
+  if r.ended ~= "exit" or r.code ~= 0 then fail(WHO .. ": " .. who .. " ended " .. r.ended .. " " .. get(r, "code", -1) .. ": " .. sub(r.out, 1, 2000)) end
+  local said = lines(r.out)
+  local reached = re_find(r.out, "reached F\\(([0-9]+)\\): ([0-9]+) digits")
+  local timed = re_find(r.out, "elapsed ([0-9]+) ms of")
+  if reached == nil or timed == nil or #said < 6 then fail(WHO .. ": " .. who .. " printed no summary: " .. sub(r.out, 1, 2000)) end
+  local n = re_find(said[2], "F\\(([0-9]+)\\)").group
+  return {who = who, out = r.out, lines = said, n = n, digits = re_find(said[2], ": ([0-9]+) digits").group, elapsed = tonumber(timed.group), verdict = said[5], ms = r.ms}
+end
+
+-- Whether a contestant's answer is BigInt's: its summary lines (all but the
+-- batches' and the verdict's) and its whole number, exactly.
+function verified(c)
+  local v = run({"node", real(VERIFY), c.n}, {timeout_ms = RUN_MS, whole = 4000000, want = WANT_VERIFY, nice = 19})
+  if v.code ~= 0 then fail(WHO .. ": verify.js exited " .. get(v, "code", -1) .. ": " .. sub(v.out, 1, 2000)) end
+  local want = lines(v.out)
+  local got = {c.lines[1], c.lines[2], c.lines[3], c.lines[6]}
+  if #c.lines ~= 6 or #want ~= 4 then return "wrong (" .. #c.lines .. " lines, verify.js " .. #want .. ")" end
+  for i = 1, 4 do
+    if got[i] ~= want[i] then return "WRONG at line " .. i .. ": " .. sub(got[i], 1, 80) .. ", BigInt's " .. sub(want[i], 1, 80) end
+  end
+  return "verified"
+end
+
+function main()
+  local exe = built_roc(WHO, "x86/roc/JsToX86.roc", "js-x86", "dev")
+  local path = executables_dir() .. "/race-fib_race"
+  local size = written_executable(WHO, exe, read(RACE), path)
+  local node = run({"node", "--version"}, {timeout_ms = 10000, whole = 1000, want = WANT_NODE})
+  local uptime = trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out)
+  print("the race's executable: " .. size .. " bytes; node " .. trim(node.out) .. "; " .. uptime)
+  local contestants = {
+    raced("compiled", {real(path)}, WANT_BINARY),
+    raced("node", {"node", real(RACE)}, WANT_NODE),
+  }
+  for c in contestants do
+    local checked = verified(c)
+    print(c.who .. ": F(" .. c.n .. "), " .. c.digits .. " digits, elapsed " .. c.elapsed .. " ms, " .. c.verdict .. ", " .. checked .. "; after the verdict " .. (c.ms - c.elapsed) .. " ms (wall " .. c.ms .. " ms)")
+  end
+end
+
+main()

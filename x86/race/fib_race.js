@@ -12,6 +12,12 @@
 // left: so it gets more careful as the deadline nears. It stops when the
 // time left is too small to plan a batch in, and FAILS if its last clock
 // reading is past BUDGET_MS.
+//
+// Printing the number may come after the budget: the clock reading that
+// decides PASS or FAIL is taken before anything is printed, and after the
+// PASS or FAIL line the program prints the whole of F(n) in decimal, as its
+// last line, built by digitsOf. That phase is timed from outside the
+// program (x86/race/race.shale), as the run's wall time less its elapsed.
 
 const BUDGET_MS = 20000;
 const BASE = 10000000; // 10^7: a limb, and the sum of two limbs and a carry, stay exact
@@ -137,8 +143,8 @@ while (true) {
   if (took > 0) perLimb = took / limbs;
 }
 
-// The first and last digits from the top and bottom limbs alone: the whole
-// number as text would be long, and slow to build where strings copy.
+// The first and last digits from the top and bottom limbs alone, for the
+// summary; the whole number is built after the verdict, below.
 const h = hi();
 let top = "" + h[h.length - 1];
 let i = h.length - 2;
@@ -157,3 +163,4 @@ console.log("reached F(" + n + "): " + digitCount(h) + " digits");
 console.log("first digits " + top.slice(0, 20) + ", last digits " + bottom.slice(bottom.length - 20));
 console.log("batches " + batches + ", elapsed " + elapsed + " ms of " + BUDGET_MS);
 console.log(elapsed <= BUDGET_MS ? "PASS" : "FAIL");
+console.log(digitsOf(h));
