@@ -1,0 +1,189 @@
+-- budget: steps=200000000
+-- x86/bench.shale: the compiled programs against node, once node has warmed.
+-- check.shale does not run it: timing on the 2-core box is too noisy to gate.
+-- From the repository's root:
+--
+--   shale x86/bench.shale
+--
+-- Each program in x86/bench/ defines `work(n)`, which returns a number. At
+-- each of its two sizes, small and large (PROGRAMS, below), the script
+-- writes the program `work(n)` printed, compiles it with js-x86 (the dev
+-- build of the driver; the executable's bytes are the same whatever the
+-- driver's build), and holds the executable's stdout to node's, exactly,
+-- before it times anything. Then, each the median of RUNS runs, niced:
+--   - the executable, wall time;
+--   - node one-shot, `node file.js`, wall time: its start-up included;
+--   - node warmed, in one process: a harness runs `work(n)` WARM times
+--     and throws those times away, then MEASURED times, each timed with
+--     process.hrtime.bigint, and says the median of those and the first
+--     run's time; the median over RUNS processes is kept;
+--   - js-vm's release build (the bytecode VM), at the small size alone, when
+--     tools/roc_build.shale's cache holds one of today's inputs: this script
+--     starts no release build.
+-- It prints the load average and node's version first, then a table.
+
+use("./executables.shale")
+
+const WHO = "x86/bench.shale"
+const RUNS = 3
+const WANT_VM = "js-vm: the bytecode VM's release build, timed beside the executable"
+
+-- The programs and their sizes: `small` runs in a few ms, `large` for
+-- several hundred ms or more, long enough for node's optimizing tier.
+-- `warm` and `measured` are the harness's runs at the large size; the small
+-- size takes SMALL_WARM and SMALL_MEASURED, being so short.
+function programs()
+  return {
+    {name = "fib", small = 22, large = 35},
+    {name = "loops", small = 2000, large = 300000},
+    {name = "sieve", small = 10000, large = 5000000},
+    {name = "collatz", small = 10000, large = 300000},
+  }
+end
+
+const LARGE_WARM = 3
+const LARGE_MEASURED = 5
+const SMALL_WARM = 200
+const SMALL_MEASURED = 50
+
+-- The harness: the program's own `work`, then the timing loop. It prints
+-- one JSON line: the result (to check), the first run and the steady
+-- median, each in microseconds.
+function harness(body, n, warm, measured)
+  return body .. "const N = " .. n .. ", WARM = " .. warm .. ", MEASURED = " .. measured .. ";\n" .. [=[
+const times = [];
+let result = 0;
+let first = 0;
+for (let i = 0; i < WARM + MEASURED; i++) {
+  const t0 = process.hrtime.bigint();
+  result = work(N);
+  const us = Number((process.hrtime.bigint() - t0) / 1000n);
+  if (i === 0) first = us;
+  if (i >= WARM) times.push(us);
+}
+times.sort((a, b) => a - b);
+console.log(JSON.stringify({result: String(result), first_us: first, steady_us: times[Math.floor(times.length / 2)]}));
+]=]
+end
+
+function median(xs)
+  sort(xs)
+  return xs[(#xs + 1) // 2]
+end
+
+-- `us` microseconds as ms with one decimal.
+function ms_text(us)
+  return (us // 1000) .. "." .. ((us % 1000) // 100)
+end
+
+-- `a / b` with two decimals, for positive integers.
+function ratio_text(a, b)
+  local hundredths = (a * 100 + b // 2) // b
+  local frac = hundredths % 100
+  local pad_ = ""
+  if frac < 10 then pad_ = "0" end
+  return (hundredths // 100) .. "." .. pad_ .. frac
+end
+
+-- The median wall time of RUNS runs of `argv`, in microseconds (run's ms,
+-- so whole ms), and what the last printed.
+function median_run(argv, want)
+  local times = {}
+  local out = ""
+  for _ = 1, RUNS do
+    local r = run(argv, {timeout_ms = 120000, whole = 100000, want = want, nice = 19})
+    if r.ended ~= "exit" or r.code ~= 0 then fail(WHO .. ": " .. join(argv, " ") .. " ended " .. r.ended .. " " .. get(r, "code", "") .. ": " .. trim(r.out)) end
+    push(times, r.ms * 1000)
+    out = r.out
+  end
+  return {us = median(times), out = out}
+end
+
+-- The warmed harness's medians over RUNS processes: `{first_us, steady_us}`,
+-- each a median; a result other than `want` stops the run.
+function warmed(path, want)
+  local firsts = {}
+  local steadies = {}
+  for _ = 1, RUNS do
+    local r = run({"node", real(path)}, {timeout_ms = 300000, whole = 10000, want = WANT_NODE, nice = 19})
+    if r.code ~= 0 then fail(WHO .. ": the harness " .. path .. " exited " .. r.code .. ": " .. trim(r.out)) end
+    local j = json_read(trim(r.out))
+    if j.result ~= want then fail(WHO .. ": the harness " .. path .. " found " .. j.result .. ", the program printed " .. want) end
+    push(firsts, j.first_us)
+    push(steadies, j.steady_us)
+  end
+  return {first_us = median(firsts), steady_us = median(steadies)}
+end
+
+-- js-vm's release build, if the cache holds one of these inputs, else nil.
+function cached_vm()
+  local r = run({"shale", "--root", ".", "tools/roc_build.shale", "--args-stdin"}, {timeout_ms = 120000, tail = 10, stdin = "app=js/roc/JsVm.roc\nname=js-vm\nmode=speed\ncached=1\n"})
+  if r.code ~= 0 then fail(WHO .. ": tools/roc_build.shale failed: " .. trim(r.out)) end
+  for l in lines(r.out) do
+    if starts_with(l, "exe\t") then return sub(l, 5) end
+    if starts_with(l, "missing ") then print("js-vm's release build is not cached (" .. l .. "), so it is not timed: this script starts no release build") end
+  end
+  return nil
+end
+
+-- One program at one size: compiled, checked against node, timed. A row.
+function measured_row(exe, vm, dir, p, size, n)
+  local body = read("x86/bench/" .. p.name .. ".js")
+  local src = body .. "console.log(work(" .. n .. "));\n"
+  local stem = dir .. "/bench-" .. p.name .. "-" .. size
+  replace(stem .. ".js", src)
+  local bytes = written_executable(WHO, exe, src, stem)
+  local own = executable_run(stem)
+  local oracle = node_run(stem .. ".js")
+  if oracle.code ~= 0 then fail(WHO .. ": node exited " .. oracle.code .. " on " .. stem .. ".js: " .. trim(oracle.out)) end
+  if own.ended ~= "exit" or own.code ~= 0 or own.out ~= oracle.out then
+    fail(WHO .. ": the " .. bytes .. "-byte executable " .. stem .. " ended " .. own.ended .. " " .. own.code .. ", printing " .. json_write(own.out) .. "; node printed " .. json_write(oracle.out))
+  end
+  local warm = LARGE_WARM
+  local count = LARGE_MEASURED
+  if size == "small" then
+    warm = SMALL_WARM
+    count = SMALL_MEASURED
+  end
+  replace(stem .. "-warm.js", harness(body, n, warm, count))
+  local e = median_run({real(stem)}, WANT_BINARY)
+  local o = median_run({"node", real(stem .. ".js")}, WANT_NODE)
+  local w = warmed(stem .. "-warm.js", trim(oracle.out))
+  local vm_text = "-"
+  if vm ~= nil and size == "small" then
+    local v = median_run({vm, src}, WANT_VM)
+    if v.out ~= own.out then fail(WHO .. ": js-vm printed " .. json_write(v.out) .. " for " .. stem .. ", the executable " .. json_write(own.out)) end
+    vm_text = ms_text(v.us)
+  end
+  local steady = w.steady_us
+  if steady < 1 then steady = 1 end
+  return {
+    program = p.name .. "(" .. n .. ")",
+    executable = ms_text(e.us),
+    node = ms_text(o.us),
+    warmed_first = ms_text(w.first_us),
+    warmed = ms_text(w.steady_us),
+    ratio = ratio_text(e.us, steady),
+    vm = vm_text,
+  }
+end
+
+function main()
+  local exe = built_roc(WHO, "x86/roc/JsToX86.roc", "js-x86", "dev")
+  local vm = cached_vm()
+  local dir = executables_dir()
+  print("load average: " .. trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out))
+  print("node " .. trim(must(run({"node", "--version"}, {timeout_ms = 10000, whole = 1000, want = WANT_NODE})).out))
+  local rows = {}
+  for p in programs() do
+    push(rows, measured_row(exe, vm, dir, p, "small", p.small))
+    yield()
+    push(rows, measured_row(exe, vm, dir, p, "large", p.large))
+    yield()
+  end
+  print(table(rows, {"program", "executable", "node", "warmed_first", "warmed", "ratio", "vm"}))
+  print("times in ms, each the median of " .. RUNS .. "; warmed is node's steady per-run time in one process, after its warm-up runs; ratio is the executable's time over node warmed's, and above 1 means node warmed is faster")
+  print("load average: " .. trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out))
+end
+
+main()
