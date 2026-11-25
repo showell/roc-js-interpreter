@@ -82,13 +82,18 @@ CallLowering :: [].{
 						)
 						[Emit.load(Rdi, argument), Emit.call(Runtime.text_of_boxed)]
 					} else {
-						phrase = LoweringBasics.kind_phrase(LoweringBasics.kind_below(state, count - 1))
+						phrase = LoweringBasics.kind_phrase(
+							LoweringBasics.kind_below(state, count - 1),
+						)
 						return LoweringBasics.refusal(site, "`String` of ${phrase}")
 					}
 				Ok(
 					LoweringBasics.falling(
 						made.append(Emit.store(callee_place, Rax)),
-						LoweringBasics.with_top(LoweringBasics.without_top(state, count + 1), String),
+						LoweringBasics.with_top(
+							LoweringBasics.without_top(state, count + 1),
+							String,
+						),
 					),
 				)
 			}
@@ -106,7 +111,10 @@ CallLowering :: [].{
 		record_statements : List(Assembly.Statement),
 	} -> Try(LoweringBasics.Lowered, [Refused(Str)])
 	direct_call_items = |site, { state, count, made, record_statements }| {
-		callee = site.lowering.program.codes.get(made) ?? crash "CallLowering.call_items: a function's code"
+		callee = match site.lowering.program.codes.get(made) {
+			Ok(code) => code
+			Err(_) => crash "CallLowering.call_items: a function's code"
+		}
 		counted = match callee.arguments {
 			Each(parameters) =>
 				if parameters != count {
@@ -372,7 +380,10 @@ CallLowering :: [].{
 					),
 				)
 			PropertiesLeft({ keys, at: _ }) => {
-				var $listed = [Emit.imm(Rdi, keys.len().to_i64_wrap()), Emit.call(Runtime.new_array)]
+				var $listed = [
+					Emit.imm(Rdi, keys.len().to_i64_wrap()),
+					Emit.call(Runtime.new_array),
+				]
 				for (at, key) in keys.map_with_index(|key, at| (at, key)) {
 					$listed = $listed.concat([
 						Emit.address_of(Rcx, LoweringBasics.text_label(site, key)),
@@ -405,7 +416,10 @@ CallLowering :: [].{
 									Emit.call(Runtime.call_spread),
 									Emit.store(top_place(1), Rax),
 								],
-								LoweringBasics.with_top(LoweringBasics.without_top(state, 2), Value),
+								LoweringBasics.with_top(
+									LoweringBasics.without_top(state, 2),
+									Value,
+								),
 							),
 						)
 					kind => LoweringBasics.refusal(

@@ -944,8 +944,14 @@ instruction_items = |site, { instruction, state }| {
 			),
 		)
 		AppendItem | AppendSpread(_) => CallLowering.spread_items(site, { state, instruction })
-		SpreadFields(_) | PropertiesLeft(_) => CallLowering.spread_items(site, { state, instruction })
-		CallSpread(_) | CallMethodSpread(_) => CallLowering.spread_items(site, { state, instruction })
+		SpreadFields(_) | PropertiesLeft(_) => CallLowering.spread_items(
+			site,
+			{ state, instruction },
+		)
+		CallSpread(_) | CallMethodSpread(_) => CallLowering.spread_items(
+			site,
+			{ state, instruction },
+		)
 		SetField(key) => Ok(
 			LoweringBasics.falling(
 				[
@@ -1293,7 +1299,12 @@ instruction_items = |site, { instruction, state }| {
 					LoweringBasics.refusal(site, "`${name}` ${unready}, ${throws}")
 				Mutable => {
 					after = LoweringBasics.written_slot(site, { state, slot })?
-					Ok(LoweringBasics.falling(CallLowering.boxed_store_items(site, { state, slot }), after))
+					Ok(
+						LoweringBasics.falling(
+							CallLowering.boxed_store_items(site, { state, slot }),
+							after,
+						),
+					)
 				}
 			}
 		}
@@ -1516,7 +1527,10 @@ instruction_items = |site, { instruction, state }| {
 		ThrowUnready({ name, at: _ }) => Ok(BuiltinLowering.unready_items(site, name))
 		ThrowConstant(_) | UpdateFixed(_) => Ok(BuiltinLowering.constant_assigned_items)
 		Refuse(why) => LoweringBasics.refusal(site, why)
-		EnterTry({ handler, kind }) => CallLowering.try_items(site, { state, skip: handler, handling: kind })
+		EnterTry({ handler, kind }) => CallLowering.try_items(
+			site,
+			{ state, skip: handler, handling: kind },
+		)
 		LeaveTry =>
 			Ok(
 				LoweringBasics.falling(
