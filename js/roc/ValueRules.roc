@@ -763,8 +763,8 @@ ValueRules :: [].{
 					machine,
 					"unsupported: a timer's properties (`${key}`)${ValueRules.line_note(site)}",
 				)
-				MapOf(_) => ValueRules.collection_property(machine, IsMap, Heap.table_of(Heap.cell_at(machine.cells, id)), key, site)
-				SetOf(_) => ValueRules.collection_property(machine, IsSet, Heap.table_of(Heap.cell_at(machine.cells, id)), key, site)
+				MapOf(_) as cell => ValueRules.collection_property(machine, IsMap, Heap.table_of(cell), key, site)
+				SetOf(_) as cell => ValueRules.collection_property(machine, IsSet, Heap.table_of(cell), key, site)
 				Iteration(_) => ValueRules.fault_got(
 					machine,
 					"unsupported: an iterator's properties and methods (`${key}`)${ValueRules.line_note(site)}",
