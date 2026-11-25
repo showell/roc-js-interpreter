@@ -893,14 +893,14 @@ Instructions :: [].{
 	walk_stepped : Machine.Machine, U64, U64 -> Machine.Machine
 	walk_stepped = |machine, id, exit| {
 		{ source, view, next } = CollectionRules.iteration_of(machine.cells, id)
-		var $i = next
+		var $place = next
 		var $step = Skip
 		while $step == Skip {
-			{ step, after } = CollectionRules.step_at(machine.cells, source, view, $i)
+			{ step, after } = CollectionRules.step_at(machine.cells, source, view, $place)
 			$step = step
-			$i = after
+			$place = after
 		}
-		moved = { ..machine, cells: Heap.with_iterator_at(machine.cells, id, $i) }
+		moved = { ..machine, cells: Heap.with_iterator_at(machine.cells, id, $place) }
 		match $step {
 			Yield(value) => Machine.pushed(moved, value)
 			YieldPair(key, value) => Machine.allocated(moved, Array([key, value]))
