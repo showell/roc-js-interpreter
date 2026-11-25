@@ -138,7 +138,10 @@ Machine :: [].{
 	stepped = |machine| {
 		budget = Box.unbox(machine.budget)
 		if machine.steps >= budget.step_limit {
-			Machine.with_fault(machine, "${Machine.budgeted_text(budget.budgeted)} ran past its budget of ${budget.step_limit.to_str()} steps")
+			Machine.with_fault(
+				machine,
+				"${Machine.budgeted_text(budget.budgeted)} ran past its budget of ${budget.step_limit.to_str()} steps",
+			)
 		} else {
 			{ ..machine, steps: machine.steps + 1 }
 		}
@@ -209,7 +212,10 @@ Machine :: [].{
 		first = Machine.value_at(machine, 3)
 		second = Machine.value_at(machine, 2)
 		third = Machine.value_at(machine, 1)
-		Machine.pushed(Machine.pushed(Machine.pushed(Machine.dropped(machine, 3), second), third), first)
+		Machine.pushed(
+			Machine.pushed(Machine.pushed(Machine.dropped(machine, 3), second), third),
+			first,
+		)
 	}
 
 	slot_value : Machine.Machine, U64 -> Heap.Value
@@ -222,7 +228,10 @@ Machine :: [].{
 	}
 
 	local_set : Machine.Machine, U64 -> Machine.Machine
-	local_set = |machine, slot| Machine.dropped(Machine.with_slot(machine, slot, Machine.value_at(machine, 1)), 1)
+	local_set = |machine, slot| Machine.dropped(
+		Machine.with_slot(machine, slot, Machine.value_at(machine, 1)),
+		1,
+	)
 
 	# The arguments of a call, the top `count` values, as a list of their own:
 	# a sublist would share the stack's memory, and the stack's next write in
@@ -262,7 +271,7 @@ Machine :: [].{
 	is_collection_due = |machine|
 		match Box.unbox(machine.collecting).schedule {
 			Doubling(at) => machine.free == NoneFree and machine.cells.len() >= at
-			EveryAllocation({ length, free }) => machine.cells.len() != length or machine.free != free
+			EveryAllocation(left) => machine.cells.len() != left.length or machine.free != left.free
 		}
 
 	# The machine with a collection's event queued for the program's
@@ -398,6 +407,9 @@ Machine :: [].{
 	with_box : Machine.Machine, U64, Heap.Value -> Machine.Machine
 	with_box = |machine, box, value| {
 		..machine,
-		cells: machine.cells.set(box, Variable(value)) ?? crash "Machine.with_box: a box the heap has",
+		cells: machine.cells.set(
+			box,
+			Variable(value),
+		) ?? crash "Machine.with_box: a box the heap has",
 	}
 }

@@ -381,10 +381,18 @@ dispatch! = |host, program, machine, op|
 		SetBoxed(slot) => boxed_set(machine, slot)
 		NewBox(slot) => box_made(machine, slot)
 		CopyBox(slot) => box_copied(machine, slot)
-		LoadBuiltin(index) => Machine.pushed(machine, Box.unbox(machine.builtins).get(index) ?? crash "Vm.dispatch!: Resolve places a builtin the library has")
+		LoadBuiltin(index) => Machine.pushed(
+			machine,
+			Box.unbox(machine.builtins).get(index) ?? crash "Vm.dispatch!: Resolve places a builtin the library has",
+		)
 		MissingName({ name, at }) => missing_name(machine, name, at)
 		ThrowUnready({ name, at }) => Machine.with_error(machine, ReferenceError, ValueRules.unready_message(name), at)
-		ThrowConstant(at) => Machine.with_error(machine, TypeError, "Assignment to constant variable.", at)
+		ThrowConstant(at) => Machine.with_error(
+			machine,
+			TypeError,
+			"Assignment to constant variable.",
+			at,
+		)
 		Refuse(why) => Machine.with_fault(machine, why)
 		AppendLocal({ slot, at }) => local_appended(machine, slot, at)
 		UpdateLocal({ slot, step }) => local_updated(machine, slot, step)
@@ -480,7 +488,12 @@ boxed_stored : Machine.Machine, Bytecode.Assigned -> Machine.Machine
 boxed_stored = |machine, { slot, name, kind, at }| {
 	box = Machine.box_of(machine, slot)
 	match (Machine.box_content(machine, box), kind) {
-		(Unready, _) => Machine.with_error(machine, ReferenceError, ValueRules.unready_message(name), at)
+		(Unready, _) => Machine.with_error(
+			machine,
+			ReferenceError,
+			ValueRules.unready_message(name),
+			at,
+		)
 		(Holding(_), Fixed) => Machine.with_error(machine, TypeError, "Assignment to constant variable.", at)
 		(Holding(_), Mutable) => Machine.with_box(machine, box, Machine.value_at(machine, 1))
 	}
@@ -634,7 +647,10 @@ try_entered = |machine, handler, kind| {
 rethrown : Machine.Machine -> Machine.Machine
 rethrown = |machine| {
 	value = Machine.value_at(machine, 1)
-	site = { line: held_place(Machine.value_at(machine, 3)), column: held_place(Machine.value_at(machine, 2)) }
+	site = {
+		line: held_place(Machine.value_at(machine, 3)),
+		column: held_place(Machine.value_at(machine, 2)),
+	}
 	{ ..Machine.dropped(machine, 3), status: Thrown(Box.box({ value: value, site: site })) }
 }
 
@@ -722,7 +738,10 @@ local_appended = |machine, slot, at| {
 				written = { ..machine, stack: taken.list.set(machine.base + slot, Text(grown)) ?? crash "Vm.local_appended: a slot of the frame" }
 				Machine.replaced(written, 1, Machine.slot_value(written, slot))
 			}
-			Err(Unsupported(why)) => Machine.with_fault(machine, "${why}${ValueRules.line_note(at)}")
+			Err(Unsupported(why)) => Machine.with_fault(
+				machine,
+				"${why}${ValueRules.line_note(at)}",
+			)
 		}
 		old => {
 			added = binary(Machine.pushed(Machine.replaced(machine, 1, old), piece), Add, at)
@@ -756,9 +775,19 @@ boxed_updated : Machine.Machine, { slot : U64, name : Str, kind : Bytecode.Kind,
 boxed_updated = |machine, { slot, name, kind, step }| {
 	box = Machine.box_of(machine, slot)
 	match Machine.box_content(machine, box) {
-		Unready => Machine.with_error(machine, ReferenceError, ValueRules.unready_message(name), step.at)
+		Unready => Machine.with_error(
+			machine,
+			ReferenceError,
+			ValueRules.unready_message(name),
+			step.at,
+		)
 		Holding(Number(old)) => match kind {
-			Fixed => Machine.with_error(machine, TypeError, "Assignment to constant variable.", step.at)
+			Fixed => Machine.with_error(
+				machine,
+				TypeError,
+				"Assignment to constant variable.",
+				step.at,
+			)
 			Mutable => Machine.pushed(Machine.with_box(machine, box, Number(old + step.delta)), update_answer(step, old))
 		}
 		Holding(current) => not_a_number_update(machine, current, step.at)
@@ -804,7 +833,10 @@ index_updated = |machine, step| {
 	} else {
 		match Machine.value_at(read, 1) {
 			Number(old) => {
-				written = index_written(Machine.replaced(read, 1, Number(old + step.delta)), step.at)
+				written = index_written(
+					Machine.replaced(read, 1, Number(old + step.delta)),
+					step.at,
+				)
 				if Machine.is_running(written) {
 					Machine.replaced(written, 1, update_answer(step, old))
 				} else {
@@ -1084,7 +1116,10 @@ frame_filled = |machine, { code, given, boxes }| {
 		}
 		Packed(slot) => {
 			arguments = Machine.arguments_of(machine, given)
-			{ machine: packed, id } = Machine.placed(Machine.dropped(machine, given), Array(arguments))
+			{ machine: packed, id } = Machine.placed(
+				Machine.dropped(machine, given),
+				Array(arguments),
+			)
 			var $taken = packed
 			var $count = 0
 			while $count < code.frame_size {
@@ -1098,7 +1133,10 @@ frame_filled = |machine, { code, given, boxes }| {
 		$machine = match entry {
 			FreshBox(slot) => box_made($machine, slot)
 			FilledBox(slot) => {
-				{ machine: made, id } = Machine.placed($machine, Variable(Machine.slot_value($machine, slot)))
+				{ machine: made, id } = Machine.placed(
+					$machine,
+					Variable(Machine.slot_value($machine, slot)),
+				)
 				Machine.with_slot(made, slot, Reference(id))
 			}
 			CapturedBox({ slot, capture }) => Machine.with_slot(
@@ -1228,11 +1266,17 @@ native_called! = |host, program, machine, { native, calling }| {
 	match native {
 		Log => match Inspect.line_of(machine.cells, arguments) {
 			Ok(line) => emitted!(host, machine, { effect: Log(line), result_at: calling.result_at })
-			Err(Unsupported(why)) => Machine.with_fault(machine, "${why}${ValueRules.line_note(at)}")
+			Err(Unsupported(why)) => Machine.with_fault(
+				machine,
+				"${why}${ValueRules.line_note(at)}",
+			)
 		}
 		Paint(paint) => match Canvas.effect_of(paint, { arguments: arguments, cells: machine.cells }) {
 			Ok(effect) => emitted!(host, machine, { effect: effect, result_at: calling.result_at })
-			Err(Unsupported(why)) => Machine.with_fault(machine, "${why}${ValueRules.line_note(at)}")
+			Err(Unsupported(why)) => Machine.with_fault(
+				machine,
+				"${why}${ValueRules.line_note(at)}",
+			)
 		}
 		Move(move) => match Canvas.moved(Box.unbox(machine.turtle), { move: move, arguments: arguments }) {
 			Ok({ turtle, drawn }) => {
@@ -1242,7 +1286,10 @@ native_called! = |host, program, machine, { native, calling }| {
 					Nothing => Machine.with_result(moved, calling.result_at, Undefined)
 				}
 			}
-			Err(Unsupported(why)) => Machine.with_fault(machine, "${why}${ValueRules.line_note(at)}")
+			Err(Unsupported(why)) => Machine.with_fault(
+				machine,
+				"${why}${ValueRules.line_note(at)}",
+			)
 		}
 		Sense(MouseX) => {
 			pointer! = host.pointer!
@@ -1300,7 +1347,10 @@ emitted! : Canvas.Host, Machine.Machine, { effect : Canvas.Effect, result_at : U
 emitted! = |host, machine, { effect, result_at }| {
 	budget = Box.unbox(machine.budget)
 	if machine.effects >= budget.effect_limit {
-		Machine.with_fault(machine, "${Machine.budgeted_text(budget.budgeted)} ran past its budget of ${budget.effect_limit.to_str()} effects")
+		Machine.with_fault(
+			machine,
+			"${Machine.budgeted_text(budget.budgeted)} ran past its budget of ${budget.effect_limit.to_str()} effects",
+		)
 	} else {
 		emit! = host.emit!
 		emit!(effect)
@@ -1413,7 +1463,10 @@ event_run! = |host, program, machine, index| {
 					{ key: "live", value: Number(U64.to_f64(live)) },
 					{ key: "before", value: Number(U64.to_f64(before)) },
 				]
-				{ machine: made, id } = Machine.placed(budgeted_for(taken, CollectHandler), Object(counts))
+				{ machine: made, id } = Machine.placed(
+					budgeted_for(taken, CollectHandler),
+					Object(counts),
+				)
 				answer_dropped(call_function!(host, program, made, { callee: handler, arguments: [Reference(id)], at: site }))
 			}
 			NoHandler => taken
@@ -1499,7 +1552,10 @@ array_from! = |host, program, machine, { arguments, calling }| {
 	{ machine: rules, listed } = BuiltinRules.array_from_values(Machine.shell(cells, rest), arguments.first() ?? Undefined)
 	back = Machine.with_rules(rest, rules)
 	match listed {
-		Err(Unsupported(why)) => Machine.with_fault(back, "${why}${ValueRules.line_note(calling.at)}")
+		Err(Unsupported(why)) => Machine.with_fault(
+			back,
+			"${why}${ValueRules.line_note(calling.at)}",
+		)
 		Ok(values) => {
 			# The values wait on the stack as an array of their own while the
 			# mapper runs: an iterable's entries are new pairs nothing else
