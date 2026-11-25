@@ -271,13 +271,54 @@ A collection is due when the free list is empty and the heap has reached its thr
 
 Between two instructions every value the program holds is in the machine. The one exception is a builtin that runs a callback, such as `filter` or `sort`: what it keeps across the callback waits on the stack, where the collections inside the callback see it. A live value that names a freed cell stops the run, since it means a root was missed.
 
-## The shared rules
+## JavaScript's rules for values
 
-Two modules serve everything that runs a program.
+A rule is a function that carries out one piece of JavaScript's semantics: what `+` makes of a string and a number, what a read of a missing property gives, the words of the error a bad call throws. The VM's instructions settle the common cases inline, on fast paths: two numbers added, an object's own property read, an array's item read. Every other case goes to a rule. The rules live in `ValueRules.roc` and four modules built on it, so each piece of the semantics, and each message, has one home.
 
-**`ValueRules`** holds JavaScript's rules for values: property reads and writes, operators on mixed values, and the errors they throw, each message in one place; four modules built on it hold the methods of strings, arrays, Maps and Sets and the builtins (`StringRules`, `ArrayRules`, `CollectionRules`, `BuiltinRules`). The VM's fast paths settle the common cases (numbers, an object's own property, an array's item) and hand the rest to a rule. A rule takes a small machine of the cells and the run's status, `ValueRules.Machine`: the VM lends it the cells and takes back what the rule gives, so the cells have one owner while the rule writes them. The module was split out of the walker when the VM borrowed it (`d8d6b7fe`), and for a while both engines used it.
+### `"a" + 1`
 
-**`Events`** holds the queue of callbacks and its virtual clock (`b69660c4`). A timer's callback, a click, the canvas's next `frame(t)` and a collection `onCollect` hears are each an event, due at a time in milliseconds, run earliest first, and two at one time in the order they were queued. The clock reads 0 while the program runs and moves to each callback's time as it runs, so a program's output is the same on every run and the same as node's.
+`Binary(Add)` runs `Instructions.binary`, which reads the top two values of the stack. Its fast path is a match on two numbers:
+
+{{lines js/roc/Instructions.roc from "binary = |machine, operator, at| {" to "_ => Instructions.combined("}}
+
+`"a"` is a `Text`, so the match falls through to `Instructions.combined`, which lends the cells to `ValueRules.binary` (as "The cells are lent" below lays out), and its `Add` arm calls `ValueRules.add`. There a string on either side makes both sides text: `ValueRules.text_of` writes the number 1 as `"1"`, as `String(1)` does, and the two join into `Text("a1")`. The VM puts that value in place of the two operands. A `+` of a boolean and a number, such as `true + 1`, is a coercion the subset leaves out, and the run stops with a message naming it.
+
+### A missing property
+
+`o.y`, with `o` holding `{ x: 1 }`, compiles to `GetProperty("y")`. `Instructions.property_read` looks through the object's own properties, finds `x` alone, and hands the read to `ValueRules.property`. For an object, that rule gives `Undefined` for a missing name. The eight names of `Object.prototype` that `ValueRules.is_prototype_name` lists, `toString`, `hasOwnProperty` and six others, stop the run instead, naming the name, since the subset leaves prototypes out. So `console.log(o.y)` prints `undefined`, as node does.
+
+### The cells are lent
+
+A rule may write the heap: an allocation, a property set. So it needs the cells, the list every shared value lives in ({{chapter Memory strategy}}). It takes a machine of three fields, `ValueRules.Machine`: the cells, the free list, and the run's status, which the rule may set to a fault or a value thrown. `Machine.lent` takes the cells out of the VM's machine and leaves an empty list in their place:
+
+{{function js/roc/Machine.roc lent}}
+
+`Machine.shell` puts the cells beside the free list and a `Running` status, and the rule answers a `ValueRules.Got`, its value and the machine after it. `Machine.with_got` puts the cells and the free list back into the VM's machine, and the value on the stack, or takes on the fault or the throw.
+
+The VM lends the cells to a rule
+```dot
+digraph {
+  rankdir=LR;
+  node [shape=box, style=rounded];
+  vm [label="the VM's machine"];
+  rule [label="a rule"];
+  stack [label="the stack"];
+  vm -> rule [label="Machine.lent"];
+  rule -> vm [label="Machine.with_got"];
+  rule -> stack [label="its value"];
+}
+```
+
+While the rule runs, its machine is the one value that refers to the cells, so each write it makes is in place. Roc writes a list in place only while one value refers to it, and copies the whole list otherwise ({{chapter What copies}}). `ValueRules.roc`'s header records the shorter design it set aside: a rule generic over the VM's whole machine, an open record, is shorter to call, but the dev build ({{chapter Dev and release builds disagree}}) copies the cells a rule writes through one.
+
+### The four modules on it
+
+- **`StringRules`** holds the methods of strings (`text_method`). Those that count by position take ASCII text alone, since JavaScript counts UTF-16 units and the interpreter's strings are UTF-8.
+- **`ArrayRules`** holds `push`, `pop`, `splice` and the other array methods that take only values (`array_method`). The methods that call a function of the program, `map`, `filter`, `sort` and the rest, run the VM's loop, so the VM runs them itself.
+- **`CollectionRules`** holds the walks over arrays, strings, Maps and Sets that a spread, a pattern and `for ... of` make, and the methods of Maps and Sets.
+- **`BuiltinRules`** holds the globals a program starts with, what `new` makes, and the builtins that give a value alone. `console.log`, the canvas's calls and the timers make an effect or call back, and the VM runs them.
+
+Each takes the lent machine first and answers a `Got`. The program's functions and the host stay with the VM.
 
 ## A canvas in the browser
 
@@ -344,6 +385,26 @@ digraph {
 - **The page's** host (`JsApp.roc`, on the platform in `js/wasm/`) calls into the page's JavaScript while the Roc call runs.
 - **The recording host,** `js-canvas` (`JsCanvas.roc`), writes every effect and every read as a line, for the golden logs.
 - **`js-vm`'s** host prints each log as it is made.
+
+### The queue and its clock
+
+`Events.roc` holds the one queue every callback goes through. A timer's callback, a click, the canvas's next `frame(t)` and a call of the `onCollect` handler after a collection are each an event, due at a time in milliseconds. The earliest runs first, and of two due at one time, the one queued first.
+
+The clock is virtual. It reads 0 while the program's own code runs, and moves to each event's time as that event runs: on the page, a tick moves it on to the frame's time (`Vm.tick!`), and `js-vm` moves it from event to event until the queue is empty. So the order of the callbacks follows from the program alone, and a program prints the same on every run, and the same as node. Take this program:
+
+```js
+setTimeout(function f() { console.log("f"); }, 10);
+setTimeout(function g() { console.log("g"); }, 0);
+console.log("x");
+```
+
+| step | the clock | what runs | it prints |
+|---|---|---|---|
+| the program | 0 | queues `f` due at 10 and `g` due at 1, then logs | `x` |
+| the first event | 1 | `g` | `g` |
+| the second event | 10 | `f` | `f` |
+
+`g` is due at 1: `Events.timer_requested` raises a delay below 1 ms to 1 ms, as node does. Node 22 and the dev build of `js-vm` each print `x`, `g`, `f` for it, run side by side for this chapter on 2026-11-25. The clock's column is read from `Events.roc`: an event is due at the clock plus its delay, and `with_event_taken` moves the clock to the due time of the event it takes.
 
 ## What copies
 
