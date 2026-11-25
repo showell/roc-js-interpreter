@@ -102,3 +102,10 @@ Two more were tried and are not in the branch:
 
 - **The array's unboxed address kept for reuse** (cause (b) of the last section) was not written: the items' address would have to live in a register no lowered code between two accesses spoils, and the slow ways' runtime calls between them spoil every register but the spare three, so keeping it needs a register of its own across those calls. Left for a lane with more time.
 - **Registers choosing places by their moves inside loops** (each move inside a loop counted 16 times, a loop being the statements from a label to a jump back to it) chose the same three places as before: addInto's first loop stayed at 156 instructions (32 at `rbp`), and the race at F(59,886) before and F(60,221) after, medians of 5, no gain. The bytecode's stack places are the busiest inside the loop too; `i` and `carry` would need more spare registers, or the stack places kept out of the frame some other way. A guess, not measured: a lowering that leaves a loaded variable's value in its register instead of copying it to the stack would serve both.
+
+The 20-second race after 10, the same box and day, load average 0.78, one run with no master run beside it:
+
+    compiled: F(213849), 44692 digits, elapsed 19963 ms, PASS, verified; after the verdict 104 ms (wall 20067 ms)
+    node: F(373393), 78035 digits, elapsed 19968 ms, PASS, verified; after the verdict 63 ms (wall 20031 ms)
+
+That is below the F(243,271) of the last section's run, though the 1-second medians, alternated with master's executable, put 10 ahead by about 9%. With no master run beside it, this run can't tell the change from the box's noise; a guess is the noise, since the 1-second runs alternate and this one doesn't. Against the node run beside it, node did about 3 times the compiled program's work.
