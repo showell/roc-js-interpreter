@@ -11,6 +11,7 @@
 ## walk: Lowering's dispatch hands each its site and state, and takes back
 ## what it lowered.
 import js.Ast
+import Assembly
 import Boxing
 import Emit
 import LoweringBasics
@@ -149,18 +150,28 @@ OperatorLowering :: [].{
 				dynamic_equality_items(site, { state, operator, kinds })
 			(Add, _) =>
 				match LoweringBasics.added_kind(kinds) {
-					Ok(kind) =>
+					Ok(kind) => {
+						called = [
+							Emit.load(Rdi, left),
+							Emit.load(Rsi, right),
+							Emit.call(Runtime.add),
+							Emit.store(left, Rax),
+						]
+						# Two values that may be numbers are added in line when they
+						# are, and by `runtime_add` when either isn't.
+						statements =
+							if LoweringBasics.is_numeric(kinds.0) and LoweringBasics.is_numeric(kinds.1) {
+								numbers_first(site, { kinds, left, right, fast: arithmetic(Addsd).statements, slow: called })
+							} else {
+								called
+							}
 						Ok(
 							LoweringBasics.falling(
-								[
-									Emit.load(Rdi, left),
-									Emit.load(Rsi, right),
-									Emit.call(Runtime.add),
-									Emit.store(left, Rax),
-								],
+								statements,
 								LoweringBasics.with_top(LoweringBasics.without_top(state, 2), kind),
 							),
 						)
+					}
 					Err(Unadded) => {
 						first = LoweringBasics.kind_phrase(kinds.0)
 						second = LoweringBasics.kind_phrase(kinds.1)
@@ -187,6 +198,12 @@ OperatorLowering :: [].{
 			| (LessOrEqual, _)
 			| (Greater, _)
 			| (GreaterOrEqual, _) if LoweringBasics.is_ordered(kinds) => {
+				numbered = match operator {
+					Less => ordered({ first: right, second: left, condition: A })
+					LessOrEqual => ordered({ first: right, second: left, condition: Ae })
+					Greater => ordered({ first: left, second: right, condition: A })
+					_ => ordered({ first: left, second: right, condition: Ae })
+				}
 				mapped = match operator {
 					Less => [Emit.cmp_imm(Rax, 0), Instruction(Setcc({ condition: E, to: Al }))]
 					LessOrEqual => [
@@ -200,16 +217,25 @@ OperatorLowering :: [].{
 						Instruction(Setcc({ condition: Be, to: Al })),
 					]
 				}
+				called = [
+					Emit.load(Rdi, left),
+					Emit.load(Rsi, right),
+					Emit.call(Runtime.compare),
+				]
+					.concat(mapped)
+					.concat(LoweringBasics.boolean_items)
+					.append(Emit.store(left, Rax))
+				# Two values that may be numbers are ordered in line when they are,
+				# and by `runtime_compare` when either isn't (two strings).
+				statements =
+					if LoweringBasics.is_numeric(kinds.0) and LoweringBasics.is_numeric(kinds.1) {
+						numbers_first(site, { kinds, left, right, fast: numbered.statements, slow: called })
+					} else {
+						called
+					}
 				Ok(
 					LoweringBasics.falling(
-						[
-							Emit.load(Rdi, left),
-							Emit.load(Rsi, right),
-							Emit.call(Runtime.compare),
-						]
-							.concat(mapped)
-							.concat(LoweringBasics.boolean_items)
-							.append(Emit.store(left, Rax)),
+						statements,
 						LoweringBasics.with_top(LoweringBasics.without_top(state, 2), Boolean),
 					),
 				)
@@ -595,4 +621,26 @@ OperatorLowering :: [].{
 			result: GivesNothing,
 		})
 	}
+}
+
+## An operator's statements for two values that may be numbers: `fast`, in
+## line, when both are numbers (a known number's tag isn't tested), else
+## `slow`, the runtime's routine.
+numbers_first : LoweringBasics.Site,
+{
+	kinds : (LoweringBasics.Kind, LoweringBasics.Kind),
+	left : X86.Mem,
+	right : X86.Mem,
+	fast : List(Assembly.Statement),
+	slow : List(Assembly.Statement),
+} -> List(Assembly.Statement)
+numbers_first = |site, { kinds, left, right, fast, slow }| {
+	slow_label = LoweringBasics.inner_label(site, "slow")
+	done_label = LoweringBasics.inner_label(site, "done")
+	LoweringBasics.unless_number_items({ kind: kinds.0, place: left, label: slow_label })
+		.concat(LoweringBasics.unless_number_items({ kind: kinds.1, place: right, label: slow_label }))
+		.concat(fast)
+		.concat([Emit.jmp(done_label), Emit.mark(slow_label)])
+		.concat(slow)
+		.append(Emit.mark(done_label))
 }

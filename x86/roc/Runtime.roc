@@ -66,6 +66,11 @@ Runtime :: [].{
 	check_number : Str
 	check_number = "runtime_check_number"
 
+	## Where a value that should be a number and isn't stops the program
+	## (`runtime_check_number`'s stop), for code that tests the tag in line.
+	not_a_number_stop : Str
+	not_a_number_stop = "runtime_not_a_number_stop"
+
 	## The routine that gives the number of `rdi`, a number, `undefined`,
 	## `null` or a boolean, in `rax`, as `+` makes one (JavaScript's
 	## ToNumber). It changes `rcx` alone.
@@ -937,9 +942,9 @@ operator_items = {
 		.concat(RuntimeBuilders.tag_load_items(Rax))
 		.concat([
 			Emit.cmp_imm(Rcx, Boxing.first_tag),
-			Emit.jcc(Ae, "runtime_not_a_number_stop"),
+			Emit.jcc(Ae, Runtime.not_a_number_stop),
 			Emit.ret,
-			Emit.mark("runtime_not_a_number_stop"),
+			Emit.mark(Runtime.not_a_number_stop),
 		])
 		.concat(RuntimeBuilders.stopping_items("runtime_text_arithmetic_not_compiled"))
 	equal = [Emit.mark(Runtime.strict_equal)]

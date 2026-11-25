@@ -452,13 +452,35 @@ LoweringBasics :: [].{
 		}
 
 	## The statements that stop the program unless the value at `place` is a
-	## number, for a kind that may not be one.
+	## number, for a kind that may not be one: the tag tested in line, no call.
 	number_check_items : { kind : LoweringBasics.Kind, place : X86.Mem } -> List(Assembly.Statement)
 	number_check_items = |{ kind, place }|
+		LoweringBasics.unless_number_items({ kind, place, label: Runtime.not_a_number_stop })
+
+	## The statements that jump to `label` unless the value at `place` is a
+	## number, for a kind that may not be one; none for a number. They change
+	## `rax` and `rcx`.
+	unless_number_items : {
+		kind : LoweringBasics.Kind,
+		place : X86.Mem,
+		label : Str,
+	} -> List(Assembly.Statement)
+	unless_number_items = |{ kind, place, label }|
 		match kind {
 			Number => []
-			_ => [Emit.load(Rax, place), Emit.call(Runtime.check_number)]
+			_ => [
+				Emit.load(Rax, place),
+				Emit.mov(Rcx, Rax),
+				Emit.shr(Rcx, Boxing.tag_shift),
+				Emit.cmp_imm(Rcx, Boxing.first_tag),
+				Emit.jcc(Ae, label),
+			]
 		}
+
+	## The label of a piece of the code one instruction lowers to, past its
+	## own place: its slow way, where a fast way's test fails, or its end.
+	inner_label : LoweringBasics.Site, Str -> Str
+	inner_label = |site, piece| "${LoweringBasics.place_label(site.context, site.at)}_${piece}"
 
 	## The flag in `al` (0 or 1) made a boolean's bits in `rax`.
 	boolean_items : List(Assembly.Statement)
