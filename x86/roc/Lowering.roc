@@ -154,6 +154,8 @@ Kind : [
 	Log,
 	Method(Str),
 	ErrorClass(Str),
+	Static(Str),
+	StaticMethod({ owner : Str, name : Str }),
 ]
 
 ## A slot holds a value of its kind once its declaration has run.
@@ -201,7 +203,8 @@ is_value_kind : Kind -> Bool
 is_value_kind = |kind|
 	match kind {
 		Number | Boolean | Undefined | Null | String | Array | Object | Value | Closure(_) => True
-		Function(_) | Console | Log | Method(_) | ErrorClass(_) => False
+		Function(_) | Console | Log | Method(_) => False
+		ErrorClass(_) | Static(_) | StaticMethod(_) => False
 	}
 
 ## The kind two ways give a place: their own when they agree, `Value` when
@@ -1495,6 +1498,9 @@ added_kind = |kinds|
 		(Number, Number) => Ok(Number)
 		(String, other) | (other, String) if is_value_kind(other) => Ok(String)
 		(Value, other) | (other, Value) if is_value_kind(other) => Ok(Value)
+		# An array or an object is made a string, so `+` joins.
+		(Array, other) | (other, Array) if is_value_kind(other) => Ok(String)
+		(Object, other) | (other, Object) if is_value_kind(other) => Ok(String)
 		_ => Err(Unadded)
 	}
 
@@ -1595,6 +1601,8 @@ kind_text = |kind|
 		Console => "console"
 		Log => "console.log"
 		ErrorClass(name) => "`${name}`"
+		Static(name) => "`${name}`"
+		StaticMethod({ owner, name }) => "`${owner}.${name}`"
 	}
 
 ## A unary operator on the value on top of the stack.
@@ -1695,7 +1703,9 @@ unary_items = |site, { state, operator }| {
 				Undefined => Named("runtime_text_undefined")
 				Null | Array | Object | Console => Named("runtime_text_type_object")
 				Function(_) | Closure(_) | Log | Method(_) => Named("runtime_text_type_function")
-				ErrorClass(_) => Named("runtime_text_type_function")
+				ErrorClass(_) | StaticMethod(_) => Named("runtime_text_type_function")
+				Static("Math") => Named("runtime_text_type_object")
+				Static(_) => Named("runtime_text_type_function")
 				Value => Unnamed
 			}
 			found = match named {
@@ -1809,6 +1819,27 @@ call_items = |site, { state, count }| {
 			}
 		}
 		Value => value_call_items(site, { state, count, taken: count + 1 })
+		Static("String") => {
+			made =
+				if count == 0 {
+					[
+						Emit.address_of(Rax, "runtime_text_empty"),
+						Emit.imm(Rcx, Boxing.tag_bits(Boxing.string_tag)),
+						Emit.plus(Rax, Rcx),
+					]
+				} else if is_value_kind(kind_below(state, count - 1)) {
+					argument = stack_place(site.code, state.stack_kinds.len() - count)
+					[Emit.load(Rdi, argument), Emit.call(Runtime.text_of)]
+				} else {
+					return refusal(site, "`String` of ${kind_phrase(kind_below(state, count - 1))}")
+				}
+			Ok(
+				falling(
+					made.append(Emit.store(callee_place, Rax)),
+					with_top(without_top(state, count + 1), String),
+				),
+			)
+		}
 		kind => refusal(site, "a call of ${kind_phrase(kind)}")
 	}
 }
@@ -2058,6 +2089,7 @@ builtin_items = |site, { state, place }| {
 			falling(constant_items({ bits: 0x7FF0000000000000, to: top }), with_top(state, Number)),
 		)
 		Ok(name) if error_names.contains(name) => Ok(falling([], with_top(state, ErrorClass(name))))
+		Ok(name) if static_names.contains(name) => Ok(falling([], with_top(state, Static(name))))
 		Ok(name) => refusal(site, "the builtin `${name}` is not compiled yet")
 		Err(_) => crash "Lowering.builtin_items: a builtin's place"
 	}
@@ -2312,6 +2344,7 @@ instruction_items = |site, { instruction, state }| {
 							with_top(without_top(state, 1), given),
 						),
 					)
+				Static(owner) => static_property_items(site, { state, owner, key })
 				_ => refusal(site, "the property `${key}` of ${kind_phrase(kind)}")
 			}
 		}
@@ -2698,6 +2731,8 @@ instruction_items = |site, { instruction, state }| {
 					Ok(falling([], with_top(state, Method(name))))
 				(String, "charAt") | (Value, "charAt") =>
 					Ok(falling([], with_top(state, Method(name))))
+				(Static(owner), _) if static_members(owner).contains(name) =>
+					Ok(falling([], with_top(state, StaticMethod({ owner, name }))))
 				(Object, _) | (Value, _) =>
 					Ok(
 						falling(
@@ -2719,6 +2754,8 @@ instruction_items = |site, { instruction, state }| {
 			match kind_below(state, count) {
 				Log => log_items(site, { state, count })
 				Method(name) => array_method_items(site, { state, name, count })
+				StaticMethod({ owner, name }) =>
+					static_call_items(site, { state, count, owner, name })
 				Value => value_call_items(site, { state, count, taken: count + 2 })
 				kind => refusal(site, "a method call of ${kind_phrase(kind)} is not compiled yet")
 			}
@@ -2813,6 +2850,127 @@ instruction_name = |instruction| {
 	match text.split_first("(") {
 		Ok({ before, after: _ }) => before
 		Err(_) => text
+	}
+}
+
+## The builtins that are objects of functions: `Math`, `Object`, and
+## `String`, which is a function too.
+static_names : List(Str)
+static_names = ["Math", "Object", "String"]
+
+## The functions a builtin object holds, compiled or refused by name when
+## called.
+static_members : Str -> List(Str)
+static_members = |owner|
+	match owner {
+		"Math" => Runtime.math_functions.concat(["pow", "sin", "cos", "tan", "atan"])
+		"Object" => ["keys", "values", "entries"]
+		_ => []
+	}
+
+## A property of a builtin object read: `Math.PI` and `Math.E`, or one of
+## its functions, which takes no bytes (`typeof Math.floor`).
+static_property_items : Site,
+{
+	state : State,
+	owner : Str,
+	key : Str,
+} -> Try(Lowered, [Refused(Str)])
+static_property_items = |site, { state, owner, key }| {
+	top = stack_place(site.code, state.stack_kinds.len() - 1)
+	numbered = with_top(without_top(state, 1), Number)
+	constant = |bits| Ok(falling(constant_items({ bits, to: top }), numbered))
+	match (owner, key) {
+		# The doubles nearest pi and e.
+		("Math", "PI") => constant(0x400921FB54442D18)
+		("Math", "E") => constant(0x4005BF0A8B145769)
+		_ if static_members(owner).contains(key) =>
+			Ok(falling([], with_top(without_top(state, 1), StaticMethod({ owner, name: key }))))
+		_ => refusal(site, "the property `${key}` of `${owner}` is not compiled yet")
+	}
+}
+
+## A call of a builtin object's function: `Math`'s of numbers, `max` and
+## `min` of any count of them, `pow` as `**`; `Object.keys`, `values` and
+## `entries`. The answer takes the place of the builtin below the function.
+static_call_items : Site,
+{
+	state : State,
+	count : U64,
+	owner : Str,
+	name : Str,
+} -> Try(Lowered, [Refused(Str)])
+static_call_items = |site, { state, count, owner, name }| {
+	receiver = stack_place(site.code, state.stack_kinds.len() - count - 2)
+	base = state.stack_kinds.len() - count
+	after = |kind| with_top(without_top(state, count + 2), kind)
+	# Argument `at` checked a number, in `reg`.
+	number_in = |{ at, reg }| {
+		kind = kind_below(state, count - 1 - at)
+		place = stack_place(site.code, base + at)
+		if is_value_kind(kind) {
+			Ok(number_check_items({ kind, place }).append(Emit.load(reg, place)))
+		} else {
+			refusal(site, "`${owner}.${name}` of ${kind_phrase(kind)}")
+		}
+	}
+	match (owner, name) {
+		("Math", "max") | ("Math", "min") => {
+			start = if name == "max" {
+				0xFFF0000000000000
+			} else {
+				0x7FF0000000000000
+			}
+			var $items = constant_items({ bits: start, to: receiver })
+			for at in 0..<count {
+				$items = $items
+					.concat(number_in({ at, reg: Rsi })?)
+					.concat([
+						Emit.load(Rdi, receiver),
+						Emit.call(Runtime.math_routine(name)),
+						Emit.store(receiver, Rax),
+					])
+			}
+			Ok(falling($items, after(Number)))
+		}
+		("Math", "pow") if count >= 2 => {
+			base_loaded = number_in({ at: 0, reg: Rdi })?
+			loaded = base_loaded.concat(number_in({ at: 1, reg: Rsi })?)
+			called = [Emit.call(Runtime.power), Emit.store(receiver, Rax)]
+			Ok(falling(loaded.concat(called), after(Number)))
+		}
+		("Math", _) if Runtime.math_functions.contains(name) =>
+			if count == 0 {
+				not_a_number = constant_items({ bits: 0x7FF8000000000000, to: receiver })
+				Ok(falling(not_a_number, after(Number)))
+			} else {
+				loaded = number_in({ at: 0, reg: Rdi })?
+				called = [Emit.call(Runtime.math_routine(name)), Emit.store(receiver, Rax)]
+				Ok(falling(loaded.concat(called), after(Number)))
+			}
+		("Math", "sin") | ("Math", "cos") | ("Math", "tan") | ("Math", "atan") =>
+			refusal(
+				site,
+				"`Math.${name}` is not compiled yet: node's last digits are V8's port of fdlibm's",
+			)
+		("Object", _) if count >= 1 and is_value_kind(kind_below(state, count - 1)) => {
+			listed = match name {
+				"keys" => 0
+				"values" => 1
+				_ => 2
+			}
+			called = [
+				Emit.load(Rdi, stack_place(site.code, base)),
+				Emit.imm(Rsi, listed),
+				Emit.call(Runtime.object_listing),
+				Emit.store(receiver, Rax),
+			]
+			Ok(falling(called, after(Array)))
+		}
+		_ => {
+			given = count_text(count, "argument")
+			refusal(site, "`${owner}.${name}` with ${given} is not compiled yet")
+		}
 	}
 }
 

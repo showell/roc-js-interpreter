@@ -242,6 +242,27 @@ Runtime :: [].{
 	new_cell : Str
 	new_cell = "runtime_new_cell"
 
+	## The routine of a function of `Math`, by its name: of one number,
+	## `floor`, `ceil`, `round`, `trunc`, `abs`, `sign` and `sqrt`, its bits
+	## in `rdi`; of two, `max` and `min`, the second in `rsi`; the answer's
+	## bits in `rax`. Each changes `rcx`, `rdx` and `xmm0` to `xmm2` too.
+	math_routine : Str -> Str
+	math_routine = |name| "runtime_math_${name}"
+
+	## The functions of `Math` the runtime has a routine for.
+	math_functions : List(Str)
+	math_functions = ["floor", "ceil", "round", "trunc", "abs", "sign", "sqrt", "max", "min"]
+
+	## The routine that gives the object `rdi`'s keys (`rsi` 0), its values
+	## (1) or its entries (2), each a `[key, value]` array, a new array in
+	## `rax`, as `Object.keys`, `values` and `entries` do.
+	object_listing : Str
+	object_listing = "runtime_object_listing"
+
+	## The routine that gives `String(v)` of the value `rdi`, boxed, in `rax`.
+	text_of : Str
+	text_of = "runtime_text_of_boxed"
+
 	## The texts the runtime writes, each under its label.
 	Text : [Space, Newline]
 
@@ -306,6 +327,7 @@ Runtime :: [].{
 		slice_items,
 		language_items,
 		exception_items,
+		builtin_items,
 	]
 		.join()
 		.concat(text_statements)
@@ -476,9 +498,13 @@ texts = [
 		),
 	),
 	(
-		"runtime_text_text_of_object",
-		"x86: a string made of an array or an object is not compiled yet\n",
+		"runtime_text_object_keys",
+		Str.concat(
+			"x86: `Object.keys`, `values` or `entries` of a value that is not a plain object",
+			" is not compiled yet\n",
+		),
 	),
+	("runtime_text_object_object", "[object Object]"),
 	(
 		"runtime_text_text_of_function",
 		"x86: a string made of a function, its source's text, is not compiled yet\n",
@@ -758,7 +784,35 @@ string_items = {
 		.concat(constant({ bits: Boxing.null_bits, label: "runtime_text_null" }))
 		.concat(constant({ bits: Boxing.false_bits, label: "runtime_text_false" }))
 		.concat(constant({ bits: Boxing.true_bits, label: "runtime_text_true" }))
-		.concat(stopping_items("runtime_text_text_of_object"))
+		# An array is its items' texts joined with `,`; a plain object is
+		# `[object Object]`; an error is its name and its message.
+		.concat(tag_load_items(Rdi))
+		.concat([
+			Emit.cmp_imm(Rcx, Boxing.array_tag),
+			Emit.jcc(Ne, "runtime_text_of_object"),
+			Emit.address_of(Rsi, Runtime.comma_text),
+			Emit.call(Runtime.join),
+		])
+		.concat(unboxed_items(Rax))
+		.concat([
+			Emit.ret,
+			Emit.mark("runtime_text_of_object"),
+			Emit.mov(Rax, Rdi),
+		])
+		.concat(unboxed_items(Rax))
+		.concat([
+			Emit.load(Rcx, Emit.mem(Rax, 0)),
+			Emit.test(Rcx, Rcx),
+			Emit.jcc(E, "runtime_text_of_plain"),
+			Emit.load(Rcx, Emit.mem(Rax, 16)),
+			Emit.load(Rcx, Emit.mem(Rcx, 0)),
+			Emit.address_of(Rdx, error_mark),
+			Emit.cmp(Rcx, Rdx),
+			Emit.jcc(E, "runtime_error_text"),
+			Emit.mark("runtime_text_of_plain"),
+			Emit.address_of(Rax, "runtime_text_object_object"),
+			Emit.ret,
+		])
 		.append(Emit.mark("runtime_text_of_function"))
 		.concat(stopping_items("runtime_text_text_of_function"))
 		.concat(given("runtime_text_undefined"))
@@ -848,6 +902,17 @@ string_items = {
 	[text_of, concat, equal, template].join()
 }
 
+## The statements that jump to `runtime_add_texts` when the value in `reg`
+## is an array or an object, which `+` makes a string.
+object_added_items : X86.Register -> List(Assembly.Statement)
+object_added_items = |reg|
+	tag_load_items(reg).concat([
+		Emit.cmp_imm(Rcx, Boxing.array_tag),
+		Emit.jcc(E, "runtime_add_texts"),
+		Emit.cmp_imm(Rcx, Boxing.object_tag),
+		Emit.jcc(E, "runtime_add_texts"),
+	])
+
 ## `runtime_add`, `runtime_check_number`, `runtime_strict_equal`,
 ## `runtime_compare` and `runtime_truthy`.
 operator_items : List(Assembly.Statement)
@@ -879,6 +944,9 @@ operator_items = {
 		.concat([Emit.cmp_imm(Rcx, Boxing.string_tag), Emit.jcc(E, "runtime_add_texts")])
 		.concat(tag_load_items(Rsi))
 		.concat([Emit.cmp_imm(Rcx, Boxing.string_tag), Emit.jcc(E, "runtime_add_texts")])
+		# An array or an object is made a string first, so `+` joins.
+		.concat(object_added_items(Rdi))
+		.concat(object_added_items(Rsi))
 		.concat(stopping_items("runtime_text_add_not_compiled"))
 		.concat([
 			Emit.mark("runtime_add_texts"),
@@ -2152,7 +2220,11 @@ list_frame_size = 320
 
 ## A double's bits put in an xmm register, through `rax`.
 double_items : { to : X86.Xmm, value : F64 } -> List(Assembly.Statement)
-double_items = |{ to, value }| [Emit.imm(Rax, value.to_bits().to_i64_wrap()), Emit.to_xmm(to, Rax)]
+double_items = |{ to, value }| [Emit.imm(Rax, double_bits(value)), Emit.to_xmm(to, Rax)]
+
+## A double's bits, as an immediate takes them.
+double_bits : F64 -> I64
+double_bits = |value| value.to_bits().to_i64_wrap()
 
 ## `runtime_columns`: node's `groupArrayElements`, for an array of more than
 ## 6 items whose texts `runtime_inspect_list` has made and measured, and
@@ -3083,6 +3155,283 @@ language_items = {
 	]
 		.concat(stopping_items("runtime_text_not_destructurable"))
 	[power, type_of, pack, items_of, check_destructurable].join()
+}
+
+## The statements that leave `rax` -0 when it is +0 and `rdi`, the number
+## it was made of, is negative: `Math`'s roundings keep a zero's sign.
+signed_zero_items : List(Assembly.Statement)
+signed_zero_items = [
+	Emit.mark("runtime_math_signed"),
+	Emit.test(Rax, Rax),
+	Emit.jcc(Ne, "runtime_math_done"),
+	Emit.test(Rdi, Rdi),
+	Emit.jcc(Ns, "runtime_math_done"),
+	Emit.imm(Rax, (0x8000000000000000).to_i64_wrap()),
+	Emit.mark("runtime_math_done"),
+	Emit.ret,
+]
+
+## The statements that start a rounding of the number in `rdi`: one of at
+## least 2^52 in size, an infinity or NaN is its own answer; any other is
+## truncated, `xmm0` the number and `xmm1` its truncation.
+truncated_items : Str -> List(Assembly.Statement)
+truncated_items = |name| [
+	Emit.mark(Runtime.math_routine(name)),
+	Emit.mov(Rax, Rdi),
+	Emit.mov(Rcx, Rdi),
+	Emit.shl(Rcx, 1),
+	Emit.shr(Rcx, 1),
+	Emit.imm(Rdx, 0x4330000000000000),
+	Emit.cmp(Rcx, Rdx),
+	Emit.jcc(Ae, "runtime_math_done"),
+	Emit.to_xmm(Xmm0, Rdi),
+	Instruction(Cvttsd2si({ to: Rcx, from: Xmm0 })),
+	Instruction(Cvtsi2sd({ to: Xmm1, from: Rcx })),
+]
+
+## `Math`'s routines, `runtime_error_text` (an error's text, of the error
+## at `rax`: its name and its message, `: ` between, or the one of them
+## that isn't empty) and `runtime_object_listing`.
+builtin_items : List(Assembly.Statement)
+builtin_items = {
+	answer = [Instruction(MovqFromXmm({ to: Rax, from: Xmm1 })), Emit.jmp("runtime_math_signed")]
+	stepped = |{ label, value }|
+		double_items({ to: Xmm0, value })
+			.concat([Emit.double_sum(Xmm1, Xmm0)])
+			.append(Emit.mark(label))
+			.concat(answer)
+	trunc = truncated_items("trunc").concat(answer)
+	floor = truncated_items("floor")
+		.concat([
+			Instruction(Ucomisd({ left: Xmm1, right: Xmm0 })),
+			Emit.jcc(Be, "runtime_math_floor_done"),
+		])
+		.concat(stepped({ label: "runtime_math_floor_done", value: -1.0 }))
+	ceiling = truncated_items("ceil")
+		.concat([
+			Instruction(Ucomisd({ left: Xmm0, right: Xmm1 })),
+			Emit.jcc(Be, "runtime_math_ceil_done"),
+		])
+		.concat(stepped({ label: "runtime_math_ceil_done", value: 1.0 }))
+	# Up from the floor when the number is at least a half past it: exact,
+	# since the number is below 2^52 in size.
+	round = truncated_items("round")
+		.concat([
+			Instruction(Ucomisd({ left: Xmm1, right: Xmm0 })),
+			Emit.jcc(Be, "runtime_math_round_floored"),
+		])
+		.concat(double_items({ to: Xmm2, value: -1.0 }))
+		.concat([
+			Emit.double_sum(Xmm1, Xmm2),
+			Emit.mark("runtime_math_round_floored"),
+			Emit.double_difference(Xmm0, Xmm1),
+		])
+		.concat(double_items({ to: Xmm2, value: 0.5 }))
+		.concat([
+			Instruction(Ucomisd({ left: Xmm0, right: Xmm2 })),
+			Emit.jcc(B, "runtime_math_round_done"),
+		])
+		.concat(stepped({ label: "runtime_math_round_done", value: 1.0 }))
+	abs = [
+		Emit.mark(Runtime.math_routine("abs")),
+		Emit.mov(Rax, Rdi),
+		Emit.shl(Rax, 1),
+		Emit.shr(Rax, 1),
+		Emit.ret,
+	]
+	sqrt = [
+		Emit.mark(Runtime.math_routine("sqrt")),
+		Emit.to_xmm(Xmm0, Rdi),
+		Emit.square_root(Xmm0, Xmm0),
+		Instruction(MovqFromXmm({ to: Rax, from: Xmm0 })),
+		Emit.ret,
+	]
+	# NaN and the zeros are their own signs.
+	sign = [
+		Emit.mark(Runtime.math_routine("sign")),
+		Emit.mov(Rax, Rdi),
+		Emit.to_xmm(Xmm0, Rdi),
+		Emit.zero(Rcx),
+		Emit.to_xmm(Xmm1, Rcx),
+		Instruction(Ucomisd({ left: Xmm0, right: Xmm1 })),
+		Emit.jcc(P, "runtime_math_done"),
+		Emit.jcc(E, "runtime_math_done"),
+		Emit.imm(Rax, double_bits(1.0)),
+		Emit.jcc(A, "runtime_math_done"),
+		Emit.imm(Rax, double_bits(-1.0)),
+		Emit.ret,
+	]
+	# A NaN is the answer; of two equal numbers (+0 and -0 among them) the
+	# answer's sign is the two's, and-ed for `max` and or-ed for `min`.
+	extreme = |{ name, greater, joined }| {
+		label = Runtime.math_routine(name)
+		[
+			Emit.mark(label),
+			Emit.mov(Rax, Rdi),
+			Emit.to_xmm(Xmm0, Rdi),
+			Instruction(Ucomisd({ left: Xmm0, right: Xmm0 })),
+			Emit.jcc(P, "runtime_math_done"),
+			Emit.mov(Rax, Rsi),
+			Emit.to_xmm(Xmm1, Rsi),
+			Instruction(Ucomisd({ left: Xmm1, right: Xmm1 })),
+			Emit.jcc(P, "runtime_math_done"),
+			Instruction(Ucomisd({ left: Xmm0, right: Xmm1 })),
+			Emit.jcc(greater, "${label}_first"),
+			Emit.jcc(E, "${label}_equal"),
+			Emit.ret,
+			Emit.mark("${label}_first"),
+			Emit.mov(Rax, Rdi),
+			Emit.ret,
+			Emit.mark("${label}_equal"),
+			Emit.mov(Rax, Rdi),
+			Instruction(
+				Alu({
+					operation: joined,
+					to: Rax,
+					from: Rsi,
+				}),
+			),
+			Emit.ret,
+		]
+	}
+	local = |offset| Emit.mem(Rbp, 0 - offset)
+	error_text = [
+		Emit.mark("runtime_error_text"),
+		Emit.save(Rax),
+		Emit.mov(Rdi, Rax),
+		Emit.address_of(Rsi, "runtime_text_name"),
+		Emit.call("runtime_object_entry"),
+		Emit.load(Rdi, Emit.mem(Rax, 0)),
+		Emit.call("runtime_text_of"),
+		Emit.save(Rax),
+		Emit.load(Rdi, Emit.mem(Rsp, 8)),
+		Emit.address_of(Rsi, "runtime_text_message"),
+		Emit.call("runtime_object_entry"),
+		Emit.load(Rdi, Emit.mem(Rax, 0)),
+		Emit.call("runtime_text_of"),
+		Emit.restore(Rdi),
+		Emit.plus_imm(Rsp, 8),
+		Emit.load(Rcx, Emit.mem(Rax, 0)),
+		Emit.test(Rcx, Rcx),
+		Emit.jcc(Ne, "runtime_error_text_message"),
+		Emit.mov(Rax, Rdi),
+		Emit.ret,
+		Emit.mark("runtime_error_text_message"),
+		Emit.load(Rcx, Emit.mem(Rdi, 0)),
+		Emit.test(Rcx, Rcx),
+		Emit.jcc(E, "runtime_math_done"),
+		Emit.save(Rax),
+		Emit.address_of(Rsi, "runtime_text_colon"),
+		Emit.call("runtime_concat"),
+		Emit.mov(Rdi, Rax),
+		Emit.restore(Rsi),
+		Emit.jmp("runtime_concat"),
+	]
+	text_of_boxed = [Emit.mark(Runtime.text_of), Emit.call("runtime_text_of")]
+		.concat(boxed_string_items)
+		.append(Emit.ret)
+	# Its frame: the object (`[rbp - 8]`), the kind (16), the array made
+	# (24) and the place (32).
+	listing = [
+		Emit.mark(Runtime.object_listing),
+		Emit.save(Rbp),
+		Emit.mov(Rbp, Rsp),
+		Emit.minus_imm(Rsp, 32),
+	]
+		.concat(tag_load_items(Rdi))
+		.concat([Emit.cmp_imm(Rcx, Boxing.object_tag), Emit.jcc(Ne, "runtime_object_listing_stop")])
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.store(local(8), Rdi),
+			Emit.store(local(16), Rsi),
+			Emit.load(Rcx, Emit.mem(Rdi, 0)),
+			Emit.test(Rcx, Rcx),
+			Emit.jcc(E, "runtime_object_listing_plain"),
+			Emit.load(Rdx, Emit.mem(Rdi, 16)),
+			Emit.load(Rdx, Emit.mem(Rdx, 0)),
+			Emit.address_of(Rax, error_mark),
+			Emit.cmp(Rdx, Rax),
+			Emit.jcc(E, "runtime_object_listing_stop"),
+			Emit.mark("runtime_object_listing_plain"),
+			Emit.mov(Rdi, Rcx),
+			Emit.call(Runtime.new_array),
+			Emit.store(local(24), Rax),
+			Emit.zero(Rax),
+			Emit.store(local(32), Rax),
+			Emit.mark("runtime_object_listing_next"),
+			Emit.load(Rdi, local(8)),
+			Emit.load(Rcx, local(32)),
+			Emit.load(Rdx, Emit.mem(Rdi, 0)),
+			Emit.cmp(Rcx, Rdx),
+			Emit.jcc(E, "runtime_object_listing_done"),
+			Emit.shl(Rcx, 4),
+			Emit.load(R8, Emit.mem(Rdi, 16)),
+			Emit.plus(R8, Rcx),
+			Emit.load(Rax, Emit.mem(R8, 0)),
+		])
+		.concat(boxed_items(Boxing.string_tag))
+		.concat([
+			Emit.load(Rsi, Emit.mem(R8, 8)),
+			Emit.load(Rdx, local(16)),
+			Emit.test(Rdx, Rdx),
+			Emit.jcc(E, "runtime_object_listing_item"),
+			Emit.mov(Rax, Rsi),
+			Emit.cmp_imm(Rdx, 1),
+			Emit.jcc(E, "runtime_object_listing_item"),
+			Emit.load(Rax, Emit.mem(R8, 0)),
+		])
+		.concat(boxed_items(Boxing.string_tag))
+		.concat([
+			Emit.save(Rsi),
+			Emit.save(Rax),
+			Emit.imm(Rdi, 2),
+			Emit.call(Runtime.new_array),
+			Emit.restore(Rcx),
+			Emit.store(Emit.mem(Rdx, 0), Rcx),
+			Emit.restore(Rcx),
+			Emit.store(Emit.mem(Rdx, 8), Rcx),
+			Emit.mark("runtime_object_listing_item"),
+			Emit.load(Rdi, local(24)),
+		])
+		.concat(unboxed_items(Rdi))
+		.concat([
+			Emit.load(R8, Emit.mem(Rdi, 16)),
+			Emit.load(Rcx, local(32)),
+			Emit.store(listed_item(Rcx), Rax),
+			Emit.plus_imm(Rcx, 1),
+			Emit.store(local(32), Rcx),
+			Emit.jmp("runtime_object_listing_next"),
+			Emit.mark("runtime_object_listing_done"),
+			Emit.load(Rax, local(24)),
+			Emit.mov(Rsp, Rbp),
+			Emit.restore(Rbp),
+			Emit.ret,
+			Emit.mark("runtime_object_listing_stop"),
+		])
+		.concat(stopping_items("runtime_text_object_keys"))
+	[
+		signed_zero_items,
+		trunc,
+		floor,
+		ceiling,
+		round,
+		abs,
+		sqrt,
+		sign,
+		extreme({
+			name: "max",
+			greater: A,
+			joined: And,
+		}),
+		extreme({
+			name: "min",
+			greater: B,
+			joined: Or,
+		}),
+		error_text,
+		text_of_boxed,
+		listing,
+	].join()
 }
 
 ## `runtime_throw`, `runtime_new_error` and `runtime_error_message`. A
