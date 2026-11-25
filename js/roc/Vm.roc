@@ -70,6 +70,7 @@
 ##
 ## **THE CANVAS'S EFFECTS GO TO THE HOST AS THEY ARE MADE** (`emitted!`),
 ## a log's among them, each counted against the budget of what is running.
+import ArrayRules
 import Ast
 import Bytecode
 import Canvas
@@ -1937,7 +1938,7 @@ array_method! = |host, program, machine, call|
 		_ => {
 			arguments = arguments_of(machine, call.count)
 			{ cells, machine: rest } = lent(machine)
-			with_got(rest, ValueRules.array_method(shell(cells, rest), call.id, call.name, arguments, call.at), call.result_at)
+			with_got(rest, ArrayRules.array_method(shell(cells, rest), call.id, call.name, arguments, call.at), call.result_at)
 		}
 	}
 
