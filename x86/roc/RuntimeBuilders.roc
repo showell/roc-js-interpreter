@@ -145,4 +145,13 @@ RuntimeBuilders :: [].{
 		Emit.cmp(Rdi, Rcx),
 		Emit.jcc(E, label),
 	]
+
+	## The statements that stop the program unless the value in `rdi` is an
+	## array. They change `rcx`.
+	array_check_items : List(Assembly.Statement)
+	array_check_items =
+		RuntimeBuilders.tag_load_items(Rdi).concat([
+			Emit.cmp_imm(Rcx, Boxing.array_tag),
+			Emit.jcc(Ne, "runtime_not_an_array"),
+		])
 }
