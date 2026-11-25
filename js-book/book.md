@@ -309,7 +309,7 @@ The eight names of `Object.prototype` in `ValueRules.is_prototype_name`, such as
 
 ### The cells are lent
 
-A Roc value stays as it was made, so a write to a list makes a new list. Roc makes that fast with one trick: while exactly one value refers to the list, the write changes it in place. While two do, Roc first copies the whole list, since the other holder must still see the old one. That copy is the copy cliff of {{chapter What copies}}.
+In Roc, every value stays as it was made: `List.set(list, i, x)` returns a list with the new item, and any other holder of the old list keeps the old items. Roc keeps this fast: when the list has one holder, Roc writes into that list's own memory; when it has two, Roc first copies the whole list. That copy is the copy cliff of {{chapter What copies}}.
 
 The heap is one list of cells, and the VM's machine record holds it ({{chapter Memory strategy}}). Some rules write it: `a.push(1)` reaches `ArrayRules.array_method`, which writes the array's cell, and a method that makes a new array allocates a cell.
 
