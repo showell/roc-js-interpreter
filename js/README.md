@@ -321,9 +321,12 @@ laying out each scope's names, and `Resolve.roc` places every name read or
 written in those layouts before the run. `Compile.roc` makes each function
 a list of `Bytecode.roc`'s instructions, `Vm.roc` runs them, and
 `Collector.roc` frees the cells its roots don't reach. `ValueRules.roc`
-holds the rules JavaScript's values follow, `Events.roc` the queue of
-callbacks and its virtual clock, `Heap.roc` what JavaScript shares by
-reference, `Inspect.roc` console.log's formatting (node's `util.inspect`,
+holds the rules JavaScript's values follow, and four modules built on it
+hold one kind of value's each: `StringRules.roc` the methods of strings,
+`ArrayRules.roc` those of arrays, `CollectionRules.roc` the walks and the
+methods of Maps and Sets, and `BuiltinRules.roc` the globals and the
+builtins. `Events.roc` holds the queue of callbacks and its virtual clock,
+`Heap.roc` what JavaScript shares by reference, `Inspect.roc` console.log's formatting (node's `util.inspect`,
 function for function), and `NumberText.roc` writes a number as `String(n)`
 does. `Canvas.roc` is the canvas library: its effects, their written form,
 the turtle and the host's type. `JsVm.roc` is `js-vm`, the command;
@@ -371,10 +374,11 @@ its own, so no one function grows with the language.
   always runs before it (a block's scope starts afresh each time), so it
   compiles to its ReferenceError, and only a read through a box checks at
   run time.
-- **The value rules live in a module of their own.** A property read, an
+- **The value rules live in modules of their own.** A property read, an
   operator on mixed values, a string method, a builtin that calls nothing
-  back, and the messages they make live once, in `ValueRules`; the VM's
-  fast paths settle the common cases (numbers, an object's own property,
+  back, and the messages they make live once, in `ValueRules` and the four
+  modules built on it (`StringRules`, `ArrayRules`, `CollectionRules`,
+  `BuiltinRules`); the VM's fast paths settle the common cases (numbers, an object's own property,
   an array's item) and hand the rest to the rule. A rule takes a machine of
   the cells and a status (`ValueRules.Machine`), and the VM lends it its
   cells and puts back what it gives (`Vm.lent`, `Vm.shell`), so the cells
@@ -476,9 +480,9 @@ shapes that keep it unique, each with a comment where it is used:
   under way, an iterator kept aside included, still meets the rest in
   order (`js/tests/57-map-set-churn.js`).
 - **A helper that may write hands the machine back whatever it finds**
-  (`ValueRules.iterated`): a caller that kept its own machine for the case
-  of a value that isn't iterable held a second reference while the helper
-  wrote, and the write copied the heap.
+  (`CollectionRules.iterated`): a caller that kept its own machine for the
+  case of a value that isn't iterable held a second reference while the
+  helper wrote, and the write copied the heap.
 - **No closure captures the machine;** a loop over it is a `var $st` loop.
 - **The host is an argument of its own, never a field of the machine.**
   Following BASIC's workhorse pattern, the handlers take several arguments
