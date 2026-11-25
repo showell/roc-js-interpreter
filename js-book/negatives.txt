@@ -29,3 +29,4 @@ limitations: The subset covers a part of JavaScript on purpose, and it will neve
 limitations: A program that steps outside it is refused with a message naming what it used; it never gets a wrong answer.
 limitations: No corpus program holds this yet.
 limitations: - An interval never cleared stops after 100,000 callbacks with a message, where node runs it for good (`js/README.md`, "The subset").
+guarantee: The product holds no assembler, linker, LLVM or libc, and the executable needs none of them to run (`x86/README.md`).
