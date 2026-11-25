@@ -49,6 +49,7 @@ import Emit
 import KnownFunctions
 import LoweringBasics
 import CallLowering
+import IndexLowering
 import OperatorLowering
 import Runtime
 import RuntimeBuilders
@@ -934,17 +935,22 @@ instruction_items = |site, { instruction, state }| {
 				(String, "length") | (Array, "length") => Number
 				_ => Value
 			}
+			called = [
+				Emit.load(Rdi, top_place(0)),
+				Emit.address_of(Rsi, LoweringBasics.text_label(site, key)),
+				Emit.call(Runtime.get_property),
+				Emit.store(top_place(0), Rax),
+			]
 			# Of `undefined` or `null`, the runtime throws node's TypeError.
 			match kind {
 				String | Array | Object | Value | Null | Undefined =>
 					Ok(
 						LoweringBasics.falling(
-							[
-								Emit.load(Rdi, top_place(0)),
-								Emit.address_of(Rsi, LoweringBasics.text_label(site, key)),
-								Emit.call(Runtime.get_property),
-								Emit.store(top_place(0), Rax),
-							],
+							if key == "length" {
+								IndexLowering.length_items(site, { kind, place: top_place(0), slow: called })
+							} else {
+								called
+							},
 							LoweringBasics.with_top(LoweringBasics.without_top(state, 1), given),
 						),
 					)
@@ -1067,18 +1073,28 @@ instruction_items = |site, { instruction, state }| {
 			}
 		GetIndex(_) =>
 			match LoweringBasics.kind_below(state, 1) {
-				Array | String | Object | Value | Null | Undefined =>
+				Array | String | Object | Value | Null | Undefined => {
+					called = [
+						Emit.load(Rdi, top_place(1)),
+						Emit.load(Rsi, top_place(0)),
+						Emit.call(Runtime.get_index),
+						Emit.store(top_place(1), Rax),
+					]
 					Ok(
 						LoweringBasics.falling(
-							[
-								Emit.load(Rdi, top_place(1)),
-								Emit.load(Rsi, top_place(0)),
-								Emit.call(Runtime.get_index),
-								Emit.store(top_place(1), Rax),
-							],
+							IndexLowering.item_read_items(
+								site,
+								{
+									kinds: (LoweringBasics.kind_below(state, 1), LoweringBasics.kind_below(state, 0)),
+									receiver: top_place(1),
+									index: top_place(0),
+									slow: called,
+								},
+							),
 							LoweringBasics.with_top(LoweringBasics.without_top(state, 2), Value),
 						),
 					)
+				}
 				kind => LoweringBasics.refusal(
 					site,
 					"an index of ${LoweringBasics.kind_phrase(kind)}",
@@ -1088,14 +1104,24 @@ instruction_items = |site, { instruction, state }| {
 			match LoweringBasics.kind_below(state, 2) {
 				Array | Object | Value | Null | Undefined => {
 					value = LoweringBasics.kind_below(state, 0)
+					called = [
+						Emit.load(Rdi, top_place(2)),
+						Emit.load(Rsi, top_place(1)),
+						Emit.load(Rdx, top_place(0)),
+						Emit.call(Runtime.set_index),
+					]
 					Ok(
 						LoweringBasics.falling(
-							[
-								Emit.load(Rdi, top_place(2)),
-								Emit.load(Rsi, top_place(1)),
-								Emit.load(Rdx, top_place(0)),
-								Emit.call(Runtime.set_index),
-							].concat(
+							IndexLowering.item_write_items(
+								site,
+								{
+									kinds: (LoweringBasics.kind_below(state, 2), LoweringBasics.kind_below(state, 1)),
+									receiver: top_place(2),
+									index: top_place(1),
+									item: top_place(0),
+									slow: called,
+								},
+							).concat(
 								LoweringBasics.copy_items({ from: top_place(0), to: top_place(2) }),
 							),
 							LoweringBasics.with_top(LoweringBasics.without_top(state, 3), value),
