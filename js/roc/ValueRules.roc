@@ -389,6 +389,69 @@ ValueRules :: [].{
 	indexed_properties : List(Heap.Value) -> List(Heap.Property)
 	indexed_properties = |items| items.map_with_index(|item, position| { key: position.to_str(), value: item })
 
+	items_of : List(Heap.Cell), U64 -> List(Heap.Value)
+	items_of = |cells, id|
+		match Heap.cell_at(cells, id) {
+			Array(items) => items
+			_ => crash "ValueRules.items_of: the interpreter asks only an array for its items"
+		}
+
+	# A relative index (`slice`'s, negative from the end) as an index in 0..n.
+	relative_index : Heap.Value, U64, U64 -> U64
+	relative_index = |subject, length, otherwise|
+		match subject {
+			Number(x) => {
+				truncated = if x.is_nan() {
+					0.0
+				} else {
+					x.div_trunc_by(1.0)
+				}
+				if truncated < 0.0 {
+					from_end = length.to_f64() + truncated
+					if from_end < 0.0 {
+						0
+					} else {
+						from_end.to_u64_try() ?? 0
+					}
+				} else if truncated >= length.to_f64() {
+					length
+				} else {
+					truncated.to_u64_try() ?? 0
+				}
+			}
+			_ => otherwise
+		}
+
+	# `at`'s index: from the end when negative, or none past either end.
+	at_index : Heap.Value, U64 -> Try(U64, [OutOfRange])
+	at_index = |subject, length| {
+		wanted = match subject {
+			Number(number) if !number.is_nan() => number.div_trunc_by(1.0)
+			_ => 0.0
+		}
+		place = if wanted < 0.0 {
+			length.to_f64() + wanted
+		} else {
+			wanted
+		}
+		if place >= 0.0 and place < length.to_f64() {
+			place.to_u64_try().map_err(|_| OutOfRange)
+		} else {
+			Err(OutOfRange)
+		}
+	}
+
+	is_callable : List(Heap.Cell), Heap.Value -> Bool
+	is_callable = |cells, value|
+		match value {
+			Reference(id) => match Heap.cell_at(cells, id) {
+				Fun(_) => True
+				Builtin(_, _) => True
+				_ => False
+			}
+			_ => False
+		}
+
 	# ---- iteration over arrays, strings, Maps and Sets -------------------------
 
 	# The values a spread, a pattern or a collection's constructor takes from
@@ -535,15 +598,6 @@ ValueRules :: [].{
 			}
 		}
 		{ machine: $s, values: $values }
-	}
-
-	## A Map or a Set, for what their methods share.
-	Collection : [IsMap, IsSet]
-
-	collection_name : ValueRules.Collection -> Str
-	collection_name = |collection| match collection {
-		IsMap => "Map"
-		IsSet => "Set"
 	}
 
 	# `new Map(entries)` or `new Set(values)`: the collection, filled from
@@ -1175,6 +1229,15 @@ ValueRules :: [].{
 			UnreadyVariable | Variable(_) | Environment(_) | Freed(_) => crash "ValueRules.kind_of: no JavaScript value refers to a VM box, an environment or a freed cell"
 		}
 
+	## A Map or a Set, for what their methods share.
+	Collection : [IsMap, IsSet]
+
+	collection_name : ValueRules.Collection -> Str
+	collection_name = |collection| match collection {
+		IsMap => "Map"
+		IsSet => "Set"
+	}
+
 	# A property or an item written: an object's property, an array's item
 	# inside it or at its end.
 	with_stored : ValueRules.Machine, Heap.Value, Heap.Value, Heap.Value, Ast.Where -> ValueRules.Got
@@ -1356,17 +1419,6 @@ ValueRules :: [].{
 			}
 			Number(_) | Boolean(_) => Ok([])
 			_ => Err(Unsupported("unsupported: `Array.from` of null or undefined"))
-		}
-
-	is_callable : List(Heap.Cell), Heap.Value -> Bool
-	is_callable = |cells, value|
-		match value {
-			Reference(id) => match Heap.cell_at(cells, id) {
-				Fun(_) => True
-				Builtin(_, _) => True
-				_ => False
-			}
-			_ => False
 		}
 
 	min_max : ValueRules.Machine, List(Heap.Value), [Min, Max], Ast.Where -> ValueRules.Got
@@ -1670,14 +1722,167 @@ ValueRules :: [].{
 		{ machine: walked, listed: listed }
 	}
 
-	# ---- array methods ---------------------------------------------------------
+	# ---- the builtins --------------------------------------------------------
 
-	items_of : List(Heap.Cell), U64 -> List(Heap.Value)
-	items_of = |cells, id|
-		match Heap.cell_at(cells, id) {
-			Array(items) => items
-			_ => crash "ValueRules.items_of: the interpreter asks only an array for its items"
+	## The builtins of `library`, made in `cells`: the cells after, and each
+	## builtin's value in the order `Resolve` places them
+	## (`Ast.global_names_of`), which the VM's outermost frame holds.
+	globals : List(Heap.Cell), Ast.Library -> { cells : List(Heap.Cell), values : List(Heap.Value) }
+	globals = |cells, library| {
+		var $s = { cells: cells, free: NoneFree, status: Running }
+		log = ValueRules.alloc($s, Builtin(Log, []))
+		$s = log.machine
+		console = ValueRules.alloc($s, Namespace("console", [{ key: "log", value: log.value }]))
+		$s = console.machine
+		var $math_properties = [
+			{ key: "PI", value: Number(3.141592653589793) },
+			{ key: "E", value: Number(2.718281828459045) },
+		]
+		for native in [
+			Floor,
+			Ceil,
+			Round,
+			Trunc,
+			Abs,
+			Sign,
+			Sqrt,
+			Pow,
+			Min,
+			Max,
+			Sin,
+			Cos,
+			Tan,
+			Atan,
+		] {
+			made = ValueRules.alloc($s, Builtin(native, []))
+			$s = made.machine
+			$math_properties = $math_properties.append({
+				key: Heap.native_name(native),
+				value: made.value,
+			})
 		}
+		math_object = ValueRules.alloc($s, Namespace("Math", $math_properties))
+		$s = math_object.machine
+		var $object_properties = []
+		for native in [Keys, Values, Entries] {
+			made = ValueRules.alloc($s, Builtin(native, []))
+			$s = made.machine
+			$object_properties = $object_properties.append({
+				key: Heap.native_name(native),
+				value: made.value,
+			})
+		}
+		object = ValueRules.alloc($s, Namespace("Object", $object_properties))
+		$s = object.machine
+		from_char_code = ValueRules.alloc($s, Builtin(FromCharCode, []))
+		$s = from_char_code.machine
+		string = ValueRules.alloc(
+			$s,
+			Builtin(StringOf, [{ key: "fromCharCode", value: from_char_code.value }]),
+		)
+		$s = string.machine
+		var $array_properties = []
+		for native in [IsArray, ArrayFrom, ArrayOf] {
+			made = ValueRules.alloc($s, Builtin(native, []))
+			$s = made.machine
+			$array_properties = $array_properties.append({
+				key: Heap.native_name(native),
+				value: made.value,
+			})
+		}
+		array = ValueRules.alloc($s, Namespace("Array", $array_properties))
+		$s = array.machine
+		is_integer = ValueRules.alloc($s, Builtin(IsInteger, []))
+		$s = is_integer.machine
+		number = ValueRules.alloc(
+			$s,
+			Namespace(
+				"Number",
+				[
+					{ key: "isInteger", value: is_integer.value },
+					{ key: "MAX_SAFE_INTEGER", value: Number(9007199254740991.0) },
+				],
+			),
+		)
+		$s = number.machine
+		var $made = [
+			{ name: "console", value: console.value },
+			{ name: "Math", value: math_object.value },
+			{ name: "Object", value: object.value },
+			{ name: "String", value: string.value },
+			{ name: "Array", value: array.value },
+			{ name: "Number", value: number.value },
+			{ name: "NaN", value: Number(0.0 / 0.0) },
+			{ name: "Infinity", value: Number(1.0 / 0.0) },
+		]
+		for native in [
+			Timing(SetTimeout),
+			Timing(SetInterval),
+			Timing(ClearTimeout),
+			Timing(ClearInterval),
+		] {
+			timer_builtin = ValueRules.alloc($s, Builtin(native, []))
+			$s = timer_builtin.machine
+			$made = $made.append({ name: Heap.native_name(native), value: timer_builtin.value })
+		}
+		for name in [Error, TypeError, RangeError, ReferenceError, SyntaxError] {
+			maker = ValueRules.alloc($s, Builtin(MakeError(name), []))
+			$s = maker.machine
+			$made = $made.append({ name: Heap.error_name_text(name), value: maker.value })
+		}
+		for native in [MakeMap, MakeSet] {
+			maker = ValueRules.alloc($s, Builtin(native, []))
+			$s = maker.machine
+			$made = $made.append({ name: Heap.native_name(native), value: maker.value })
+		}
+		match library {
+			Core => {}
+			Canvas => {
+				for native in ValueRules.canvas_natives {
+					canvas_builtin = ValueRules.alloc($s, Builtin(native, []))
+					$s = canvas_builtin.machine
+					$made = $made.append({
+						name: Heap.native_name(native),
+						value: canvas_builtin.value,
+					})
+				}
+			}
+		}
+		made = $made
+		values = Ast.global_names_of(library).map(
+			|name| (made.find_first(|g| g.name == name) ?? crash "ValueRules.globals: a builtin Ast.global_names_of names").value,
+		)
+		{ cells: $s.cells, values: values }
+	}
+
+	# The canvas library's builtins.
+	canvas_natives : List(Heap.Native)
+	canvas_natives = [
+		Paint(Background),
+		Paint(Fill),
+		Paint(NoFill),
+		Paint(Stroke),
+		Paint(NoStroke),
+		Paint(Line),
+		Paint(Rect),
+		Paint(Circle),
+		Paint(Ellipse),
+		Paint(Polygon),
+		Paint(Words),
+		Move(Forward),
+		Move(Back),
+		Move(Turn),
+		Move(PenUp),
+		Move(PenDown),
+		Move(Goto),
+		Sense(MouseX),
+		Sense(MouseY),
+		Sense(KeyIsDown),
+		OnClick,
+		OnCollect,
+	]
+
+	# ---- array methods ---------------------------------------------------------
 
 	item_count : List(Heap.Cell), U64 -> U64
 	item_count = |cells, id|
@@ -1691,32 +1896,6 @@ ValueRules :: [].{
 		match Heap.cell_at(cells, id) {
 			Array(items) => items.get(position) ?? Undefined
 			_ => crash "ValueRules.item_at: the interpreter asks only an array for an item"
-		}
-
-	# A relative index (`slice`'s, negative from the end) as an index in 0..n.
-	relative_index : Heap.Value, U64, U64 -> U64
-	relative_index = |subject, length, otherwise|
-		match subject {
-			Number(x) => {
-				truncated = if x.is_nan() {
-					0.0
-				} else {
-					x.div_trunc_by(1.0)
-				}
-				if truncated < 0.0 {
-					from_end = length.to_f64() + truncated
-					if from_end < 0.0 {
-						0
-					} else {
-						from_end.to_u64_try() ?? 0
-					}
-				} else if truncated >= length.to_f64() {
-					length
-				} else {
-					truncated.to_u64_try() ?? 0
-				}
-			}
-			_ => otherwise
 		}
 
 	# Where in `items` from `from` on an item first passes `test`, or none.
@@ -1737,25 +1916,6 @@ ValueRules :: [].{
 	place_number = |found| match found {
 		Place(position) => position.to_f64()
 		NoPlace => -1.0
-	}
-
-	# `at`'s index: from the end when negative, or none past either end.
-	at_index : Heap.Value, U64 -> Try(U64, [OutOfRange])
-	at_index = |subject, length| {
-		wanted = match subject {
-			Number(number) if !number.is_nan() => number.div_trunc_by(1.0)
-			_ => 0.0
-		}
-		place = if wanted < 0.0 {
-			length.to_f64() + wanted
-		} else {
-			wanted
-		}
-		if place >= 0.0 and place < length.to_f64() {
-			place.to_u64_try().map_err(|_| OutOfRange)
-		} else {
-			Err(OutOfRange)
-		}
 	}
 
 	# An array's items with the arrays among them put in their place, to
@@ -2362,164 +2522,4 @@ ValueRules :: [].{
 			)
 		}
 	}
-
-	# ---- the builtins --------------------------------------------------------
-
-	## The builtins of `library`, made in `cells`: the cells after, and each
-	## builtin's value in the order `Resolve` places them
-	## (`Ast.global_names_of`), which the VM's outermost frame holds.
-	globals : List(Heap.Cell), Ast.Library -> { cells : List(Heap.Cell), values : List(Heap.Value) }
-	globals = |cells, library| {
-		var $s = { cells: cells, free: NoneFree, status: Running }
-		log = ValueRules.alloc($s, Builtin(Log, []))
-		$s = log.machine
-		console = ValueRules.alloc($s, Namespace("console", [{ key: "log", value: log.value }]))
-		$s = console.machine
-		var $math_properties = [
-			{ key: "PI", value: Number(3.141592653589793) },
-			{ key: "E", value: Number(2.718281828459045) },
-		]
-		for native in [
-			Floor,
-			Ceil,
-			Round,
-			Trunc,
-			Abs,
-			Sign,
-			Sqrt,
-			Pow,
-			Min,
-			Max,
-			Sin,
-			Cos,
-			Tan,
-			Atan,
-		] {
-			made = ValueRules.alloc($s, Builtin(native, []))
-			$s = made.machine
-			$math_properties = $math_properties.append({
-				key: Heap.native_name(native),
-				value: made.value,
-			})
-		}
-		math_object = ValueRules.alloc($s, Namespace("Math", $math_properties))
-		$s = math_object.machine
-		var $object_properties = []
-		for native in [Keys, Values, Entries] {
-			made = ValueRules.alloc($s, Builtin(native, []))
-			$s = made.machine
-			$object_properties = $object_properties.append({
-				key: Heap.native_name(native),
-				value: made.value,
-			})
-		}
-		object = ValueRules.alloc($s, Namespace("Object", $object_properties))
-		$s = object.machine
-		from_char_code = ValueRules.alloc($s, Builtin(FromCharCode, []))
-		$s = from_char_code.machine
-		string = ValueRules.alloc(
-			$s,
-			Builtin(StringOf, [{ key: "fromCharCode", value: from_char_code.value }]),
-		)
-		$s = string.machine
-		var $array_properties = []
-		for native in [IsArray, ArrayFrom, ArrayOf] {
-			made = ValueRules.alloc($s, Builtin(native, []))
-			$s = made.machine
-			$array_properties = $array_properties.append({
-				key: Heap.native_name(native),
-				value: made.value,
-			})
-		}
-		array = ValueRules.alloc($s, Namespace("Array", $array_properties))
-		$s = array.machine
-		is_integer = ValueRules.alloc($s, Builtin(IsInteger, []))
-		$s = is_integer.machine
-		number = ValueRules.alloc(
-			$s,
-			Namespace(
-				"Number",
-				[
-					{ key: "isInteger", value: is_integer.value },
-					{ key: "MAX_SAFE_INTEGER", value: Number(9007199254740991.0) },
-				],
-			),
-		)
-		$s = number.machine
-		var $made = [
-			{ name: "console", value: console.value },
-			{ name: "Math", value: math_object.value },
-			{ name: "Object", value: object.value },
-			{ name: "String", value: string.value },
-			{ name: "Array", value: array.value },
-			{ name: "Number", value: number.value },
-			{ name: "NaN", value: Number(0.0 / 0.0) },
-			{ name: "Infinity", value: Number(1.0 / 0.0) },
-		]
-		for native in [
-			Timing(SetTimeout),
-			Timing(SetInterval),
-			Timing(ClearTimeout),
-			Timing(ClearInterval),
-		] {
-			timer_builtin = ValueRules.alloc($s, Builtin(native, []))
-			$s = timer_builtin.machine
-			$made = $made.append({ name: Heap.native_name(native), value: timer_builtin.value })
-		}
-		for name in [Error, TypeError, RangeError, ReferenceError, SyntaxError] {
-			maker = ValueRules.alloc($s, Builtin(MakeError(name), []))
-			$s = maker.machine
-			$made = $made.append({ name: Heap.error_name_text(name), value: maker.value })
-		}
-		for native in [MakeMap, MakeSet] {
-			maker = ValueRules.alloc($s, Builtin(native, []))
-			$s = maker.machine
-			$made = $made.append({ name: Heap.native_name(native), value: maker.value })
-		}
-		match library {
-			Core => {}
-			Canvas => {
-				for native in ValueRules.canvas_natives {
-					canvas_builtin = ValueRules.alloc($s, Builtin(native, []))
-					$s = canvas_builtin.machine
-					$made = $made.append({
-						name: Heap.native_name(native),
-						value: canvas_builtin.value,
-					})
-				}
-			}
-		}
-		made = $made
-		values = Ast.global_names_of(library).map(
-			|name| (made.find_first(|g| g.name == name) ?? crash "ValueRules.globals: a builtin Ast.global_names_of names").value,
-		)
-		{ cells: $s.cells, values: values }
-	}
-
-	# The canvas library's builtins.
-	canvas_natives : List(Heap.Native)
-	canvas_natives = [
-		Paint(Background),
-		Paint(Fill),
-		Paint(NoFill),
-		Paint(Stroke),
-		Paint(NoStroke),
-		Paint(Line),
-		Paint(Rect),
-		Paint(Circle),
-		Paint(Ellipse),
-		Paint(Polygon),
-		Paint(Words),
-		Move(Forward),
-		Move(Back),
-		Move(Turn),
-		Move(PenUp),
-		Move(PenDown),
-		Move(Goto),
-		Sense(MouseX),
-		Sense(MouseY),
-		Sense(KeyIsDown),
-		OnClick,
-		OnCollect,
-	]
 }
