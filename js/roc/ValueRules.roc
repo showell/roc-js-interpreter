@@ -624,55 +624,6 @@ ValueRules :: [].{
 			}
 		}
 
-	# Whether evaluating an expression can't change a variable: it calls
-	# nothing, assigns nothing and makes no function.
-	is_pure : Ast.Expression -> Bool
-	is_pure = |expression| match expression {
-		Number(_) => True
-		Text(_) => True
-		Boolean(_) => True
-		Null => True
-		Undefined => True
-		Name(_, _, _) => True
-		Template(_, parts) => parts.all(ValueRules.is_pure)
-		ArrayLit(items) => items.all(ValueRules.is_pure_element)
-		ObjectLit(parts) => parts.all(
-			|part| match part {
-				Field(p) => ValueRules.is_pure(p.value)
-				Spread(spread, _) => ValueRules.is_pure(spread)
-			},
-		)
-		Unary(_, left, _) => ValueRules.is_pure(left)
-		Binary(_, left, right, _) => ValueRules.is_pure(left) and ValueRules.is_pure(right)
-		Logical(_, left, right) => ValueRules.is_pure(left) and ValueRules.is_pure(right)
-		Conditional(
-			test,
-			yes,
-			no,
-		) => ValueRules.is_pure(test) and ValueRules.is_pure(yes) and ValueRules.is_pure(no)
-		Member(left, _, _) => ValueRules.is_pure(left)
-		Index(left, right, _) => ValueRules.is_pure(left) and ValueRules.is_pure(right)
-		Assign(_, _, _, _) => False
-		Update(_, _, _, _) => False
-		Call(_, _, _) => False
-		Function(_) => False
-		Destructure(_, _, _) => False
-		New(_, _, _) => False
-		Instance(_) => False
-		InstanceOf(_, _, _, _) => False
-		OptionalMember(left, _, _) => ValueRules.is_pure(left)
-		OptionalIndex(left, right, _) => ValueRules.is_pure(left) and ValueRules.is_pure(right)
-		OptionalCall(_, _, _) => False
-		Chain(chain) => ValueRules.is_pure(chain)
-	}
-
-	is_pure_element : Ast.Element -> Bool
-	is_pure_element = |element|
-		match element {
-			Single(expression) => ValueRules.is_pure(expression)
-			Spread(expression, _) => ValueRules.is_pure(expression)
-		}
-
 	# ---- patterns --------------------------------------------------------------
 
 	## Where a value being taken apart came from, which node's messages name

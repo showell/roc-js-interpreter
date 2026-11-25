@@ -1403,7 +1403,7 @@ assignment = |state, { target, operator, value, at: site }|
 				write = name_write(reached, { name: name, at: at })
 				ops = match operator {
 					Set => made.ops.append(Do(write))
-					Combine(Add) if ValueRules.is_pure(value) and is_plain_local(reached) => made.ops.append(Do(AppendLocal({ slot: plain_slot(reached), at: site })))
+					Combine(Add) if is_pure(value) and is_plain_local(reached) => made.ops.append(Do(AppendLocal({ slot: plain_slot(reached), at: site })))
 					Combine(binary) => List.concat([Do(name_peek(reached))], made.ops).append(Do(Binary(binary, site))).append(Do(write))
 					Logically(logical) => {
 						read = name_read(placed, { name: name, slot: slot, at: at })?
@@ -1463,6 +1463,51 @@ is_plain_local = |reached| match reached {
 	Own({ place: Slot(_), kind: Mutable, ready: True }) => True
 	_ => False
 }
+
+# Whether evaluating an expression can't change a variable: it calls
+# nothing, assigns nothing and makes no function.
+is_pure : Ast.Expression -> Bool
+is_pure = |expression| match expression {
+	Number(_) => True
+	Text(_) => True
+	Boolean(_) => True
+	Null => True
+	Undefined => True
+	Name(_, _, _) => True
+	Template(_, parts) => parts.all(is_pure)
+	ArrayLit(items) => items.all(is_pure_element)
+	ObjectLit(parts) => parts.all(
+		|part| match part {
+			Field(p) => is_pure(p.value)
+			Spread(spread, _) => is_pure(spread)
+		},
+	)
+	Unary(_, left, _) => is_pure(left)
+	Binary(_, left, right, _) => is_pure(left) and is_pure(right)
+	Logical(_, left, right) => is_pure(left) and is_pure(right)
+	Conditional(test, yes, no) => is_pure(test) and is_pure(yes) and is_pure(no)
+	Member(left, _, _) => is_pure(left)
+	Index(left, right, _) => is_pure(left) and is_pure(right)
+	Assign(_, _, _, _) => False
+	Update(_, _, _, _) => False
+	Call(_, _, _) => False
+	Function(_) => False
+	Destructure(_, _, _) => False
+	New(_, _, _) => False
+	Instance(_) => False
+	InstanceOf(_, _, _, _) => False
+	OptionalMember(left, _, _) => is_pure(left)
+	OptionalIndex(left, right, _) => is_pure(left) and is_pure(right)
+	OptionalCall(_, _, _) => False
+	Chain(chain) => is_pure(chain)
+}
+
+is_pure_element : Ast.Element -> Bool
+is_pure_element = |element|
+	match element {
+		Single(expression) => is_pure(expression)
+		Spread(expression, _) => is_pure(expression)
+	}
 
 plain_slot : Compile.Reached -> U64
 plain_slot = |reached| match reached {

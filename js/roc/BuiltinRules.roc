@@ -419,7 +419,7 @@ BuiltinRules :: [].{
 		{ machine: walked, listed: listed }
 	}
 
-	# ---- the builtins --------------------------------------------------------
+	# ---- the globals ---------------------------------------------------------
 
 	## The builtins of `library`, made in `cells`: the cells after, and each
 	## builtin's value in the order `Resolve` places them
