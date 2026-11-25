@@ -44,7 +44,7 @@ A second run a minute later had the same shape, with a fair spread. loops(300000
 ## What they say
 
 - **Small programs:** the executable wins against `node file.js` on all four, at 1 to 84 ms against 48 to 108. The win is node's start-up, as the book says. Inside a warm node process, the same small workloads take 0.1 to 3.3 ms per run.
-- **Large programs:** node wins even one-shot, start-up included, on three of the four. Warmed, it wins on all four:
+- **Large programs:** node wins even one-shot, start-up included, on all four, though fib's gap (222 against 213 ms) is well inside the spread between runs. Warmed, it wins on all four:
   - fib, by about 1.2 to 1.3 times. All of fib's kinds are known, so the executable tests no tags, but its baseline code keeps every value in memory.
   - sieve, by 1.7 times.
   - collatz, by 2.2 times.
