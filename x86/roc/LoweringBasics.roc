@@ -81,6 +81,9 @@ LoweringBasics :: [].{
 		escaped_codes : List(U64),
 		# The slots of this code's frame that hold a cell's address.
 		cells : List(U64),
+		# The captured cells that hold one number for good, with the number
+		# (`KnownFunctions.constant_numbers`).
+		numbers : Dict(U64, F64),
 		returns : Dict(U64, LoweringBasics.Kind),
 		parameters : Dict(U64, List(LoweringBasics.Kind)),
 		literals : Dict(Str, U64),

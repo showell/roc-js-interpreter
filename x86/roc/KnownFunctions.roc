@@ -2,7 +2,8 @@
 ## code each `MakeClosure` makes and where (`makers_of`), the functions a
 ## code's start declares (`declared_functions`), the function known before
 ## the program runs that a slot holds (`held_function`), the codes known so
-## (`statics_of`), the slots that hold a cell (`celled_slots`), and the
+## (`statics_of`), the slots that hold a cell (`celled_slots`), the captured
+## cells that hold one number for good (`constant_numbers`), and the
 ## read-only closure records and console.log texts of the functions a value
 ## may hold (`closure_statements`).
 ##
@@ -11,6 +12,8 @@
 ## bytecode: what it decides (a function known by its code alone, a
 ## variable in a cell) every lowered instruction then takes as given.
 import js.Bytecode
+import js.Compile
+import js.Parser
 import Assembly
 import LoweringBasics
 import Runtime
@@ -180,6 +183,44 @@ KnownFunctions :: [].{
 		$cells
 	}
 
+	## The captured slots of code `index`'s frame whose cell holds one number
+	## for as long as the code can run, with the number: a variable of the
+	## maker's frame (`const BASE = 10000000;` at a program's top) that the
+	## maker sets from a number literal in the straight run of declarations its
+	## code starts with, before anything that can run code (a call, a read, an
+	## operator), and that nothing else writes: not the maker again, not any
+	## code it makes that captures it, and no code those make in turn (a code
+	## that passes the cell on to a closure of its own keeps it a cell). A
+	## closure made by the maker can run only once the maker runs code, so
+	## every read of the cell comes after it is set: the number is the read's
+	## value, with no tag to test and no ReferenceError to throw.
+	constant_numbers : LoweringBasics.Known, U64 -> Dict(U64, F64)
+	constant_numbers = |known, index| {
+		code = known.program.codes.get(index) ?? crash "KnownFunctions.constant_numbers: a code"
+		var $found = Dict.empty()
+		match known.makers.get(index) {
+			Ok(maker) =>
+				for step in code.entry {
+					match step {
+						CapturedBox({ slot, capture }) => {
+							from =
+								maker.captures.get(capture)
+									?? crash "KnownFunctions.constant_numbers: a capture"
+							match set_number(known, { parent: maker.parent, slot: from }) {
+								Ok(number) => {
+									$found = $found.insert(slot, number)
+								}
+								Err(Unset) => {}
+							}
+						}
+						_ => {}
+					}
+				}
+			Err(_) => {}
+		}
+		$found
+	}
+
 	## The text console.log writes for each function a value may hold, and the
 	## closure record, in the read-only segment, of each known before the
 	## program runs (`Boxing.function_tag`'s layout, with no captures).
@@ -233,3 +274,134 @@ KnownFunctions :: [].{
 		$out
 	}
 }
+
+## The number a slot of code `parent`'s frame holds for good, as
+## `constant_numbers` says: its box fresh at the code's entry, set once,
+## from a number literal, in the declarations the code starts with, and
+## written by nothing else.
+set_number : LoweringBasics.Known, { parent : U64, slot : U64 } -> Try(F64, [Unset])
+set_number = |known, { parent, slot }| {
+	code = known.program.codes.get(parent) ?? crash "KnownFunctions.set_number: a code"
+	if !code.entry.contains(FreshBox(slot)) {
+		return Err(Unset)
+	}
+	if code.ops.count_if(|instruction| writes_slot(instruction, slot)) != 1 {
+		return Err(Unset)
+	}
+	var $number = Err(Unset)
+	var $at = 0
+	var $going = True
+	while $going {
+		match (code.ops.get($at), code.ops.get($at + 1)) {
+			(Ok(PushNumber(number)), Ok(SetBoxed(set))) => {
+				if set == slot {
+					$number = Ok(number)
+				}
+				$at = $at + 2
+			}
+			(Ok(instruction), _) if is_declaring(instruction) => {
+				$at = $at + 1
+			}
+			_ => {
+				$going = False
+			}
+		}
+	}
+	if $number.is_err() {
+		return Err(Unset)
+	}
+	for (made, maker) in known.makers.to_list() {
+		if maker.parent == parent {
+			for (from, capture) in maker.captures.map_with_index(|from, capture| (from, capture)) {
+				if from == slot and written_where_captured(known, { made, capture }) {
+					return Err(Unset)
+				}
+			}
+		}
+	}
+	$number
+}
+
+## Whether code `made` writes the slot its capture `capture` lands in, or
+## captures that slot in a closure of its own.
+written_where_captured : LoweringBasics.Known, { made : U64, capture : U64 } -> Bool
+written_where_captured = |known, { made, capture }| {
+	code = known.program.codes.get(made) ?? crash "KnownFunctions.written_where_captured: a code"
+	code.entry.any(
+		|step|
+			match step {
+				CapturedBox({ slot, capture: at }) if at == capture =>
+					code.ops.any(
+						|instruction|
+							match instruction {
+								MakeClosure({ code: _, captures, definition: _ }) => captures.contains(slot)
+								_ => writes_slot(instruction, slot)
+							},
+					)
+				_ => False
+			},
+	)
+}
+
+## Whether an instruction may run nothing but declarations, so none of the
+## program's code: a closure made, a literal pushed, a declaration set.
+is_declaring : Bytecode.Op -> Bool
+is_declaring = |instruction|
+	match instruction {
+		MakeClosure(_) | SetBoxed(_) | SetLocal(_) => True
+		PushNumber(_) | PushText(_) | PushBoolean(_) | PushNull | PushUndefined => True
+		_ => False
+	}
+
+## Whether an instruction writes a slot of its frame, or makes a fresh box
+## there: an assignment to a `const` only throws, so it writes nothing.
+writes_slot : Bytecode.Op, U64 -> Bool
+writes_slot = |instruction, slot|
+	match instruction {
+		StoreLocal(written) | SetLocal(written) | SetBoxed(written) => written == slot
+		NewBox(written) | CopyBox(written) => written == slot
+		StoreBoxed({ slot: written, name: _, kind: Mutable, at: _ }) => written == slot
+		UpdateBoxed({ slot: written, name: _, kind: Mutable, step: _ }) => written == slot
+		AppendLocal({ slot: written, at: _ }) => written == slot
+		UpdateLocal({ slot: written, step: _ }) => written == slot
+		IterNext({ slot: written, exit: _ }) => written == slot
+		_ => False
+	}
+
+## The captured numbers `constant_numbers` finds for the program's first
+## function, each number as its bits, for the expects.
+first_function_numbers : Str -> List((U64, U64))
+first_function_numbers = |src| {
+	tree = Parser.program_of(src, Core) ?? crash "KnownFunctions.first_function_numbers: a program that parses"
+	program = match Compile.program(tree) {
+		Ok(compiled) => compiled
+		Err(_) => crash "KnownFunctions.first_function_numbers: a program that compiles"
+	}
+	makers = KnownFunctions.makers_of(program) ?? crash "KnownFunctions.first_function_numbers: its makers"
+	known = { program, makers, statics: KnownFunctions.statics_of(program, makers) }
+	KnownFunctions.constant_numbers(known, 0).to_list().map(|(slot, number)| (slot, number.to_bits()))
+}
+
+# A top-level `const` set from a number literal, before any call: its number.
+expect {
+	found = first_function_numbers("const BASE = 7;\nfunction f() { return BASE; }\nconsole.log(f());")
+	seven : F64
+	seven = 7
+	found.map(|(_, bits)| bits) == [seven.to_bits()]
+}
+
+# A `let` assigned again later holds no number for good.
+expect first_function_numbers("let BASE = 7;\nfunction f() { return BASE; }\nBASE = 8;\nconsole.log(f());") == []
+
+# Nor one the function itself assigns.
+expect first_function_numbers("let BASE = 7;\nfunction f() { BASE = 2; return BASE; }\nconsole.log(f());") == []
+
+# Nor one declared after a call, which may read it before it is set (node's
+# ReferenceError).
+expect first_function_numbers("console.log(f());\nconst BASE = 7;\nfunction f() { return BASE; }") == []
+
+# Nor one set from anything but a number literal.
+expect first_function_numbers("const BASE = 7 / 2;\nfunction f() { return BASE; }\nconsole.log(f());") == []
+
+# Nor one the function passes on to a closure of its own.
+expect first_function_numbers("const BASE = 7;\nfunction f() { return () => BASE; }\nconsole.log(f()());") == []

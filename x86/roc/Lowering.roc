@@ -90,6 +90,7 @@ Lowering :: [].{
 					statics,
 					escaped_codes: $escaped_codes,
 					cells: KnownFunctions.celled_slots(known, index),
+					numbers: KnownFunctions.constant_numbers(known, index),
 					returns: $returns,
 					parameters: $parameters,
 					literals,
@@ -1436,6 +1437,16 @@ instruction_items = |site, { instruction, state }| {
 			Ok(BuiltinLowering.unready_items(site, name))
 		LoadBoxed({ slot, name, at: _ }) => {
 			kind = LoweringBasics.slot_kind(site, { state, slot, name: "`${name}`" })?
+			match site.context.numbers.get(slot) {
+				Ok(number) =>
+					return Ok(
+						LoweringBasics.falling(
+							LoweringBasics.constant_items({ bits: number.to_bits(), to: next_place }),
+							LoweringBasics.with_top(state, Number),
+						),
+					)
+				Err(_) => {}
+			}
 			Ok(
 				LoweringBasics.falling(
 					CallLowering.boxed_load_items(site, { state, slot }),
