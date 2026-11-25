@@ -947,7 +947,14 @@ instruction_items = |site, { instruction, state }| {
 					Ok(
 						LoweringBasics.falling(
 							if key == "length" {
-								IndexLowering.length_items(site, { kind, place: top_place(0), slow: called })
+								IndexLowering.length_items(
+									site,
+									{
+										kind,
+										place: top_place(0),
+										slow_items: called,
+									},
+								)
 							} else {
 								called
 							},
@@ -1085,10 +1092,13 @@ instruction_items = |site, { instruction, state }| {
 							IndexLowering.item_read_items(
 								site,
 								{
-									kinds: (LoweringBasics.kind_below(state, 1), LoweringBasics.kind_below(state, 0)),
+									kinds: (
+										LoweringBasics.kind_below(state, 1),
+										LoweringBasics.kind_below(state, 0),
+									),
 									receiver: top_place(1),
 									index: top_place(0),
-									slow: called,
+									slow_items: called,
 								},
 							),
 							LoweringBasics.with_top(LoweringBasics.without_top(state, 2), Value),
@@ -1115,11 +1125,14 @@ instruction_items = |site, { instruction, state }| {
 							IndexLowering.item_write_items(
 								site,
 								{
-									kinds: (LoweringBasics.kind_below(state, 2), LoweringBasics.kind_below(state, 1)),
+									kinds: (
+										LoweringBasics.kind_below(state, 2),
+										LoweringBasics.kind_below(state, 1),
+									),
 									receiver: top_place(2),
 									index: top_place(1),
-									item: top_place(0),
-									slow: called,
+									value_place: top_place(0),
+									slow_items: called,
 								},
 							).concat(
 								LoweringBasics.copy_items({ from: top_place(0), to: top_place(2) }),

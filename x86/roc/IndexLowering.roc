@@ -22,14 +22,14 @@ IndexLowering :: [].{
 
 	## `length` of the value at `place`, in its place: an array's or a
 	## string's length (the first 8 bytes of either) made a double, or
-	## `slow`, the routine's call, for any other value.
+	## `slow_items`, the routine's call, for any other value.
 	length_items : LoweringBasics.Site,
 	{
 		kind : LoweringBasics.Kind,
 		place : X86.Mem,
-		slow : List(Assembly.Statement),
+		slow_items : List(Assembly.Statement),
 	} -> List(Assembly.Statement)
-	length_items = |site, { kind, place, slow }| {
+	length_items = |site, { kind, place, slow_items }| {
 		slow_label = LoweringBasics.inner_label(site, "slow")
 		done_label = LoweringBasics.inner_label(site, "done")
 		array_label = LoweringBasics.inner_label(site, "array")
@@ -58,23 +58,23 @@ IndexLowering :: [].{
 						Emit.jmp(done_label),
 						Emit.mark(slow_label),
 					])
-					.concat(slow)
+					.concat(slow_items)
 					.append(Emit.mark(done_label))
-			Err(Untested) => slow
+			Err(Untested) => slow_items
 		}
 	}
 
 	## `receiver[index]`, in the receiver's place: the item, when the
 	## receiver is an array and the index a whole number below its length,
-	## else `slow`, the routine's call.
+	## else `slow_items`, the routine's call.
 	item_read_items : LoweringBasics.Site,
 	{
 		kinds : (LoweringBasics.Kind, LoweringBasics.Kind),
 		receiver : X86.Mem,
 		index : X86.Mem,
-		slow : List(Assembly.Statement),
+		slow_items : List(Assembly.Statement),
 	} -> List(Assembly.Statement)
-	item_read_items = |site, { kinds, receiver, index, slow }| {
+	item_read_items = |site, { kinds, receiver, index, slow_items }| {
 		slow_label = LoweringBasics.inner_label(site, "slow")
 		done_label = LoweringBasics.inner_label(site, "done")
 		match item_address_items({ kinds, receiver, index, label: slow_label }) {
@@ -86,38 +86,38 @@ IndexLowering :: [].{
 						Emit.jmp(done_label),
 						Emit.mark(slow_label),
 					])
-					.concat(slow)
+					.concat(slow_items)
 					.append(Emit.mark(done_label))
-			Err(Untested) => slow
+			Err(Untested) => slow_items
 		}
 	}
 
-	## `receiver[index] = item`, the array changed in place, when the
+	## `receiver[index] = ` the value at `value_place`, the array changed in place, when the
 	## receiver is an array and the index a whole number below its length,
-	## else `slow`, the routine's call (an append among what it does).
+	## else `slow_items`, the routine's call (an append among what it does).
 	item_write_items : LoweringBasics.Site,
 	{
 		kinds : (LoweringBasics.Kind, LoweringBasics.Kind),
 		receiver : X86.Mem,
 		index : X86.Mem,
-		item : X86.Mem,
-		slow : List(Assembly.Statement),
+		value_place : X86.Mem,
+		slow_items : List(Assembly.Statement),
 	} -> List(Assembly.Statement)
-	item_write_items = |site, { kinds, receiver, index, item, slow }| {
+	item_write_items = |site, { kinds, receiver, index, value_place, slow_items }| {
 		slow_label = LoweringBasics.inner_label(site, "slow")
 		done_label = LoweringBasics.inner_label(site, "done")
 		match item_address_items({ kinds, receiver, index, label: slow_label }) {
 			Ok(addressed) =>
 				addressed
 					.concat([
-						Emit.load(Rax, item),
+						Emit.load(Rax, value_place),
 						Emit.store(item_place, Rax),
 						Emit.jmp(done_label),
 						Emit.mark(slow_label),
 					])
-					.concat(slow)
+					.concat(slow_items)
 					.append(Emit.mark(done_label))
-			Err(Untested) => slow
+			Err(Untested) => slow_items
 		}
 	}
 }
@@ -150,7 +150,9 @@ item_address_items = |{ kinds, receiver, index, label }| {
 		_ => Err(Untested)
 	}?
 	index_tested = match kinds.1 {
-		Number | Value => Ok(LoweringBasics.unless_number_items({ kind: kinds.1, place: index, label }))
+		Number | Value => Ok(
+			LoweringBasics.unless_number_items({ kind: kinds.1, place: index, label }),
+		)
 		_ => Err(Untested)
 	}?
 	# A whole number survives the round trip through an integer; a negative

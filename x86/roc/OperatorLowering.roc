@@ -159,9 +159,19 @@ OperatorLowering :: [].{
 						]
 						# Two values that may be numbers are added in line when they
 						# are, and by `runtime_add` when either isn't.
+						both_numeric = LoweringBasics.is_numeric(kinds.0) and LoweringBasics.is_numeric(kinds.1)
 						statements =
-							if LoweringBasics.is_numeric(kinds.0) and LoweringBasics.is_numeric(kinds.1) {
-								numbers_first(site, { kinds, left, right, fast: arithmetic(Addsd).statements, slow: called })
+							if both_numeric {
+								numbers_first_items(
+									site,
+									{
+										kinds,
+										left,
+										right,
+										fast_items: arithmetic(Addsd).statements,
+										slow_items: called,
+									},
+								)
 							} else {
 								called
 							}
@@ -199,10 +209,26 @@ OperatorLowering :: [].{
 			| (Greater, _)
 			| (GreaterOrEqual, _) if LoweringBasics.is_ordered(kinds) => {
 				numbered = match operator {
-					Less => ordered({ first: right, second: left, condition: A })
-					LessOrEqual => ordered({ first: right, second: left, condition: Ae })
-					Greater => ordered({ first: left, second: right, condition: A })
-					_ => ordered({ first: left, second: right, condition: Ae })
+					Less => ordered({
+						first: right,
+						second: left,
+						condition: A,
+					})
+					LessOrEqual => ordered({
+						first: right,
+						second: left,
+						condition: Ae,
+					})
+					Greater => ordered({
+						first: left,
+						second: right,
+						condition: A,
+					})
+					_ => ordered({
+						first: left,
+						second: right,
+						condition: Ae,
+					})
 				}
 				mapped = match operator {
 					Less => [Emit.cmp_imm(Rax, 0), Instruction(Setcc({ condition: E, to: Al }))]
@@ -229,7 +255,16 @@ OperatorLowering :: [].{
 				# and by `runtime_compare` when either isn't (two strings).
 				statements =
 					if LoweringBasics.is_numeric(kinds.0) and LoweringBasics.is_numeric(kinds.1) {
-						numbers_first(site, { kinds, left, right, fast: numbered.statements, slow: called })
+						numbers_first_items(
+							site,
+							{
+								kinds,
+								left,
+								right,
+								fast_items: numbered.statements,
+								slow_items: called,
+							},
+						)
 					} else {
 						called
 					}
@@ -623,24 +658,34 @@ OperatorLowering :: [].{
 	}
 }
 
-## An operator's statements for two values that may be numbers: `fast`, in
-## line, when both are numbers (a known number's tag isn't tested), else
-## `slow`, the runtime's routine.
-numbers_first : LoweringBasics.Site,
+## An operator's statements for two values that may be numbers: `fast_items`,
+## in line, when both are numbers (a known number's tag isn't tested), else
+## `slow_items`, the runtime's routine.
+numbers_first_items : LoweringBasics.Site,
 {
 	kinds : (LoweringBasics.Kind, LoweringBasics.Kind),
 	left : X86.Mem,
 	right : X86.Mem,
-	fast : List(Assembly.Statement),
-	slow : List(Assembly.Statement),
+	fast_items : List(Assembly.Statement),
+	slow_items : List(Assembly.Statement),
 } -> List(Assembly.Statement)
-numbers_first = |site, { kinds, left, right, fast, slow }| {
+numbers_first_items = |site, { kinds, left, right, fast_items, slow_items }| {
 	slow_label = LoweringBasics.inner_label(site, "slow")
 	done_label = LoweringBasics.inner_label(site, "done")
-	LoweringBasics.unless_number_items({ kind: kinds.0, place: left, label: slow_label })
-		.concat(LoweringBasics.unless_number_items({ kind: kinds.1, place: right, label: slow_label }))
-		.concat(fast)
+	LoweringBasics.unless_number_items({
+		kind: kinds.0,
+		place: left,
+		label: slow_label,
+	})
+		.concat(
+			LoweringBasics.unless_number_items({
+				kind: kinds.1,
+				place: right,
+				label: slow_label,
+			}),
+		)
+		.concat(fast_items)
 		.concat([Emit.jmp(done_label), Emit.mark(slow_label)])
-		.concat(slow)
+		.concat(slow_items)
 		.append(Emit.mark(done_label))
 }
