@@ -1,0 +1,48 @@
+-- The VM's machine (`Machine.Machine`) held to its size inline, in bytes,
+-- exactly: `shale tools/machine_size.shale`, from the repository's root.
+-- Planted, HELD at 247 went red naming 248 (2026-11-25).
+--
+-- **WHY IT IS HELD:** every instruction hands the machine back, and LLVM
+-- copies a record of up to 256 bytes with eight vector moves and calls
+-- `memcpy` for a bigger one, which took a sixth of fib's time at 312 bytes
+-- (js/README.md, "The machine stays at most 256 bytes inline"). It is held
+-- exactly, not at 256, so any change to the record goes red until someone
+-- decides, and moves HELD in the commit that moves it.
+--
+-- **HOW IT IS MEASURED:** js/roc/JsMachineSize.roc, built by the dev
+-- backend, makes an empty list of machines each pass, with room for one in
+-- one run and for two in another. roc-alloc-trace's `where` names the bytes
+-- each run's allocation asked for, and the difference is one machine,
+-- whatever header a list carries. The dev build
+-- lays a record out as the release build does (the layout is the
+-- compiler's, before either backend), and compiles in about a second.
+--
+-- budget: steps=20000000
+
+use("./alloc_trace.shale")
+
+const HELD = 248
+const WHO = "tools/machine_size.shale"
+
+-- The bytes one pass's list asked for, with room for `room` machines.
+function asked(trace, exe, room)
+  local r = run({trace, "where", "--small", "100", "--big", "1000", "--", exe, "{N}", room},
+    {timeout_ms = 120000, tail = 40, want = ALLOC_TRACE_WANT})
+  if r.code ~= 0 then fail(WHO .. ": roc-alloc-trace where exited " .. r.code .. ": " .. trim(r.out)) end
+  local m = re_find(r.out, "1\\.00 of ([0-9]+) bytes from machines_with_room")
+  if m == nil then fail(WHO .. ": roc-alloc-trace named no allocation a pass from machines_with_room: " .. trim(r.out)) end
+  return tonumber(m.group)
+end
+
+function main()
+  local exe = built_roc(WHO, "js/roc/JsMachineSize.roc", "js-machine-size", "dev")
+  local gen = "build:roc-js-interpreter/gen/js/" .. basename(real(".")) .. "/dev"
+  local trace = build_alloc_trace(WHO, gen)
+  local size = asked(trace, exe, "2") - asked(trace, exe, "1")
+  if size ~= HELD then
+    fail(WHO .. ": Machine.Machine is " .. size .. " bytes inline, held at " .. HELD .. ": move HELD only on purpose, since past 256 bytes every instruction calls memcpy")
+  end
+  print("machine: " .. size .. " bytes inline, held at " .. HELD)
+end
+
+main()
