@@ -1,7 +1,7 @@
 ## This module lays out a scope for the JavaScript parser: the names a
 ## function's, a block's or a `for`'s scope holds (`scope_names`,
 ## `scoping_of`), and the redeclarations that would make that layout
-## ambiguous, which JavaScript refuses (`redeclared_message`,
+## ambiguous, which JavaScript refuses (`redeclaration`,
 ## `repeated_name`). It also names the function literals a binding gives a
 ## name to (`with_name_given`, `named_for`), as `const f = () => 1` is "f".
 ##
@@ -28,12 +28,7 @@ ScopeLayout :: [].{
 				FunctionDeclaration(boxed, _) => {
 					definition = boxed.unbox()
 					if $lexical.contains(definition.name) {
-						return Err(
-							ParserBasics.fault_at(
-								definition.at,
-								ScopeLayout.redeclared_message(definition.name),
-							),
-						)
+						return Err(ScopeLayout.redeclaration(definition.at, definition.name))
 					}
 					if !$names.contains(definition.name) {
 						$names = $names.append(definition.name)
@@ -43,9 +38,7 @@ ScopeLayout :: [].{
 					for d in declarations {
 						for name in Ast.pattern_names(d.pattern) {
 							if $names.contains(name) {
-								return Err(
-									ParserBasics.fault_at(d.at, ScopeLayout.redeclared_message(name)),
-								)
+								return Err(ScopeLayout.redeclaration(d.at, name))
 							}
 							$names = $names.append(name)
 							$lexical = $lexical.append(name)
@@ -58,8 +51,10 @@ ScopeLayout :: [].{
 		Ok($names)
 	}
 
-	redeclared_message : Str -> Str
-	redeclared_message = |name| "SyntaxError: Identifier '${name}' has already been declared"
+	# The fault at `at` for `name` declared twice, in JavaScript's words.
+	redeclaration : Ast.Where, Str -> Lexer.Fault
+	redeclaration = |at, name|
+		ParserBasics.fault_at(at, "SyntaxError: Identifier '${name}' has already been declared")
 
 	# The first name `names` holds twice, if one is.
 	repeated_name : List(Str) -> Try(Str, [NoneRepeated])

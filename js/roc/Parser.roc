@@ -316,7 +316,7 @@ Parser :: [].{
 			closed = ParserBasics.expect_punct(bound.parser, ")")?
 			names = Ast.pattern_names(bound.value)
 			match ScopeLayout.repeated_name(names) {
-				Ok(name) => return Err(ParserBasics.fault_at(site, ScopeLayout.redeclared_message(name)))
+				Ok(name) => return Err(ScopeLayout.redeclaration(site, name))
 				Err(NoneRepeated) => {}
 			}
 			body = Parser.block(closed)?
@@ -324,7 +324,7 @@ Parser :: [].{
 				Scoped(declared) => {
 					for name in names {
 						if declared.contains(name) {
-							return Err(ParserBasics.fault_at(site, ScopeLayout.redeclared_message(name)))
+							return Err(ScopeLayout.redeclaration(site, name))
 						}
 					}
 				}
@@ -667,7 +667,10 @@ Parser :: [].{
 	default_after = |parser, bound|
 		if ParserBasics.is_punct(parser, "=") {
 			parsed = Parser.assignment(ParserBasics.advance(parser))?
-			Ok({ parser: parsed.parser, value: Defaulted(ScopeLayout.named_for(parsed.value, bound)) })
+			Ok({
+				parser: parsed.parser,
+				value: Defaulted(ScopeLayout.named_for(parsed.value, bound)),
+			})
 		} else {
 			Ok({ parser: parser, value: NoDefault })
 		}
@@ -767,7 +770,7 @@ Parser :: [].{
 		bound = Parser.pattern(parser, Declaring)?
 		names = Ast.pattern_names(bound.value)
 		match ScopeLayout.repeated_name(names) {
-			Ok(name) => return Err(ParserBasics.fault_at(site, ScopeLayout.redeclared_message(name)))
+			Ok(name) => return Err(ScopeLayout.redeclaration(site, name))
 			Err(NoneRepeated) => {}
 		}
 		parsed_expression = Parser.assignment(ParserBasics.advance(bound.parser))?
