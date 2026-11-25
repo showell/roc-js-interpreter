@@ -1,12 +1,14 @@
 ## This module holds the rules JavaScript's values follow, which the
 ## bytecode VM (`Vm`) calls where its own fast paths stop: what a property
 ## read gives and a property write does, what an operator makes of two
-## values, the walks over arrays, strings, Maps and Sets, the methods of
-## Maps and Sets, the builtins that make no effect and call nothing back,
-## and the errors those throw and the faults they stop at, each message in
-## its words. None of them runs a function of the program or reaches the
-## host, so a message has one home. The methods of strings are
-## StringRules', and those of arrays ArrayRules': each follows the rules
+## values, what a pattern takes apart, and the errors those throw and the
+## faults they stop at, each message in its words. None of them runs a
+## function of the program or reaches the host, so a message has one home.
+##
+## Four modules build on it, each one kind of value's rules, read and
+## audited apart: StringRules (the methods of strings), ArrayRules (of
+## arrays), CollectionRules (the walks, and Maps and Sets) and
+## BuiltinRules (the globals and the builtins). Each follows the rules
 ## below.
 ##
 ## **THE VM LENDS A RULE ITS CELLS.** A rule reads and writes the heap

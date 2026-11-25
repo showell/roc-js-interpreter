@@ -87,7 +87,12 @@ CollectionRules :: [].{
 			MapOf(_) | SetOf(_) => match Heap.entry_from(Heap.table_of(cell), position) {
 				Met({ ordinal, held }) => {
 					step = match held {
-						Standing({ key, value }) => CollectionRules.entry_step(cell, view, key, value)
+						Standing({ key, value }) => CollectionRules.entry_step(
+							cell,
+							view,
+							key,
+							value,
+						)
 						Gone => Skip
 					}
 					{ step: step, after: ordinal + 1 }
@@ -136,20 +141,20 @@ CollectionRules :: [].{
 	# made into an array.
 	stepped : ValueRules.Machine, CollectionRules.EntryWalk -> ValueRules.Evaluations
 	stepped = |machine, { source, view, next }| {
-		var $s = machine
+		var $machine = machine
 		var $values = []
-		var $i = next
+		var $place = next
 		var $going = True
 		while $going {
-			{ step, after } = CollectionRules.step_at($s.cells, source, view, $i)
-			$i = after
+			{ step, after } = CollectionRules.step_at($machine.cells, source, view, $place)
+			$place = after
 			match step {
 				Yield(value) => {
 					$values = $values.append(value)
 				}
 				YieldPair(key, value) => {
-					{ machine: made, value: pair } = ValueRules.alloc($s, Array([key, value]))
-					$s = made
+					{ machine: made, value: pair } = ValueRules.alloc($machine, Array([key, value]))
+					$machine = made
 					$values = $values.append(pair)
 				}
 				Skip => {}
@@ -158,7 +163,7 @@ CollectionRules :: [].{
 				}
 			}
 		}
-		{ machine: $s, values: $values }
+		{ machine: $machine, values: $values }
 	}
 
 	# `new Map(entries)` or `new Set(values)`: the collection, filled from
@@ -187,17 +192,20 @@ CollectionRules :: [].{
 					value: Undefined,
 				}
 				Ok(values) => {
-					var $s = walked
+					var $machine = walked
 					for each in values {
-						if ValueRules.is_running($s) {
-							$s = match collection {
-								IsSet => { ..$s, cells: Heap.with_entry($s.cells, id, each, each) }
-								IsMap => match CollectionRules.entry_of($s.cells, each) {
-									Ok({ key, value }) => { ..$s, cells: Heap.with_entry($s.cells, id, key, value) }
+						if ValueRules.is_running($machine) {
+							$machine = match collection {
+								IsSet => {
+									..$machine,
+									cells: Heap.with_entry($machine.cells, id, each, each),
+								}
+								IsMap => match CollectionRules.entry_of($machine.cells, each) {
+									Ok({ key, value }) => { ..$machine, cells: Heap.with_entry($machine.cells, id, key, value) }
 									Err(NotEntry) => {
-										shown = ValueRules.text_of($s.cells, each) ?? ValueRules.type_of($s.cells, each)
+										shown = ValueRules.text_of($machine.cells, each) ?? ValueRules.type_of($machine.cells, each)
 										ValueRules.with_error(
-											$s,
+											$machine,
 											TypeError,
 											"Iterator value ${shown} is not an entry object",
 											site,
@@ -207,7 +215,7 @@ CollectionRules :: [].{
 							}
 						}
 					}
-					{ machine: $s, value: Reference(id) }
+					{ machine: $machine, value: Reference(id) }
 				}
 			}
 		}
@@ -272,7 +280,7 @@ CollectionRules :: [].{
 				}
 			}
 			(_, "clear") => { machine: { ..machine, cells: Heap.cleared(machine.cells, id) }, value: Undefined }
-			(_, "forEach") => crash "CollectionRules.collection_method: the VM runs `forEach` itself"
+			(_, "forEach") => crash "CollectionRules.collection_method: the VM runs `forEach`"
 			(_, "keys") => ValueRules.alloc(machine, Iteration({ source: id, view: Keys, next: 0 }))
 			(_, "values") => ValueRules.alloc(machine, Iteration({ source: id, view: Values, next: 0 }))
 			(_, "entries") => ValueRules.alloc(machine, Iteration({ source: id, view: Entries, next: 0 }))
