@@ -990,10 +990,10 @@ sort_items = {
 		.concat([
 			Emit.mark("runtime_sort_texts"),
 			Emit.save(Rsi),
-			Emit.call(Runtime.text_of),
+			Emit.call(Runtime.text_of_boxed),
 			Emit.restore(Rdi),
 			Emit.save(Rax),
-			Emit.call(Runtime.text_of),
+			Emit.call(Runtime.text_of_boxed),
 			Emit.mov(Rsi, Rax),
 			Emit.restore(Rdi),
 			Emit.call(Runtime.compare),

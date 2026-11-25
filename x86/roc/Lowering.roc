@@ -1923,7 +1923,7 @@ call_items = |site, { state, count }| {
 					]
 				} else if is_value_kind(kind_below(state, count - 1)) {
 					argument = stack_place(site.code, state.stack_kinds.len() - count)
-					[Emit.load(Rdi, argument), Emit.call(Runtime.text_of)]
+					[Emit.load(Rdi, argument), Emit.call(Runtime.text_of_boxed)]
 				} else {
 					return refusal(site, "`String` of ${kind_phrase(kind_below(state, count - 1))}")
 				}

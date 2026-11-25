@@ -7,8 +7,10 @@
 ##
 ## **FOUR REGISTERS ARE THE RUNTIME'S FOR THE WHOLE RUN**, and no other code
 ## writes them: `r12` holds the lowest the stack may reach, `r13` the
-## runtime's state (the output buffer's fill, then the buffer), `r14` the
-## heap's end and `r15` the next free byte of it. A routine may change every
+## runtime's state (the output buffer's fill, node's inspect depth, the
+## innermost `try`'s handler record, the timers' places, then the buffer,
+## as `buffer_place` lays them out), `r14` the heap's end and `r15` the
+## next free byte of it. A routine may change every
 ## other general register but `rbx` and `rbp`, and `xmm0` and `xmm1`; it
 ## takes its arguments in `rdi`, `rsi` and `rdx` and answers in `rax`. The
 ## routines that call a function (`map` and the rest) change `rbx` too,
@@ -34,11 +36,6 @@ Runtime :: [].{
 	## `rax`: a string's address (its length, then its bytes) in `rax`.
 	number_text : Str
 	number_text = "runtime_number_text"
-
-	## The routine that writes `rdx` bytes at `rsi` to stdout, through the
-	## buffer.
-	write : Str
-	write = "runtime_write"
 
 	## The routine that takes `rdi` bytes of the heap, its address in `rax`.
 	allocate : Str
@@ -229,8 +226,6 @@ Runtime :: [].{
 	error_message : Str
 	error_message = "runtime_error_message"
 
-	## The label of the text of an error's name, `Error` or `TypeError` and
-	## the rest.
 	## The message of node's TypeError for a constant assigned.
 	constant_assigned_text : Str
 	constant_assigned_text = "runtime_text_constant_assigned"
@@ -240,6 +235,8 @@ Runtime :: [].{
 	new_required_text : Str -> Str
 	new_required_text = |name| "runtime_text_new_required_${name}"
 
+	## The label of the text of an error's name, `Error` or `TypeError` and
+	## the rest.
 	error_name_label : Str -> Str
 	error_name_label = |name| "runtime_text_error_${name}"
 
@@ -392,9 +389,10 @@ Runtime :: [].{
 	iter_start : Str
 	iter_start = "runtime_iter_start"
 
-	## The routine that gives `String(v)` of the value `rdi`, boxed, in `rax`.
-	text_of : Str
-	text_of = "runtime_text_of_boxed"
+	## The routine that gives `String(v)` of the value `rdi`, boxed, in `rax`;
+	## `runtime_text_of` gives the same string's address, unboxed.
+	text_of_boxed : Str
+	text_of_boxed = "runtime_text_of_boxed"
 
 	## The texts the runtime writes, each under its label.
 	Text : [Space, Newline]
@@ -415,7 +413,7 @@ Runtime :: [].{
 			Emit.address_of(Rsi, label),
 			Emit.load(Rdx, Emit.mem(Rsi, 0)),
 			Emit.plus_imm(Rsi, 8),
-			Emit.call(Runtime.write),
+			Emit.call(write),
 		]
 	}
 
@@ -469,6 +467,11 @@ Runtime :: [].{
 		.join()
 }
 
+## The routine that writes `rdx` bytes at `rsi` to stdout, through the
+## buffer.
+write : Str
+write = "runtime_write"
+
 ## The heap's size: the program stops, out of memory, past it.
 heap_size : I64
 heap_size = 0x40000000
@@ -516,7 +519,7 @@ allocate_items = [
 ## written.
 output_items : List(Assembly.Statement)
 output_items = [
-	Emit.mark(Runtime.write),
+	Emit.mark(write),
 	Emit.load(Rax, Emit.mem(R13, 0)),
 	Emit.imm(Rcx, buffer_size),
 	Emit.minus(Rcx, Rax),
@@ -537,7 +540,7 @@ output_items = [
 	Emit.restore(Rdx),
 	Emit.restore(Rsi),
 	Emit.cmp_imm(Rdx, buffer_size),
-	Emit.jcc(Be, Runtime.write),
+	Emit.jcc(Be, write),
 	Emit.imm(Rdi, 1),
 	Emit.jmp("runtime_write_all"),
 	Emit.mark("runtime_flush"),
@@ -580,38 +583,39 @@ stop_items =
 		Emit.save(Rsi),
 		Emit.call("runtime_flush"),
 		Emit.restore(Rsi),
-		Emit.load(Rdx, Emit.mem(Rsi, 0)),
-		Emit.plus_imm(Rsi, 8),
-		Emit.imm(Rdi, 2),
-		Emit.call("runtime_write_all"),
-		Emit.imm(Rdi, 1),
-		Emit.imm(Rax, 231),
-		Emit.syscall,
-		# Node's RangeError, thrown where a `try` waits, else its line.
-		Emit.mark(Runtime.stack_overflow),
-		Emit.load(Rcx, Runtime.handler_place),
-		Emit.test(Rcx, Rcx),
-		Emit.jcc(E, "runtime_stack_overflow_stop"),
-		Emit.address_of(Rdi, Runtime.error_name_label("RangeError")),
-		Emit.address_of(Rsi, "runtime_text_call_stack"),
-		Emit.call(Runtime.new_error),
-		Emit.jmp(Runtime.throw),
-		Emit.mark("runtime_stack_overflow_stop"),
 	]
+		.concat(message_exit_items)
+		.concat([
+			# Node's RangeError, thrown where a `try` waits, else its line.
+			Emit.mark(Runtime.stack_overflow),
+			Emit.load(Rcx, Runtime.handler_place),
+			Emit.test(Rcx, Rcx),
+			Emit.jcc(E, "runtime_stack_overflow_stop"),
+			Emit.address_of(Rdi, Runtime.error_name_label("RangeError")),
+			Emit.address_of(Rsi, "runtime_text_call_stack"),
+			Emit.call(Runtime.new_error),
+			Emit.jmp(Runtime.throw),
+			Emit.mark("runtime_stack_overflow_stop"),
+		])
 		.concat(RuntimeBuilders.stopping_items("runtime_text_stack_overflow"))
 		.append(Emit.mark("runtime_out_of_memory"))
 		.concat(RuntimeBuilders.stopping_items("runtime_text_out_of_memory"))
 		.append(Emit.mark("runtime_no_heap"))
-		.concat([
-			Emit.address_of(Rsi, "runtime_text_no_heap"),
-			Emit.load(Rdx, Emit.mem(Rsi, 0)),
-			Emit.plus_imm(Rsi, 8),
-			Emit.imm(Rdi, 2),
-			Emit.call("runtime_write_all"),
-			Emit.imm(Rdi, 1),
-			Emit.imm(Rax, 231),
-			Emit.syscall,
-		])
+		.append(Emit.address_of(Rsi, "runtime_text_no_heap"))
+		.concat(message_exit_items)
+
+## The string at `rsi` (its length, then its bytes) written to stderr,
+## then the exit, 1. A stop with no heap has no buffer to write first.
+message_exit_items : List(Assembly.Statement)
+message_exit_items = [
+	Emit.load(Rdx, Emit.mem(Rsi, 0)),
+	Emit.plus_imm(Rsi, 8),
+	Emit.imm(Rdi, 2),
+	Emit.call("runtime_write_all"),
+	Emit.imm(Rdi, 1),
+	Emit.imm(Rax, 231),
+	Emit.syscall,
+]
 
 ## `runtime_write_value`: a number as `runtime_print_number` writes it, and
 ## `undefined`, `null` and the booleans by their words.
@@ -627,7 +631,7 @@ write_value_items = {
 		Emit.address_of(Rsi, label),
 		Emit.load(Rdx, Emit.mem(Rsi, 0)),
 		Emit.plus_imm(Rsi, 8),
-		Emit.jmp(Runtime.write),
+		Emit.jmp(write),
 	]
 	[
 		Emit.mark(Runtime.write_value),
@@ -662,7 +666,7 @@ write_value_items = {
 			Emit.mark("runtime_write_text"),
 			Emit.load(Rdx, Emit.mem(Rdi, 0)),
 			Emit.lea(Rsi, Emit.mem(Rdi, 8)),
-			Emit.jmp(Runtime.write),
+			Emit.jmp(write),
 			Emit.mark("runtime_write_inspected"),
 			Emit.zero(Rsi),
 			Emit.call("runtime_inspect"),
@@ -1184,7 +1188,7 @@ number_items = {
 		Emit.call(Runtime.number_text),
 		Emit.load(Rdx, Emit.mem(Rax, 0)),
 		Emit.lea(Rsi, Emit.mem(Rax, 8)),
-		Emit.jmp(Runtime.write),
+		Emit.jmp(write),
 		Emit.mark(Runtime.number_text),
 	]
 		.concat(bits_case_items({ bits: 0x7FF0000000000000, label: "runtime_infinity_case" }))

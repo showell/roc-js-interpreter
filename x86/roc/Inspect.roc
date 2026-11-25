@@ -22,17 +22,19 @@ Inspect :: [].{
 	## `runtime_inspect`: the value `rdi` as node's util.inspect writes it at
 	## the depth `rsi` (0 for console.log's own argument), a string's address
 	## in `rax`. A number and `undefined`, `null` and the booleans are as
-	## console.log writes them; a string is quoted ('', or "" when it holds a
-	## ', with \n, \t, \\, \r, \b and \f escaped); an array or an object below
-	## depth 2 is its items or its `key: value`s, on one line when node's
-	## rule puts them there (fewer than 3 levels nested below it, no item
-	## holding a line break, and `sum + 2n + 2 * depth + 11` at most 80, for n
-	## items of sum characters) and one a line, indented, otherwise; past
-	## depth 2 it is `[Array]` or `[Object]`. An array of more than 6 items
-	## that node would lay out in columns, and a string holding both quotes or
-	## another control byte, stop the program, not compiled yet. `[r13 + 8]`
-	## is node's `currentDepth`, the depth below the last array or object
-	## begun.
+	## console.log writes them; a string is quoted by node's rule ('', or ""
+	## when it holds a ' and no ", or `` when it holds both and no ` or `${`,
+	## else '' with each ' escaped), with \n, \t, \\, \r, \b and \f escaped
+	## and any other control byte written as `\x1B` is; an array or an
+	## object below depth 2 is its items or its `key: value`s, on one line
+	## when node's rule puts them there (fewer than 3 levels nested below
+	## it, no item holding a line break, and `sum + 2n + 2 * depth + 11` at
+	## most 80, for n items of sum characters), in columns when an array of
+	## more than 6 items is one node groups (`runtime_columns`), and one a
+	## line, indented, otherwise; past depth 2 it is `[Array]` or
+	## `[Object]`. An array or an object of more than 100 items stops the
+	## program, not compiled yet. `[r13 + 8]` is node's `currentDepth`, the
+	## depth below the last array or object begun.
 	items : List(Assembly.Statement)
 	items = {
 		dispatch = [Emit.mark("runtime_inspect")]

@@ -390,7 +390,7 @@ builtin_items = {
 		Emit.restore(Rsi),
 		Emit.jmp("runtime_concat"),
 	]
-	text_of_boxed = [Emit.mark(Runtime.text_of), Emit.call("runtime_text_of")]
+	text_of_boxed = [Emit.mark(Runtime.text_of_boxed), Emit.call("runtime_text_of")]
 		.concat(RuntimeBuilders.boxed_string_items)
 		.append(Emit.ret)
 	# Its frame: the object (`[rbp - 8]`), the kind (16), the array made
