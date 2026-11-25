@@ -45,3 +45,5 @@
 55-garbage.js
 56-call-depth.js
 57-map-set-churn.js
+60-many-instances.js
+61-classes-tour.js

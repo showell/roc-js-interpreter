@@ -31,9 +31,31 @@ RuntimeBuilders :: [].{
 	error_mark : Str
 	error_mark = "runtime_text_error_mark"
 
+	## The label of an instance's key, the one-byte string every instance of
+	## a class holds as its first key (`runtime_new_instance`), so console.log,
+	## the listings and the spreads stop at one rather than show the keys
+	## that name its classes.
+	instance_mark : Str
+	instance_mark = "runtime_text_instance_mark"
+
+	## The statements that jump to `label` when the object at `reg`
+	## (unboxed) is an instance of a class. They change `rcx` and `rdx`.
+	instance_jump_items : { reg : X86.Register, label : Str } -> List(Assembly.Statement)
+	instance_jump_items = |{ reg, label }| [
+		Emit.load(Rcx, Emit.mem(reg, 0)),
+		Emit.test(Rcx, Rcx),
+		Emit.jcc(E, "${label}_past"),
+		Emit.load(Rcx, Emit.mem(reg, 16)),
+		Emit.load(Rcx, Emit.mem(Rcx, 0)),
+		Emit.address_of(Rdx, RuntimeBuilders.instance_mark),
+		Emit.cmp(Rcx, Rdx),
+		Emit.jcc(E, label),
+		Emit.mark("${label}_past"),
+	]
+
 	## The statements that stop the program when the object at `rsi`
-	## (unboxed) is an error; `label` names their way past. They change `rcx`
-	## and `rdx`.
+	## (unboxed) is an error or a class's instance; `label` names their way
+	## past. They change `rcx` and `rdx`.
 	not_an_error_items : Str -> List(Assembly.Statement)
 	not_an_error_items = |label| [
 		Emit.load(Rcx, Emit.mem(Rsi, 0)),
@@ -44,6 +66,9 @@ RuntimeBuilders :: [].{
 		Emit.address_of(Rdx, RuntimeBuilders.error_mark),
 		Emit.cmp(Rcx, Rdx),
 		Emit.jcc(E, "runtime_spread_error"),
+		Emit.address_of(Rdx, RuntimeBuilders.instance_mark),
+		Emit.cmp(Rcx, Rdx),
+		Emit.jcc(E, "runtime_instance_listed"),
 		Emit.mark(label),
 	]
 

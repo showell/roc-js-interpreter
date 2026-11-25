@@ -51,6 +51,7 @@ import LoweringBasics
 import CallLowering
 import OperatorLowering
 import Runtime
+import RuntimeBuilders
 import RuntimeCode
 
 Lowering :: [].{
@@ -132,6 +133,7 @@ Lowering :: [].{
 								.concat(literal_statements(literals))
 								.concat(
 									KnownFunctions.closure_statements({
+										program,
 										makers,
 										statics,
 										escaped_codes: $escaped_codes,
@@ -229,6 +231,18 @@ literals_of = |program| {
 				) => [ValueRules.unready_message(name)]
 				_ => []
 			}
+			# The keys that mark a class's instances, which no program's
+			# text can be.
+			marks = match instruction {
+				NewInstance(classes) => classes.map(class_key)
+				InstanceOf(name) => [class_key(name)]
+				_ => []
+			}
+			for text in marks {
+				if !$found.contains(text) {
+					$found = $found.insert(text, $found.len())
+				}
+			}
 			for text in named {
 				if !$found.contains(text) {
 					if text.to_utf8().any(|byte| byte >= 0x80) {
@@ -241,6 +255,11 @@ literals_of = |program| {
 	}
 	Ok($found)
 }
+
+## The key that marks an instance of the class `name`: `þ` (bytes 0xC3
+## 0xBE) and the name. A program's strings are ASCII, so none is one.
+class_key : Str -> Str
+class_key = |name| "þ${name}"
 
 ## Each text's bytes under its label, as the runtime's strings are laid out.
 literal_statements : Dict(Str, U64) -> List(Assembly.Statement)
@@ -425,13 +444,6 @@ Dict(U64, LoweringBasics.State) -> Try(
 )
 code_walk = |context, heads| {
 	code = context.program.codes.get(context.index) ?? crash "Lowering.code_walk: a code's index"
-	match context.makers.get(context.index) {
-		Ok({ form: MakesInstances, .. }) => {
-			named = LoweringBasics.function_name(context)
-			return Err(Refused("${named}: a class is not compiled yet"))
-		}
-		_ => {}
-	}
 	start = start_state(context, code)?
 	skipped = skipped_places(context, code)
 	var $escaped = []
@@ -960,6 +972,46 @@ instruction_items = |site, { instruction, state }| {
 				LoweringBasics.with_top(state, Object),
 			),
 		)
+		# A class's instance: an object whose first key is the instance's
+		# mark, then a key for its class and each class that class extends.
+		NewInstance(classes) => {
+			marked = |key| [
+				Emit.load(Rdi, next_place),
+				Emit.address_of(Rsi, key),
+				Emit.imm(Rdx, Boxing.true_bits),
+				Emit.call(Runtime.set_property),
+			]
+			keys = List.concat(
+				[RuntimeBuilders.instance_mark],
+				classes.map(|name| LoweringBasics.text_label(site, class_key(name))),
+			)
+			Ok(
+				LoweringBasics.falling(
+					[Emit.call(Runtime.new_object), Emit.store(next_place, Rax)]
+						.concat(keys.map(marked).join()),
+					LoweringBasics.with_top(state, Object),
+				),
+			)
+		}
+		# The value, then the class read (which takes no bytes or is a value
+		# left unread): a boolean in the value's place.
+		InstanceOf(name) =>
+			if !LoweringBasics.is_value_kind(LoweringBasics.kind_below(state, 1)) {
+				phrase = LoweringBasics.kind_phrase(LoweringBasics.kind_below(state, 1))
+				LoweringBasics.refusal(site, "`instanceof` of ${phrase}")
+			} else {
+				Ok(
+					LoweringBasics.falling(
+						[
+							Emit.load(Rdi, top_place(1)),
+							Emit.address_of(Rsi, LoweringBasics.text_label(site, class_key(name))),
+							Emit.call(Runtime.instance_of),
+							Emit.store(top_place(1), Rax),
+						],
+						LoweringBasics.with_top(LoweringBasics.without_top(state, 2), Boolean),
+					),
+				)
+			}
 		NewArray => Ok(
 			LoweringBasics.falling(
 				[
@@ -1534,10 +1586,8 @@ instruction_items = |site, { instruction, state }| {
 				result: GivesNothing,
 			})
 		}
-		MakeClosure({ code: made, captures, definition }) =>
-			if definition.unbox().form == MakesInstances {
-				LoweringBasics.refusal(site, "a class is not compiled yet")
-			} else if site.context.statics.contains(made) {
+		MakeClosure({ code: made, captures, definition: _ }) =>
+			if site.context.statics.contains(made) {
 				Ok(LoweringBasics.falling([], LoweringBasics.with_top(state, Function(made))))
 			} else {
 				Ok(

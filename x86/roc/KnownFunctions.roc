@@ -183,17 +183,35 @@ KnownFunctions :: [].{
 	## The text console.log writes for each function a value may hold, and the
 	## closure record, in the read-only segment, of each known before the
 	## program runs (`Boxing.function_tag`'s layout, with no captures).
+	## A class's is node's `[class C]`, or `[class C extends P]`, P read
+	## from its instances' keys (`NewInstance`, its own class first).
 	closure_statements : {
+		program : Bytecode.Program,
 		makers : Dict(U64, LoweringBasics.Maker),
 		statics : List(U64),
 		escaped_codes : List(U64),
 	} -> List(Assembly.Statement)
-	closure_statements = |{ makers, statics, escaped_codes }| {
+	closure_statements = |{ program, makers, statics, escaped_codes }| {
 		var $out = []
 		for (made, maker) in makers.to_list() {
 			if escaped_codes.contains(made) {
 				text =
-					if maker.name == "" {
+					if maker.form == MakesInstances {
+						ops = program.codes.get(made).map_ok(|code| code.ops) ?? []
+						var $parents = []
+						for op in ops {
+							match op {
+								NewInstance(classes) => {
+									$parents = classes.drop_first(1)
+								}
+								_ => {}
+							}
+						}
+						match $parents.first() {
+							Ok(parent) => "[class ${maker.name} extends ${parent}]"
+							Err(_) => "[class ${maker.name}]"
+						}
+					} else if maker.name == "" {
 						"[Function (anonymous)]"
 					} else {
 						"[Function: ${maker.name}]"

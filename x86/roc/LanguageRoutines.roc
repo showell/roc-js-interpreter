@@ -415,6 +415,9 @@ builtin_items = {
 			Emit.address_of(Rax, RuntimeBuilders.error_mark),
 			Emit.cmp(Rdx, Rax),
 			Emit.jcc(E, "runtime_object_listing_stop"),
+			Emit.address_of(Rax, RuntimeBuilders.instance_mark),
+			Emit.cmp(Rdx, Rax),
+			Emit.jcc(E, "runtime_instance_listed"),
 			Emit.mark("runtime_object_listing_plain"),
 			Emit.mov(Rdi, Rcx),
 			Emit.call(Runtime.new_array),
@@ -951,6 +954,29 @@ exception_items = {
 		.concat(RuntimeBuilders.stopping_items("runtime_text_uncaught"))
 		.append(Emit.mark("runtime_inspect_error"))
 		.concat(RuntimeBuilders.stopping_items("runtime_text_error_written"))
+		.append(Emit.mark("runtime_inspect_instance"))
+		.concat(RuntimeBuilders.stopping_items("runtime_text_instance_written"))
+		.append(Emit.mark("runtime_instance_listed"))
+		.concat(RuntimeBuilders.stopping_items("runtime_text_instance_listed"))
+	# `value instanceof C`: true when the value (`rdi`) is an instance whose
+	# keys hold C's (`rsi`, the text `NewInstance` sets for each class).
+	instance_of = [Emit.mark(Runtime.instance_of)]
+		.concat(RuntimeBuilders.tag_load_items(Rdi))
+		.concat([Emit.cmp_imm(Rcx, Boxing.object_tag), Emit.jcc(Ne, "runtime_instance_of_false")])
+		.concat(RuntimeBuilders.unboxed_items(Rdi))
+		.concat(RuntimeBuilders.instance_jump_items({ reg: Rdi, label: "runtime_instance_of_marked" }))
+		.concat([
+			Emit.jmp("runtime_instance_of_false"),
+			Emit.mark("runtime_instance_of_marked"),
+			Emit.call("runtime_object_entry"),
+			Emit.test(Rax, Rax),
+			Emit.jcc(E, "runtime_instance_of_false"),
+			Emit.imm(Rax, Boxing.true_bits),
+			Emit.ret,
+			Emit.mark("runtime_instance_of_false"),
+			Emit.imm(Rax, Boxing.false_bits),
+			Emit.ret,
+		])
 	property = |{ key, value }| [
 		Emit.load(Rdi, Emit.mem(Rsp, 0)),
 		Emit.address_of(Rsi, key),
@@ -1030,5 +1056,5 @@ exception_items = {
 		Emit.address_of(Rax, "runtime_text_empty"),
 		Emit.ret,
 	]
-	[throw, new_error, property_error, message].join()
+	[throw, new_error, property_error, message, instance_of].join()
 }

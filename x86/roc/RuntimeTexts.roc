@@ -23,7 +23,13 @@ RuntimeTexts :: [].{
 		}
 		# The error's key: one byte, 0xFF, which no string a program writes
 		# holds, since a string here is ASCII.
-		$out.concat([Mark(RuntimeBuilders.error_mark), Data([1, 0, 0, 0, 0, 0, 0, 0, 0xFF])])
+		# An instance's key, 0xFE, the same way.
+		$out.concat([
+			Mark(RuntimeBuilders.error_mark),
+			Data([1, 0, 0, 0, 0, 0, 0, 0, 0xFF]),
+			Mark(RuntimeBuilders.instance_mark),
+			Data([1, 0, 0, 0, 0, 0, 0, 0, 0xFE]),
+		])
 	}
 }
 
@@ -105,6 +111,14 @@ texts = [
 	(
 		"runtime_text_error_written",
 		"x86: console.log of an error, which node writes with its stack, is not compiled yet\n",
+	),
+	(
+		"runtime_text_instance_written",
+		"x86: console.log of a class's instance, which node writes with its class's name, is not compiled yet\n",
+	),
+	(
+		"runtime_text_instance_listed",
+		"x86: a class's instance listed or spread is not compiled yet\n",
 	),
 	(
 		"runtime_text_out_of_memory",

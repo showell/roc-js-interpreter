@@ -220,6 +220,11 @@ Runtime :: [].{
 	new_error : Str
 	new_error = "runtime_new_error"
 
+	## `value instanceof C`: the value in `rdi`, the key that marks C's
+	## instances at `rsi` (`NewInstance`'s), the boolean in `rax`.
+	instance_of : Str
+	instance_of = "runtime_instance_of"
+
 	## The routine that gives an error's message of the value `rdi`, as
 	## `new Error(v)` takes it: `""` for `undefined`, else `String(v)`, a
 	## string's address in `rax`.
