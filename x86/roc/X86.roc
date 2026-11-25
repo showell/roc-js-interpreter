@@ -442,6 +442,11 @@ X86 :: [].{
 			)
 		}
 
+	## A general register's number, 0 to 15, as its encodings name it: two
+	## registers are the same when their numbers are.
+	register_index : X86.Register -> U8
+	register_index = |reg| register_number(reg)
+
 	## The bytes of one instruction alone.
 	instruction_bytes : X86.Instruction -> List(U8)
 	instruction_bytes = |instruction| X86.append_instruction([], instruction)

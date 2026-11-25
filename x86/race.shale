@@ -3,7 +3,14 @@
 -- against node. check.shale does not run it: it takes about a minute, and
 -- its numbers are timings. From the repository's root:
 --
---   shale x86/race.shale
+--   shale x86/race.shale               # the race as written, 20 seconds
+--   shale x86/race.shale budget=1000   # the same race with a budget of 1 s
+--
+-- `budget=` is the race's BUDGET_MS, in milliseconds: the script writes a
+-- copy of fib_race.js with that one line changed, under the build mount,
+-- and both contestants run the copy. Each run's timeout is the budget and
+-- a minute more, for the printing after the verdict, so a long race (60 s)
+-- needs only a longer Bash call around it.
 --
 -- (It sits beside x86/bench.shale, not in x86/race/, since a library is
 -- named only beside a script's own file or below it, and both name
@@ -27,11 +34,12 @@ const WHO = "x86/race.shale"
 const RACE = "x86/race/fib_race.js"
 const VERIFY = "x86/race/verify.js"
 const WANT_VERIFY = "node: verify.js, BigInt's answer for the race"
-const RUN_MS = 120000
+const BUDGET_LINE = "const BUDGET_MS = 20000;"
+const AFTER_MS = 60000
 
 -- A contestant's run: its wall time and what it printed, its summary parsed.
-function raced(who, argv, want)
-  local r = run(argv, {timeout_ms = RUN_MS, whole = 4000000, want = want, nice = 19})
+function raced(who, argv, want, budget)
+  local r = run(argv, {timeout_ms = budget + AFTER_MS, whole = 4000000, want = want, nice = 19})
   if r.ended ~= "exit" or r.code ~= 0 then fail(WHO .. ": " .. who .. " ended " .. r.ended .. " " .. get(r, "code", -1) .. ": " .. sub(r.out, 1, 2000)) end
   local said = lines(r.out)
   local reached = re_find(r.out, "reached F\\(([0-9]+)\\): ([0-9]+) digits")
@@ -43,8 +51,8 @@ end
 
 -- Whether a contestant's answer is BigInt's: its summary lines (all but the
 -- batches' and the verdict's) and its whole number, exactly.
-function verified(c)
-  local v = run({"node", real(VERIFY), c.n}, {timeout_ms = RUN_MS, whole = 4000000, want = WANT_VERIFY, nice = 19})
+function verified(c, budget)
+  local v = run({"node", real(VERIFY), c.n}, {timeout_ms = budget + AFTER_MS, whole = 4000000, want = WANT_VERIFY, nice = 19})
   if v.code ~= 0 then fail(WHO .. ": verify.js exited " .. get(v, "code", -1) .. ": " .. sub(v.out, 1, 2000)) end
   local want = lines(v.out)
   local got = {c.lines[1], c.lines[2], c.lines[3], c.lines[4], c.lines[7]}
@@ -55,19 +63,33 @@ function verified(c)
   return "verified"
 end
 
+-- The race's text with its budget set to `budget` milliseconds.
+function race_text(budget)
+  local text = read(RACE)
+  if #grep(RACE, BUDGET_LINE) ~= 1 then fail(WHO .. ": " .. RACE .. " has no line `" .. BUDGET_LINE .. "` to set the budget in") end
+  return re_replace(text, "const BUDGET_MS = 20000;", "const BUDGET_MS = " .. budget .. ";")
+end
+
 function main()
+  local budget = arg("budget", 20000)
+  if budget < 100 then fail(WHO .. ": budget=" .. budget .. " is under 100 ms, too short to plan a batch in") end
   local exe = built_roc(WHO, "x86/roc/JsToX86.roc", "js-x86", "dev")
-  local path = executables_dir() .. "/race-fib_race"
-  local size = written_executable(WHO, exe, read(RACE), path)
+  local dir = executables_dir()
+  local path = dir .. "/race-fib_race"
+  local copy = dir .. "/race-fib_race.js"
+  local text = race_text(budget)
+  replace(copy, text)
+  local size = written_executable(WHO, exe, text, path)
   local node = run({"node", "--version"}, {timeout_ms = 10000, whole = 1000, want = WANT_NODE})
   local uptime = trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out)
-  print("the race's executable: " .. size .. " bytes; node " .. trim(node.out) .. "; " .. uptime)
+  print("the race's executable: " .. size .. " bytes; budget " .. budget .. " ms; node " .. trim(node.out) .. "; " .. uptime)
   local contestants = {
-    raced("compiled", {real(path)}, WANT_BINARY),
-    raced("node", {"node", real(RACE)}, WANT_NODE),
+    raced("compiled", {real(path)}, WANT_BINARY, budget),
+    raced("node", {"node", real(copy)}, WANT_NODE, budget),
   }
   for c in contestants do
-    local checked = verified(c)
+    if re_find(c.lines[5], " of " .. budget .. "$") == nil then fail(WHO .. ": " .. c.who .. " raced another budget: " .. c.lines[5]) end
+    local checked = verified(c, budget)
     print(c.who .. ": F(" .. c.n .. "), " .. c.digits .. " digits, elapsed " .. c.elapsed .. " ms, " .. c.verdict .. ", " .. checked .. "; after the verdict " .. (c.ms - c.elapsed) .. " ms (wall " .. c.ms .. " ms)")
   end
 end

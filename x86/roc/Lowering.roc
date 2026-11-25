@@ -40,12 +40,14 @@
 ## code at its value entry with `rcx` the count of arguments. A function a
 ## value may hold takes `Value` parameters, since no call shows what reaches
 ## it that way.
+import js.Ast
 import js.Bytecode
 import js.ValueRules
 import Assembly
 import Boxing
 import BuiltinLowering
 import Emit
+import Forwarding
 import KnownFunctions
 import LoweringBasics
 import CallLowering
@@ -129,17 +131,19 @@ Lowering :: [].{
 				return match $first_refusal {
 					Ok({}) =>
 						Ok(
-							$items
-								.concat(RuntimeCode.items)
-								.concat(literal_statements(literals))
-								.concat(
-									KnownFunctions.closure_statements({
-										program,
-										makers,
-										statics,
-										escaped_codes: $escaped_codes,
-									}),
-								),
+							Forwarding.forward_loads(
+								$items
+									.concat(RuntimeCode.items)
+									.concat(literal_statements(literals))
+									.concat(
+										KnownFunctions.closure_statements({
+											program,
+											makers,
+											statics,
+											escaped_codes: $escaped_codes,
+										}),
+									),
+							),
 						)
 					Err(refused) => Err(refused)
 				}
@@ -447,6 +451,9 @@ code_walk = |context, heads| {
 	code = context.program.codes.get(context.index) ?? crash "Lowering.code_walk: a code's index"
 	start = start_state(context, code)?
 	skipped = skipped_places(context, code)
+	looped_to = loop_targets(code)
+	# The places of the `JumpIfFalse`s an ordering before took as its own.
+	var $fused = []
 	var $escaped = []
 	var $body = []
 	var $pending = Dict.empty()
@@ -483,7 +490,7 @@ code_walk = |context, heads| {
 				instruction = code.ops.get(at) ?? crash "Lowering.code_walk: an instruction"
 				site = { context, code, at, skipped }
 				valued =
-					if skipped.contains(at) {
+					if skipped.contains(at) or $fused.contains(at) {
 						{ statements: [], state, escaped: [] }
 					} else {
 						values_made(site, { instruction, state })
@@ -493,10 +500,27 @@ code_walk = |context, heads| {
 					Ok(call) => $calls.append(call)
 					Err(NoCall) => $calls
 				}
-				lowered = match instruction_items(site, { instruction, state: valued.state }) {
-					Ok(done) => done
-					Err(refused) => return Ok(Halted({ refused, calls: $calls }))
-				}
+				joined = $pending.contains(at + 1) or looped_to.contains(at + 1)
+				fused = fused_jump(site, { instruction, joined, state: valued.state })
+				lowered =
+					if $fused.contains(at) {
+						LoweringBasics.falling([], valued.state)
+					} else {
+						match fused {
+							Fused(done) => {
+								$fused = $fused.append(at + 1)
+								done
+							}
+							Unfused =>
+								match instruction_items(
+									site,
+									{ instruction, state: valued.state },
+								) {
+									Ok(done) => done
+									Err(refused) => return Ok(Halted({ refused, calls: $calls }))
+								}
+						}
+					}
 				$body = $body.concat(valued.statements).concat(lowered.statements)
 				$flowing = match lowered.falls {
 					Falls(next) => {
@@ -565,6 +589,52 @@ code_walk = |context, heads| {
 		}),
 	)
 }
+
+## The places a `Loop` of the code goes back to.
+loop_targets : Bytecode.Code -> List(U64)
+loop_targets = |code| {
+	var $out = []
+	for (instruction, at) in code.ops.map_with_index(|instruction, at| (instruction, at)) {
+		match instruction {
+			Loop(back) => {
+				$out = $out.append(at + 1 - back)
+			}
+			_ => {}
+		}
+	}
+	$out
+}
+
+## An ordering of two values that may be numbers and the `JumpIfFalse` after
+## it, lowered as one (`OperatorLowering.ordered_jump_items`), when no other
+## way reaches the `JumpIfFalse` (`joined` says whether one does): then the
+## walk passes the `JumpIfFalse` by.
+fused_jump : LoweringBasics.Site,
+{
+	instruction : Bytecode.Op,
+	joined : Bool,
+	state : LoweringBasics.State,
+} -> [Fused(LoweringBasics.Lowered), Unfused]
+fused_jump = |site, { instruction, joined, state }|
+	match (instruction, site.code.ops.get(site.at + 1)) {
+		(Binary(operator, _), Ok(JumpIfFalse(skip))) if !joined and is_ordering(operator) => {
+			kinds = (LoweringBasics.kind_below(state, 1), LoweringBasics.kind_below(state, 0))
+			if LoweringBasics.are_numeric(kinds) {
+				Fused(OperatorLowering.ordered_jump_items(site, { state, operator, skip }))
+			} else {
+				Unfused
+			}
+		}
+		_ => Unfused
+	}
+
+## Whether an operator is one of the four orderings.
+is_ordering : Ast.BinaryOperator -> Bool
+is_ordering = |operator|
+	match operator {
+		Less | LessOrEqual | Greater | GreaterOrEqual => True
+		_ => False
+	}
 
 ## The kinds of a call's arguments, when the instruction calls a declared
 ## function with as many arguments as it has parameters, each a value.
