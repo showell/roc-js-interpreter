@@ -38,6 +38,7 @@
 ## parameters, since no call shows what reaches it that way.
 import js.Ast
 import js.Bytecode
+import js.ValueRules
 import Assembly
 import Boxing
 import Emit
@@ -163,8 +164,10 @@ Kind : [
 	StaticMethod({ owner : Str, name : Str }),
 ]
 
-## A slot holds a value of its kind once its declaration has run.
-Slot : [Unready, Ready(Kind)]
+## A slot holds a value of its kind once its declaration has run: on every
+## way here (`Ready`), on none (`Unready`, which a read or a write throws
+## node's ReferenceError for), or on some (`Unsure`, refused).
+Slot : [Unready, Unsure, Ready(Kind)]
 
 ## The kinds at one instruction: each slot's, and the stack's, bottom first.
 State : { slots : List(Slot), stack_kinds : List(Kind) }
@@ -274,6 +277,18 @@ literals_of = |program| {
 				SetProperty(key, _) => [key]
 				SetField(key) => [key]
 				PropertiesLeft({ keys, at: _ }) => keys
+				# The ReferenceError's message of a variable read or written
+				# before its declaration has run.
+				ThrowUnready({ name, at: _ }) => [ValueRules.unready_message(name)]
+				LoadBoxed({ name, slot: _, at: _ }) => [ValueRules.unready_message(name)]
+				StoreBoxed(
+					{
+						name,
+						slot: _,
+						kind: _,
+						at: _,
+					},
+				) => [ValueRules.unready_message(name)]
 				_ => []
 			}
 			for text in named {
@@ -725,15 +740,20 @@ code_walk = |lowering, heads| {
 	var $result = GivesNothing
 	var $calls = []
 	for at in 0..<code.ops.len() {
-		$body = $body.append(Mark(place_label(lowering, at)))
 		arriving = match ($flowing, $pending.get(at)) {
-			(Flowing(state), Ok(waiting)) => Arrives(
-				meeting_state(lowering, { at, one: state, other: waiting })?,
-			)
+			(Flowing(state), Ok(waiting)) => {
+				# A function known by its code that falls to where a jump
+				# brings a value is made a value first.
+				made = values_met(lowering, { state, waiting })
+				$body = $body.concat(made.statements)
+				$escaped = $escaped.concat(made.escaped)
+				Arrives(meeting_state(lowering, { at, one: made.state, other: waiting })?)
+			}
 			(Flowing(state), Err(_)) => Arrives(state)
 			(Stopped, Ok(waiting)) => Arrives(waiting)
 			(Stopped, Err(_)) => Unreached
 		}
+		$body = $body.append(Mark(place_label(lowering, at)))
 		match arriving {
 			Unreached => {
 				$flowing = Stopped
@@ -995,6 +1015,42 @@ values_made = |site, { instruction, state }| {
 	}
 }
 
+## The state falling to a place a jump reaches with `waiting`, each place
+## on its stack holding a function known by its code where the jump brings
+## a value made that value: its closure record, boxed, as `values_made`
+## makes one.
+values_met : Context, { state : State, waiting : State } -> Valued
+values_met = |lowering, { state, waiting }| {
+	code = lowering.program.codes.get(lowering.index) ?? crash "Lowering.values_met: a code's index"
+	var $items = []
+	var $kinds = state.stack_kinds
+	var $escaped = []
+	for (place, (kind, other)) in List.map2(
+		state.stack_kinds,
+		waiting.stack_kinds,
+		|a, b| (a, b),
+	).map_with_index(|pair, place| (place, pair)) {
+		match kind {
+			Function(made) if is_value_kind(other) => {
+				$items = $items.concat([
+					Emit.address_of(Rax, closure_label(made)),
+					Emit.imm(Rcx, Boxing.tag_bits(Boxing.function_tag)),
+					Emit.plus(Rax, Rcx),
+					Emit.store(stack_place(code, place), Rax),
+				])
+				$kinds = $kinds.set(place, Closure(made)) ?? crash "Lowering.values_met: a place"
+				$escaped = $escaped.append(made)
+			}
+			_ => {}
+		}
+	}
+	{
+		statements: $items,
+		state: { ..state, stack_kinds: $kinds },
+		escaped: $escaped,
+	}
+}
+
 ## An instruction's values made: the code that makes them, the state
 ## after, and the functions it made values of.
 Valued : {
@@ -1056,7 +1112,8 @@ meeting_state = |lowering, { at, one, other }| {
 					Ok(kind) => Ready(kind)
 					Err(Apart) => return Err(code_refusal(lowering, TwoSlotKinds(at)))
 				}
-			_ => Unready
+			(Unready, Unready) => Unready
+			_ => Unsure
 		}
 		$slots = $slots.append(slot)
 	}
@@ -1131,7 +1188,7 @@ slot_kind : Site,
 slot_kind = |site, { state, slot, name }|
 	match state.slots.get(slot) {
 		Ok(Ready(kind)) => Ok(kind)
-		Ok(Unready) => refusal(
+		Ok(Unready) | Ok(Unsure) => refusal(
 			site,
 			"${name} is read before its declaration has run, which throws in node",
 		)
@@ -1506,7 +1563,18 @@ added_kind = |kinds|
 		# An array or an object is made a string, so `+` joins.
 		(Array, other) | (other, Array) if is_value_kind(other) => Ok(String)
 		(Object, other) | (other, Object) if is_value_kind(other) => Ok(String)
+		# `undefined`, `null` and the booleans are made numbers.
+		(one, other) if is_primitive_number(one) and is_primitive_number(other) => Ok(Number)
 		_ => Err(Unadded)
+	}
+
+## Whether `+` makes a kind a number: a number, `undefined`, `null` or a
+## boolean.
+is_primitive_number : Kind -> Bool
+is_primitive_number = |kind|
+	match kind {
+		Number | Boolean | Undefined | Null => True
+		_ => False
 	}
 
 ## The statements that stop the program unless the value at `place` is a
@@ -2100,6 +2168,78 @@ builtin_items = |site, { state, place }| {
 	}
 }
 
+## node's TypeError for a constant assigned or stepped, thrown.
+constant_assigned_items : Lowered
+constant_assigned_items = {
+	statements: [
+		Emit.address_of(Rsi, Runtime.constant_assigned_text),
+		Emit.address_of(Rdi, Runtime.error_name_label("TypeError")),
+		Emit.call(Runtime.new_error),
+		Emit.jmp(Runtime.throw),
+	],
+	falls: Ends,
+	branch: NoBranch,
+	result: GivesNothing,
+}
+
+## node's ReferenceError for a variable read or written before its
+## declaration has run, thrown.
+unready_items : Site, Str -> Lowered
+unready_items = |site, name| {
+	statements: [
+		Emit.address_of(Rsi, text_label(site, ValueRules.unready_message(name))),
+		Emit.address_of(Rdi, Runtime.error_name_label("ReferenceError")),
+		Emit.call(Runtime.new_error),
+		Emit.jmp(Runtime.throw),
+	],
+	falls: Ends,
+	branch: NoBranch,
+	result: GivesNothing,
+}
+
+## An optional link: `undefined` or `null` on top ends the chain, its
+## answer `undefined`, by a jump to the chain's end. A kind known to be
+## neither makes no code, and one known to be either only the jump.
+nullish_jump_items : Site, { state : State, skip : U64 } -> Try(Lowered, [Refused(Str)])
+nullish_jump_items = |site, { state, skip }| {
+	target = forward(site, skip)
+	top = stack_place(site.code, state.stack_kinds.len() - 1)
+	shorted = with_top(without_top(state, 1), Undefined)
+	short_label = "${place_label(site.lowering, site.at)}_short"
+	going_label = "${place_label(site.lowering, site.at)}_going"
+	jumped = constant_items({ bits: Boxing.undefined_bits.to_u64_wrap(), to: top })
+		.append(JmpTo(place_label(site.lowering, target)))
+	match kind_below(state, 0) {
+		Undefined | Null =>
+			Ok({
+				statements: jumped,
+				falls: Ends,
+				branch: Branch({ target, state: shorted }),
+				result: GivesNothing,
+			})
+		Value => {
+			tested = [
+				Emit.load(Rax, top),
+				Emit.imm(Rcx, Boxing.undefined_bits),
+				Emit.cmp(Rax, Rcx),
+				Emit.jcc(E, short_label),
+				Emit.imm(Rcx, Boxing.null_bits),
+				Emit.cmp(Rax, Rcx),
+				Emit.jcc(Ne, going_label),
+				Emit.mark(short_label),
+			]
+			Ok({
+				statements: tested.concat(jumped).append(Emit.mark(going_label)),
+				falls: Falls(state),
+				branch: Branch({ target, state: shorted }),
+				result: GivesNothing,
+			})
+		}
+		kind if is_value_kind(kind) => Ok(falling([], state))
+		kind => refusal(site, "an optional link of ${kind_phrase(kind)}")
+	}
+}
+
 ## A jump taken when the value on top is falsy (`E`) or truthy (`Ne`):
 ## `JumpIfFalse` drops the value either way, the logical operators' skips
 ## keep it where they jump.
@@ -2146,11 +2286,28 @@ array_methods = [
 	"includes",
 	"sort",
 	"reverse",
+	"splice",
+	"lastIndexOf",
 ]
 
 ## The methods of a string compiled here.
 string_methods : List(Str)
-string_methods = ["charAt", "charCodeAt", "indexOf", "includes", "split"]
+string_methods = ["charAt", "charCodeAt", "indexOf", "includes", "split", "slice", "lastIndexOf"]
+
+## The statements that put an array of `count` values from the stack's
+## place `base` on, in order, in `rax`: a call's arguments, for a routine
+## that takes any count of them.
+arguments_array_items : Site, { base : U64, count : U64 } -> List(Assembly.Statement)
+arguments_array_items = |site, { base, count }| {
+	var $filled = [Emit.imm(Rdi, count.to_i64_wrap()), Emit.call(Runtime.new_array)]
+	for item in 0..<count {
+		$filled = $filled.concat([
+			Emit.load(Rcx, stack_place(site.code, base + item)),
+			Emit.store(Emit.mem(Rdx, (8 * item).to_i64_wrap()), Rcx),
+		])
+	}
+	$filled
+}
 
 ## An array's `push` of each argument in turn, its answer the length
 ## after the last, its `pop`, its `map`, `filter`, `forEach` and `reduce`
@@ -2210,9 +2367,12 @@ array_method_items = |site, { state, name, count }| {
 			for (at, reg) in [(0, Rsi), (1, Rdx)].take_first(count) {
 				$loaded = $loaded.append(Emit.load(reg, argument(at)))
 			}
-			(routine, kind) = match name {
-				"reduce" => (Runtime.reduce, Value)
-				_ => (Runtime.slice, Array)
+			# A slice of a string is a string, of an array an array.
+			(routine, kind) = match (name, kind_below(state, count + 1)) {
+				("reduce", _) => (Runtime.reduce, Value)
+				(_, String) => (Runtime.slice, String)
+				(_, Array) => (Runtime.slice, Array)
+				_ => (Runtime.slice, Value)
 			}
 			called = [Emit.load(Rdi, receiver)]
 				.concat($loaded)
@@ -2333,6 +2493,25 @@ array_method_items = |site, { state, name, count }| {
 			]
 			Ok(falling(called, after(Array)))
 		}
+		("splice", _) => {
+			called = arguments_array_items(site, { base, count })
+				.concat([
+					Emit.mov(Rsi, Rax),
+					Emit.load(Rdi, receiver),
+					Emit.call(Runtime.splice),
+					Emit.store(receiver, Rax),
+				])
+			Ok(falling(called, after(Array)))
+		}
+		("lastIndexOf", 1) => {
+			called = [
+				Emit.load(Rdi, receiver),
+				Emit.load(Rsi, argument(0)),
+				Emit.call(Runtime.last_index_of),
+				Emit.store(receiver, Rax),
+			]
+			Ok(falling(called, after(Number)))
+		}
 		("charAt", 1) => {
 			called = [
 				Emit.load(Rdi, receiver),
@@ -2450,8 +2629,9 @@ instruction_items = |site, { instruction, state }| {
 				(String, "length") | (Array, "length") => Number
 				_ => Value
 			}
+			# Of `undefined` or `null`, the runtime throws node's TypeError.
 			match kind {
-				String | Array | Object | Value =>
+				String | Array | Object | Value | Null | Undefined =>
 					Ok(
 						falling(
 							[
@@ -2469,15 +2649,7 @@ instruction_items = |site, { instruction, state }| {
 		}
 		MakeArray(count) => {
 			base = depth - count
-			var $filled = []
-			for item in 0..<count {
-				$filled = $filled.concat([
-					Emit.load(Rcx, stack_place(site.code, base + item)),
-					Emit.store(Emit.mem(Rdx, (8 * item).to_i64_wrap()), Rcx),
-				])
-			}
-			made = [Emit.imm(Rdi, count.to_i64_wrap()), Emit.call(Runtime.new_array)]
-				.concat($filled)
+			made = arguments_array_items(site, { base, count })
 				.append(Emit.store(stack_place(site.code, base), Rax))
 			Ok(falling(made, with_top(without_top(state, count), Array)))
 		}
@@ -2513,7 +2685,7 @@ instruction_items = |site, { instruction, state }| {
 		)
 		SetProperty(key, _) =>
 			match kind_below(state, 1) {
-				Object | Value => {
+				Object | Value | Null | Undefined => {
 					value = kind_below(state, 0)
 					Ok(
 						falling(
@@ -2531,7 +2703,7 @@ instruction_items = |site, { instruction, state }| {
 			}
 		GetIndex(_) =>
 			match kind_below(state, 1) {
-				Array | String | Object | Value =>
+				Array | String | Object | Value | Null | Undefined =>
 					Ok(
 						falling(
 							[
@@ -2547,7 +2719,7 @@ instruction_items = |site, { instruction, state }| {
 			}
 		SetIndex(_) =>
 			match kind_below(state, 2) {
-				Array | Object | Value => {
+				Array | Object | Value | Null | Undefined => {
 					value = kind_below(state, 0)
 					Ok(
 						falling(
@@ -2625,6 +2797,7 @@ instruction_items = |site, { instruction, state }| {
 		SkipIfDefined(skip) => defined_jump_items(site, { state, skip, settles: Defined })
 		SkipIfNotUndefined(skip) => defined_jump_items(site, { state, skip, settles: NotUndefined })
 		JumpIfSame(skip) => same_jump_items(site, { state, skip })
+		ShortIfNullish(skip) => nullish_jump_items(site, { state, skip })
 		IterNext({ slot, exit }) => {
 			target = forward(site, exit)
 			stepped = [
@@ -2715,10 +2888,20 @@ instruction_items = |site, { instruction, state }| {
 			kind = slot_kind(site, { state, slot, name: "a variable" })?
 			Ok(falling(load_items(site, { state, slot }), with_top(state, kind)))
 		}
+		LoadBoxed({ slot, name, at: _ }) if state.slots.get(slot) == Ok(Unready) =>
+			Ok(unready_items(site, name))
 		LoadBoxed({ slot, name, at: _ }) => {
 			kind = slot_kind(site, { state, slot, name: "`${name}`" })?
 			Ok(falling(boxed_load_items(site, { state, slot }), with_top(state, kind)))
 		}
+		# An unready box's value is `undefined`, read before its check.
+		PeekBoxed(slot) if state.slots.get(slot) == Ok(Unready) =>
+			Ok(
+				falling(
+					constant_items({ bits: Boxing.undefined_bits.to_u64_wrap(), to: next_place }),
+					with_top(state, Undefined),
+				),
+			)
 		PeekBoxed(slot) => {
 			kind = slot_kind(site, { state, slot, name: "a variable" })?
 			Ok(falling(boxed_load_items(site, { state, slot }), with_top(state, kind)))
@@ -2735,8 +2918,10 @@ instruction_items = |site, { instruction, state }| {
 			throws = "which throws in node"
 			unready = "may be assigned before its declaration has run"
 			match kind {
-				Fixed => refusal(site, "the constant `${name}` is assigned, ${throws}")
+				Fixed => Ok(constant_assigned_items)
 				Mutable if state.slots.get(slot) == Ok(Unready) =>
+					Ok(unready_items(site, name))
+				Mutable if state.slots.get(slot) == Ok(Unsure) =>
 					refusal(site, "`${name}` ${unready}, ${throws}")
 				Mutable => {
 					after = written_slot(site, { state, slot })?
@@ -2779,9 +2964,9 @@ instruction_items = |site, { instruction, state }| {
 			}
 		LoadBuiltin(place) => builtin_items(site, { state, place })
 		UpdateLocal({ slot, step }) => update_items(site, { state, slot, step })
-		UpdateBoxed({ slot, name, kind, step }) =>
+		UpdateBoxed({ slot, name: _, kind, step }) =>
 			match kind {
-				Fixed => refusal(site, "the constant `${name}` is stepped, which throws in node")
+				Fixed => Ok(constant_assigned_items)
 				Mutable =>
 					if site.lowering.cells.contains(slot) {
 						cell_update_items(site, { state, slot, step })
@@ -2865,7 +3050,7 @@ instruction_items = |site, { instruction, state }| {
 					Ok(falling([], with_top(state, Method(name))))
 				(Static(owner), _) if static_members(owner).contains(name) =>
 					Ok(falling([], with_top(state, StaticMethod({ owner, name }))))
-				(Object, _) | (Value, _) =>
+				(Object, _) | (Value, _) | (Null, _) | (Undefined, _) =>
 					Ok(
 						falling(
 							[
@@ -2936,11 +3121,8 @@ instruction_items = |site, { instruction, state }| {
 			site,
 			"`${name}` is declared nowhere, which throws in node",
 		)
-		ThrowUnready({ name, at: _ }) => refusal(
-			site,
-			"`${name}` is read before its declaration has run, which throws in node",
-		)
-		ThrowConstant(_) => refusal(site, "a constant is assigned, which throws in node")
+		ThrowUnready({ name, at: _ }) => Ok(unready_items(site, name))
+		ThrowConstant(_) | UpdateFixed(_) => Ok(constant_assigned_items)
 		Refuse(why) => refusal(site, why)
 		EnterTry({ handler, kind }) => try_items(site, { state, skip: handler, handling: kind })
 		LeaveTry =>
@@ -3123,6 +3305,7 @@ static_members = |owner|
 	match owner {
 		"Math" => Runtime.math_functions.concat(["pow", "sin", "cos", "tan", "atan"])
 		"Object" => ["keys", "values", "entries"]
+		"String" => ["fromCharCode"]
 		_ => []
 	}
 
@@ -3206,6 +3389,15 @@ static_call_items = |site, { state, count, owner, name }| {
 				called = [Emit.call(Runtime.math_routine(name)), Emit.store(receiver, Rax)]
 				Ok(falling(loaded.concat(called), after(Number)))
 			}
+		("String", "fromCharCode") => {
+			called = arguments_array_items(site, { base, count })
+				.concat([
+					Emit.mov(Rdi, Rax),
+					Emit.call(Runtime.from_char_codes),
+					Emit.store(receiver, Rax),
+				])
+			Ok(falling(called, after(String)))
+		}
 		("Math", "sin") | ("Math", "cos") | ("Math", "tan") | ("Math", "atan") =>
 			refusal(
 				site,
@@ -3297,6 +3489,8 @@ try_items = |site, { state, skip, handling }| {
 			|slot|
 				match slot {
 					Ready(kind) if is_value_kind(kind) => Ready(Value)
+					# A throw may come after its declaration ran.
+					Unready => Unsure
 					_ => slot
 				},
 		),

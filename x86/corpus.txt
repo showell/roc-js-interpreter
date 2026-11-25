@@ -7,6 +7,7 @@
 06-closures.js
 07-counter.js
 08-array-push.js
+09-objects-as-maps.js
 10-string-building.js
 11-fib.js
 12-insertion-sort.js
@@ -15,6 +16,7 @@
 15-higher-order.js
 16-template-strings.js
 19-printing-nested.js
+20-printing-strings.js
 22-hoisting.js
 23-typeof-logic.js
 24-recursion-depth.js
@@ -27,7 +29,11 @@
 32-word-count.js
 33-string-append.js
 34-shadowing.js
+39-destructuring.js
 40-parameters.js
 41-exceptions.js
+46-switch.js
+47-spread-chains.js
 49-loops-labels.js
+55-garbage.js
 56-call-depth.js

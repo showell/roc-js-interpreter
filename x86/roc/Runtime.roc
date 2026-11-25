@@ -68,6 +68,12 @@ Runtime :: [].{
 	check_number : Str
 	check_number = "runtime_check_number"
 
+	## The routine that gives the number of `rdi`, a number, `undefined`,
+	## `null` or a boolean, in `rax`, as `+` makes one (JavaScript's
+	## ToNumber). It changes `rcx` alone.
+	to_number : Str
+	to_number = "runtime_to_number"
+
 	## The routine that gives `rdi === rsi` as a boolean's bits.
 	strict_equal : Str
 	strict_equal = "runtime_strict_equal"
@@ -224,6 +230,10 @@ Runtime :: [].{
 
 	## The label of the text of an error's name, `Error` or `TypeError` and
 	## the rest.
+	## The message of node's TypeError for a constant assigned.
+	constant_assigned_text : Str
+	constant_assigned_text = "runtime_text_constant_assigned"
+
 	error_name_label : Str -> Str
 	error_name_label = |name| "runtime_text_error_${name}"
 
@@ -324,6 +334,21 @@ Runtime :: [].{
 	properties_left : Str
 	properties_left = "runtime_properties_left"
 
+	## The routine that gives what `splice` removes from the array `rdi`,
+	## an array, the arguments given in the array `rsi`, and changes it.
+	splice : Str
+	splice = "runtime_splice"
+
+	## The routine that gives `lastIndexOf` of `rsi` in the array or the
+	## string `rdi`.
+	last_index_of : Str
+	last_index_of = "runtime_last_index_of"
+
+	## The routine that gives `String.fromCharCode` of the numbers in the
+	## array `rdi`, a string.
+	from_char_codes : Str
+	from_char_codes = "runtime_from_char_codes"
+
 	## The routine that gives `String(v)` of the value `rdi`, boxed, in `rax`.
 	text_of : Str
 	text_of = "runtime_text_of_boxed"
@@ -397,6 +422,7 @@ Runtime :: [].{
 		sort_items,
 		string_method_items,
 		spread_items,
+		edit_items,
 	]
 		.join()
 		.concat(text_statements)
@@ -466,6 +492,12 @@ texts = [
 	("runtime_text_stack_overflow", "RangeError: Maximum call stack size exceeded\n"),
 	("runtime_text_call_stack", "Maximum call stack size exceeded"),
 	("runtime_text_name", "name"),
+	("runtime_text_cannot_read", "Cannot read properties of "),
+	(Runtime.constant_assigned_text, "Assignment to constant variable."),
+	("runtime_text_cannot_set", "Cannot set properties of "),
+	("runtime_text_reading", " (reading '"),
+	("runtime_text_setting", " (setting '"),
+	("runtime_text_quote_closed", "')"),
 	("runtime_text_message", "message"),
 	(Runtime.error_name_label("Error"), "Error"),
 	(Runtime.error_name_label("TypeError"), "TypeError"),
@@ -517,6 +549,10 @@ texts = [
 	),
 	("runtime_text_empty_object", "{}"),
 	(
+		"runtime_text_wide_char",
+		"x86: `String.fromCharCode` of a code past ASCII is not compiled yet\n",
+	),
+	(
 		"runtime_text_not_destructurable",
 		"x86: an object pattern of null or undefined, which throws in node, is not compiled yet\n",
 	),
@@ -541,7 +577,7 @@ texts = [
 	),
 	(
 		"runtime_text_integer_key",
-		"x86: an object with an integer key, which node orders first, is not compiled yet\n",
+		"x86: an object with an integer key of ten digits or more is not compiled yet\n",
 	),
 	(
 		"runtime_text_index_not_compiled",
@@ -560,13 +596,6 @@ texts = [
 		"x86: console.log of an array or object of more than 100 items is not compiled yet\n",
 	),
 	(
-		"runtime_text_quotes",
-		Str.concat(
-			"x86: console.log of a string holding both quotes, or a control byte,",
-			" inside an array or object is not compiled yet\n",
-		),
-	),
-	(
 		"runtime_text_object_keys",
 		Str.concat(
 			"x86: `Object.keys`, `values` or `entries` of a value that is not a plain object",
@@ -574,6 +603,10 @@ texts = [
 		),
 	),
 	("runtime_text_object_object", "[object Object]"),
+	(
+		"runtime_text_rest_listed",
+		"x86: an object pattern's rest of an array or a string is not compiled yet\n",
+	),
 	(
 		"runtime_text_spread_error",
 		"x86: an error's properties spread or taken by a pattern's rest are not compiled yet\n",
@@ -613,7 +646,7 @@ texts = [
 	),
 	(
 		"runtime_text_add_not_compiled",
-		"x86: `+` of values neither of which is a string, nor both numbers, is not compiled yet\n",
+		"x86: `+` of a function, which node makes its source's text, is not compiled yet\n",
 	),
 	(
 		"runtime_text_arithmetic_not_compiled",
@@ -1042,6 +1075,25 @@ operator_items = {
 		# An array or an object is made a string first, so `+` joins.
 		.concat(object_added_items(Rdi))
 		.concat(object_added_items(Rsi))
+		# A function would be its source's text; anything else left is a
+		# number, `undefined`, `null` or a boolean, each made a number.
+		.concat(tag_load_items(Rdi))
+		.concat([Emit.cmp_imm(Rcx, Boxing.function_tag), Emit.jcc(E, "runtime_add_stop")])
+		.concat(tag_load_items(Rsi))
+		.concat([
+			Emit.cmp_imm(Rcx, Boxing.function_tag),
+			Emit.jcc(E, "runtime_add_stop"),
+			Emit.call(Runtime.to_number),
+			Emit.mov(Rdi, Rsi),
+			Emit.mov(Rsi, Rax),
+			Emit.call(Runtime.to_number),
+			Emit.to_xmm(Xmm0, Rsi),
+			Emit.to_xmm(Xmm1, Rax),
+			Emit.double_sum(Xmm0, Xmm1),
+			Instruction(MovqFromXmm({ to: Rax, from: Xmm0 })),
+			Emit.ret,
+			Emit.mark("runtime_add_stop"),
+		])
 		.concat(stopping_items("runtime_text_add_not_compiled"))
 		.concat([
 			Emit.mark("runtime_add_texts"),
@@ -1173,6 +1225,27 @@ operator_items = {
 		Emit.store(Emit.mem(Rax, 0), Rsi),
 		Emit.ret,
 	]
+	# The constants' payloads are 0 to 3: `undefined` NaN, `null` and
+	# `false` 0, `true` 1.
+	to_number = [Emit.mark(Runtime.to_number), Emit.mov(Rax, Rdi)]
+		.concat(tag_load_items(Rdi))
+		.concat([
+			Emit.cmp_imm(Rcx, Boxing.first_tag),
+			Emit.jcc(B, "runtime_to_number_done"),
+			Emit.mov(Rcx, Rdi),
+		])
+		.concat(unboxed_items(Rcx))
+		.concat([
+			Emit.imm(Rax, 0x7FF8000000000000),
+			Emit.test(Rcx, Rcx),
+			Emit.jcc(E, "runtime_to_number_done"),
+			Emit.imm(Rax, double_bits(1.0)),
+			Emit.cmp_imm(Rcx, 3),
+			Emit.jcc(E, "runtime_to_number_done"),
+			Emit.zero(Rax),
+			Emit.mark("runtime_to_number_done"),
+			Emit.ret,
+		])
 	[
 		add,
 		check,
@@ -1181,6 +1254,7 @@ operator_items = {
 		truthy,
 		check_function,
 		cell,
+		to_number,
 	].join()
 }
 
@@ -1197,7 +1271,13 @@ property_items =
 			Emit.cmp_imm(Rcx, Boxing.object_tag),
 			Emit.jcc(E, "runtime_get_property_object"),
 		])
+		.concat(nullish_jump_items("runtime_get_property_nullish"))
 		.concat(stopping_items("runtime_text_property_not_compiled"))
+		.concat([
+			Emit.mark("runtime_get_property_nullish"),
+			Emit.zero(Rdx),
+			Emit.jmp("runtime_property_error"),
+		])
 		.append(Emit.mark("runtime_get_property_object"))
 		.concat(unboxed_items(Rdi))
 		.concat([
@@ -1230,6 +1310,33 @@ property_items =
 			Emit.mark("runtime_get_length_other"),
 		])
 		.concat(stopping_items("runtime_text_property_not_compiled"))
+
+## The statements that jump to `label` when the value in `rdi`, a
+## property's or an index's receiver, is `undefined` or `null`. They change
+## `rcx`.
+nullish_jump_items : Str -> List(Assembly.Statement)
+nullish_jump_items = |label| [
+	Emit.imm(Rcx, Boxing.undefined_bits),
+	Emit.cmp(Rdi, Rcx),
+	Emit.jcc(E, label),
+	Emit.imm(Rcx, Boxing.null_bits),
+	Emit.cmp(Rdi, Rcx),
+	Emit.jcc(E, label),
+]
+
+## At `label`, node's TypeError for an index of `undefined` or `null` in
+## `rdi` read (`setting` 0) or written (1), the index `rsi` made its text.
+keyed_error_items : { label : Str, setting : I64 } -> List(Assembly.Statement)
+keyed_error_items = |{ label, setting }| [
+	Emit.mark(label),
+	Emit.save(Rdi),
+	Emit.mov(Rdi, Rsi),
+	Emit.call("runtime_text_of"),
+	Emit.mov(Rsi, Rax),
+	Emit.restore(Rdi),
+	Emit.imm(Rdx, setting),
+	Emit.jmp("runtime_property_error"),
+]
 
 ## The bits of the number in `rax` compared with `bits`, and a jump to
 ## `label` when they are the same.
@@ -1432,6 +1539,7 @@ container_items = {
 		Emit.ret,
 	]
 	set_property = [Emit.mark(Runtime.set_property)]
+		.concat(nullish_jump_items("runtime_set_property_nullish"))
 		.concat(tag_load_items(Rdi))
 		.concat([Emit.cmp_imm(Rcx, Boxing.object_tag), Emit.jcc(Ne, "runtime_not_an_object")])
 		.concat(unboxed_items(Rdi))
@@ -1450,8 +1558,9 @@ container_items = {
 			Emit.mov(Rdi, Rsi),
 			Emit.call("runtime_is_index_key"),
 			Emit.restore(Rdi),
-			Emit.test(Rax, Rax),
-			Emit.jcc(Ne, "runtime_integer_key"),
+			Emit.cmp_imm(Rax, 2),
+			Emit.jcc(E, "runtime_integer_key"),
+			Emit.save(Rax),
 			Emit.load(Rcx, Emit.mem(Rdi, 0)),
 			Emit.load(R8, Emit.mem(Rdi, 8)),
 			Emit.cmp(Rcx, R8),
@@ -1479,6 +1588,9 @@ container_items = {
 			Emit.mov(Rdi, R9),
 			Emit.restore(Rsi),
 			Emit.mark("runtime_set_property_room"),
+			Emit.restore(Rax),
+			Emit.test(Rax, Rax),
+			Emit.jcc(Ne, "runtime_set_property_index"),
 			Emit.load(Rcx, Emit.mem(Rdi, 0)),
 			Emit.mov(R8, Rcx),
 			Emit.shl(R8, 4),
@@ -1489,12 +1601,109 @@ container_items = {
 			Emit.plus_imm(Rcx, 1),
 			Emit.store(Emit.mem(Rdi, 0), Rcx),
 			Emit.ret,
+			# An index key goes before the first key that isn't one or is a
+			# greater one, as node orders them: r11 the entries, r10 their
+			# bytes, r9 the place, the entries from it moved up one.
+			Emit.mark("runtime_set_property_index"),
+			Emit.load(R10, Emit.mem(Rdi, 0)),
+			Emit.shl(R10, 4),
+			Emit.load(R11, Emit.mem(Rdi, 16)),
+			Emit.zero(R9),
+			Emit.mark("runtime_set_property_place"),
+			Emit.cmp(R9, R10),
+			Emit.jcc(E, "runtime_set_property_insert"),
+			Emit.load(
+				Rcx,
+				Emit.mem_index({
+					base: R11,
+					index: R9,
+					displacement: 0,
+				}),
+			),
+			Emit.call("runtime_index_before"),
+			Emit.test(Rax, Rax),
+			Emit.jcc(Ne, "runtime_set_property_insert"),
+			Emit.plus_imm(R9, 16),
+			Emit.jmp("runtime_set_property_place"),
+			Emit.mark("runtime_set_property_insert"),
+			Emit.mov(R8, R10),
+			Emit.mark("runtime_set_property_shift"),
+			Emit.cmp(R8, R9),
+			Emit.jcc(E, "runtime_set_property_shifted"),
+			Emit.minus_imm(R8, 16),
+			Emit.plus(R8, R11),
+			Emit.load(Rax, Emit.mem(R8, 0)),
+			Emit.store(Emit.mem(R8, 16), Rax),
+			Emit.load(Rax, Emit.mem(R8, 8)),
+			Emit.store(Emit.mem(R8, 24), Rax),
+			Emit.minus(R8, R11),
+			Emit.jmp("runtime_set_property_shift"),
+			Emit.mark("runtime_set_property_shifted"),
+			Emit.plus(R9, R11),
+			Emit.store(Emit.mem(R9, 0), Rsi),
+			Emit.store(Emit.mem(R9, 8), Rdx),
+			Emit.load(Rcx, Emit.mem(Rdi, 0)),
+			Emit.plus_imm(Rcx, 1),
+			Emit.store(Emit.mem(Rdi, 0), Rcx),
+			Emit.ret,
 			Emit.mark("runtime_not_an_object"),
 		])
 		.concat(stopping_items("runtime_text_not_an_object"))
 		.append(Emit.mark("runtime_integer_key"))
 		.concat(stopping_items("runtime_text_integer_key"))
-	# A key is an array index when it is "0", or digits not starting with 0.
+		.concat([
+			Emit.mark("runtime_set_property_nullish"),
+			Emit.imm(Rdx, 1),
+			Emit.jmp("runtime_property_error"),
+		])
+	# Whether the index key `rsi` goes before the key `rcx`: 1 in `rax`
+	# when that key is no index, or a greater one (more digits, or the same
+	# count and a greater byte first). It keeps every register but `rax`,
+	# `rcx` and `r8`.
+	index_before = [
+		Emit.mark("runtime_index_before"),
+		Emit.save(Rdi),
+		Emit.save(Rcx),
+		Emit.mov(Rdi, Rcx),
+		Emit.call("runtime_is_index_key"),
+		Emit.restore(Rcx),
+		Emit.restore(Rdi),
+		Emit.test(Rax, Rax),
+		Emit.jcc(E, "runtime_index_before_yes"),
+		Emit.load(Rax, Emit.mem(Rsi, 0)),
+		Emit.load(R8, Emit.mem(Rcx, 0)),
+		Emit.cmp(Rax, R8),
+		Emit.jcc(B, "runtime_index_before_yes"),
+		Emit.jcc(A, "runtime_index_before_no"),
+		Emit.save(Rdx),
+		Emit.save(Rdi),
+		Emit.zero(R8),
+		Emit.mark("runtime_index_before_byte"),
+		Emit.cmp(R8, Rax),
+		Emit.jcc(E, "runtime_index_before_restored_no"),
+		text_byte_item({ reg: Rdx, base: Rsi }),
+		text_byte_item({ reg: Rdi, base: Rcx }),
+		Emit.cmp(Rdx, Rdi),
+		Emit.jcc(B, "runtime_index_before_restored_yes"),
+		Emit.jcc(A, "runtime_index_before_restored_no"),
+		Emit.plus_imm(R8, 1),
+		Emit.jmp("runtime_index_before_byte"),
+		Emit.mark("runtime_index_before_restored_yes"),
+		Emit.restore(Rdi),
+		Emit.restore(Rdx),
+		Emit.mark("runtime_index_before_yes"),
+		Emit.imm(Rax, 1),
+		Emit.ret,
+		Emit.mark("runtime_index_before_restored_no"),
+		Emit.restore(Rdi),
+		Emit.restore(Rdx),
+		Emit.mark("runtime_index_before_no"),
+		Emit.zero(Rax),
+		Emit.ret,
+	]
+	# A key is an array index when it is "0", or digits not starting with 0:
+	# 1 in `rax`, or 2 for ten digits or more, which may be past node's
+	# indexes (below 2^32 - 1) and are not compiled yet; 0 for any other.
 	index_key = [
 		Emit.mark("runtime_is_index_key"),
 		Emit.load(Rcx, Emit.mem(Rdi, 0)),
@@ -1519,6 +1728,10 @@ container_items = {
 		Emit.jmp("runtime_is_index_key_digit"),
 		Emit.mark("runtime_is_index_key_yes"),
 		Emit.imm(Rax, 1),
+		Emit.cmp_imm(Rcx, 10),
+		Emit.jcc(B, "runtime_is_index_key_done"),
+		Emit.imm(Rax, 2),
+		Emit.mark("runtime_is_index_key_done"),
 		Emit.ret,
 		Emit.mark("runtime_is_index_key_no"),
 		Emit.zero(Rax),
@@ -1590,6 +1803,7 @@ container_items = {
 		])
 		.concat(stopping_items("runtime_text_not_an_array"))
 	get_index = [Emit.mark(Runtime.get_index)]
+		.concat(nullish_jump_items("runtime_get_index_nullish"))
 		.concat(tag_load_items(Rdi))
 		.concat([
 			Emit.cmp_imm(Rcx, Boxing.array_tag),
@@ -1653,7 +1867,9 @@ container_items = {
 		.concat(unboxed_items(Rsi))
 		.concat([Emit.jmp("runtime_get_entry"), Emit.mark("runtime_index_not_compiled")])
 		.concat(stopping_items("runtime_text_index_not_compiled"))
+		.concat(keyed_error_items({ label: "runtime_get_index_nullish", setting: 0 }))
 	set_index = [Emit.mark(Runtime.set_index)]
+		.concat(nullish_jump_items("runtime_set_index_nullish"))
 		.concat(tag_load_items(Rdi))
 		.concat([
 			Emit.cmp_imm(Rcx, Boxing.array_tag),
@@ -1698,11 +1914,13 @@ container_items = {
 			Emit.mark("runtime_array_hole"),
 		])
 		.concat(stopping_items("runtime_text_array_hole"))
+		.concat(keyed_error_items({ label: "runtime_set_index_nullish", setting: 1 }))
 	[
 		new_array,
 		new_object,
 		entry,
 		set_property,
+		index_before,
 		index_key,
 		push_item,
 		push,
@@ -1818,7 +2036,7 @@ inspect_items = {
 		])
 		.concat(unboxed_items(Rdi))
 		.concat([
-			Emit.jmp("runtime_quoted"),
+			Emit.jmp("runtime_inspect_text"),
 			Emit.mark("runtime_inspect_array"),
 			Emit.zero(Rdx),
 			Emit.jmp("runtime_inspect_list"),
@@ -1848,15 +2066,6 @@ inspect_items = {
 			Emit.plus_imm(Rax, 8),
 			Emit.ret,
 		])
-	escape_scan =
-		escapes
-			.map(
-				|(byte, _)| [
-					Emit.cmp_imm(Rax, byte.to_i64()),
-					Emit.jcc(E, "runtime_quoted_escaped"),
-				],
-			)
-			.join()
 	escape_write =
 		escapes
 			.map(
@@ -1869,7 +2078,19 @@ inspect_items = {
 				},
 			)
 			.join()
-	# r9: whether a ' is in it; r10: whether a " is; r11: the escapes.
+	# The nibble in `rax` written at `rdi` as an uppercase hex digit.
+	nibble_written = |label| [
+		Emit.cmp_imm(Rax, 10),
+		Emit.jcc(B, "${label}_digit"),
+		# 'A' - 10 - '0': past 9, the letters.
+		Emit.plus_imm(Rax, 7),
+		Emit.mark("${label}_digit"),
+		Emit.plus_imm(Rax, '0'),
+		Emit.byte_store(Emit.mem(Rdi, 0), Al),
+		Emit.plus_imm(Rdi, 1),
+	]
+	# r9: whether a ' is in it; r10: whether a " is; r11: whether a ` or a
+	# `${` is, either of which keeps node from quoting it with backticks.
 	quoted = [
 		Emit.mark("runtime_quoted"),
 		Emit.load(Rcx, Emit.mem(Rdi, 0)),
@@ -1881,68 +2102,104 @@ inspect_items = {
 		Emit.cmp(R8, Rcx),
 		Emit.jcc(E, "runtime_quoted_scanned"),
 		text_byte_item({ reg: Rax, base: Rdi }),
+		Emit.cmp_imm(Rax, '\''),
+		Emit.jcc(Ne, "runtime_quoted_not_single"),
+		Emit.imm(R9, 1),
+		Emit.mark("runtime_quoted_not_single"),
+		Emit.cmp_imm(Rax, '"'),
+		Emit.jcc(Ne, "runtime_quoted_not_double"),
+		Emit.imm(R10, 1),
+		Emit.mark("runtime_quoted_not_double"),
+		Emit.cmp_imm(Rax, '`'),
+		Emit.jcc(Ne, "runtime_quoted_not_back"),
+		Emit.imm(R11, 1),
+		Emit.mark("runtime_quoted_not_back"),
+		Emit.cmp_imm(Rax, '$'),
+		Emit.jcc(Ne, "runtime_quoted_next"),
+		Emit.lea(Rdx, Emit.mem(R8, 1)),
+		Emit.cmp(Rdx, Rcx),
+		Emit.jcc(Ae, "runtime_quoted_next"),
+		Emit.byte_load(
+			Rdx,
+			Emit.mem_index({
+				base: Rdi,
+				index: Rdx,
+				displacement: 8,
+			}),
+		),
+		Emit.cmp_imm(Rdx, '{'),
+		Emit.jcc(Ne, "runtime_quoted_next"),
+		Emit.imm(R11, 1),
+		Emit.mark("runtime_quoted_next"),
+		Emit.plus_imm(R8, 1),
+		Emit.jmp("runtime_quoted_scan"),
+		Emit.mark("runtime_quoted_scanned"),
+		# The quote, in r9, by node's rule: ', or " when a ' is in it and no
+		# ", or ` when both are and neither a ` nor a `${`, else ' with each
+		# ' escaped.
+		Emit.test(R9, R9),
+		Emit.imm(R9, '\''),
+		Emit.jcc(E, "runtime_quoted_chosen"),
+		Emit.test(R10, R10),
+		Emit.imm(R9, '"'),
+		Emit.jcc(E, "runtime_quoted_chosen"),
+		Emit.test(R11, R11),
+		Emit.imm(R9, '`'),
+		Emit.jcc(E, "runtime_quoted_chosen"),
+		Emit.imm(R9, '\''),
+		Emit.mark("runtime_quoted_chosen"),
+		Emit.save(Rdi),
+		Emit.save(R9),
+		# At most 4 bytes a byte (`\x1B`), and the quotes.
+		Emit.mov(Rdi, Rcx),
+		Emit.shl(Rdi, 2),
+		Emit.plus_imm(Rdi, 10),
+		Emit.call(Runtime.allocate),
+		Emit.restore(R9),
+		Emit.restore(R10),
+		Emit.save(Rax),
+		Emit.lea(Rdi, Emit.mem(Rax, 8)),
+		Emit.mov(Rax, R9),
+		Emit.byte_store(Emit.mem(Rdi, 0), Al),
+		Emit.plus_imm(Rdi, 1),
+		Emit.load(Rcx, Emit.mem(R10, 0)),
+		Emit.zero(R8),
+		Emit.mark("runtime_quoted_copy"),
+		Emit.cmp(R8, Rcx),
+		Emit.jcc(E, "runtime_quoted_copied"),
+		text_byte_item({ reg: Rdx, base: R10 }),
 	]
-		.concat(escape_scan)
-		.concat([
-			Emit.cmp_imm(Rax, 0x20),
-			Emit.jcc(B, "runtime_quotes"),
-			Emit.cmp_imm(Rax, 0x7F),
-			Emit.jcc(E, "runtime_quotes"),
-			Emit.cmp_imm(Rax, '\''),
-			Emit.jcc(Ne, "runtime_quoted_not_single"),
-			Emit.imm(R9, 1),
-			Emit.mark("runtime_quoted_not_single"),
-			Emit.cmp_imm(Rax, '"'),
-			Emit.jcc(Ne, "runtime_quoted_next"),
-			Emit.imm(R10, 1),
-			Emit.jmp("runtime_quoted_next"),
-			Emit.mark("runtime_quoted_escaped"),
-			Emit.plus_imm(R11, 1),
-			Emit.mark("runtime_quoted_next"),
-			Emit.plus_imm(R8, 1),
-			Emit.jmp("runtime_quoted_scan"),
-			Emit.mark("runtime_quoted_scanned"),
-			# The quote, in r9: ', or " when a ' is in it and no ".
-			Emit.test(R9, R9),
-			Emit.imm(R9, '\''),
-			Emit.jcc(E, "runtime_quoted_chosen"),
-			Emit.test(R10, R10),
-			Emit.jcc(Ne, "runtime_quotes"),
-			Emit.imm(R9, '"'),
-			Emit.mark("runtime_quoted_chosen"),
-			Emit.save(Rdi),
-			Emit.save(R9),
-			Emit.lea(
-				Rdi,
-				Emit.mem_index({
-					base: Rcx,
-					index: R11,
-					displacement: 10,
-				}),
-			),
-			Emit.call(Runtime.allocate),
-			Emit.restore(R9),
-			Emit.restore(R10),
-			Emit.save(Rax),
-			Emit.lea(Rdi, Emit.mem(Rax, 8)),
-			Emit.mov(Rax, R9),
-			Emit.byte_store(Emit.mem(Rdi, 0), Al),
-			Emit.plus_imm(Rdi, 1),
-			Emit.load(Rcx, Emit.mem(R10, 0)),
-			Emit.zero(R8),
-			Emit.mark("runtime_quoted_copy"),
-			Emit.cmp(R8, Rcx),
-			Emit.jcc(E, "runtime_quoted_copied"),
-			text_byte_item({ reg: Rdx, base: R10 }),
-		])
 		.concat(escape_write)
 		.concat([
+			Emit.cmp_imm(Rdx, 0x20),
+			Emit.jcc(B, "runtime_quoted_hex"),
+			Emit.cmp_imm(Rdx, 0x7F),
+			Emit.jcc(E, "runtime_quoted_hex"),
+			Emit.cmp_imm(Rdx, '\''),
+			Emit.jcc(Ne, "runtime_quoted_raw"),
+			Emit.cmp_imm(R9, '\''),
+			Emit.jcc(Ne, "runtime_quoted_raw"),
+		])
+		.concat(byte_written_items(92))
+		.concat([
+			Emit.mark("runtime_quoted_raw"),
 			Emit.mov(Rax, Rdx),
 			Emit.byte_store(Emit.mem(Rdi, 0), Al),
 			Emit.plus_imm(Rdi, 1),
 			Emit.mark("runtime_quoted_written"),
 			Emit.plus_imm(R8, 1),
 			Emit.jmp("runtime_quoted_copy"),
+			# Any other control byte, as node writes it: `\x1B`.
+			Emit.mark("runtime_quoted_hex"),
+		])
+		.concat(byte_written_items(92))
+		.concat(byte_written_items('x'))
+		.concat([Emit.mov(Rax, Rdx), Emit.shr(Rax, 4)])
+		.concat(nibble_written("runtime_quoted_high"))
+		.concat([Emit.mov(Rax, Rdx), Emit.bit_and_imm(Rax, 15)])
+		.concat(nibble_written("runtime_quoted_low"))
+		.concat([
+			Emit.jmp("runtime_quoted_written"),
 			Emit.mark("runtime_quoted_copied"),
 			Emit.mov(Rax, R9),
 			Emit.byte_store(Emit.mem(Rdi, 0), Al),
@@ -1953,9 +2210,7 @@ inspect_items = {
 			Emit.minus_imm(Rcx, 8),
 			Emit.store(Emit.mem(Rax, 0), Rcx),
 			Emit.ret,
-			Emit.mark("runtime_quotes"),
 		])
-		.concat(stopping_items("runtime_text_quotes"))
 	in_range = |{ low, high, label }| [
 		Emit.cmp_imm(Rax, low),
 		Emit.jcc(B, "${label}_below"),
@@ -2010,7 +2265,134 @@ inspect_items = {
 				Emit.mov(Rax, Rdi),
 				Emit.ret,
 			])
-	[dispatch, quoted, key_text, list_items].join()
+	# A string inside an array or an object that holds a line break and is
+	# longer than 16 and than the line left (76 less the indentation, two
+	# spaces a depth) is written as node writes it: a quoted piece a line,
+	# each ending at a line break, joined with ` +` and a line indented two
+	# past the depth's. Its frame holds the string (8), the depth (16), the
+	# joint (24), the piece's start (32), the place (40) and the text so far
+	# (48, 0 before the first piece).
+	local = |offset| Emit.mem(Rbp, 0 - offset)
+	text = [
+		Emit.mark("runtime_inspect_text"),
+		Emit.load(Rcx, Emit.mem(Rdi, 0)),
+		Emit.cmp_imm(Rcx, 16),
+		Emit.jcc(Be, "runtime_quoted"),
+		Emit.mov(Rax, Rsi),
+		Emit.plus(Rax, Rax),
+		Emit.plus(Rax, Rcx),
+		Emit.cmp_imm(Rax, 76),
+		Emit.jcc(Be, "runtime_quoted"),
+		Emit.zero(R8),
+		Emit.mark("runtime_inspect_text_scan"),
+		Emit.cmp(R8, Rcx),
+		Emit.jcc(E, "runtime_quoted"),
+		text_byte_item({ reg: Rax, base: Rdi }),
+		Emit.cmp_imm(Rax, 10),
+		Emit.jcc(E, "runtime_inspect_text_split"),
+		Emit.plus_imm(R8, 1),
+		Emit.jmp("runtime_inspect_text_scan"),
+		Emit.mark("runtime_inspect_text_split"),
+		Emit.save(Rbp),
+		Emit.mov(Rbp, Rsp),
+		Emit.minus_imm(Rsp, 48),
+		Emit.store(local(8), Rdi),
+		Emit.store(local(16), Rsi),
+		Emit.mov(Rdi, Rsi),
+		Emit.plus(Rdi, Rdi),
+		Emit.plus_imm(Rdi, 2),
+		Emit.store(local(24), Rdi),
+		Emit.plus_imm(Rdi, 11),
+		Emit.call(Runtime.allocate),
+		Emit.load(Rcx, local(24)),
+		Emit.lea(Rdx, Emit.mem(Rcx, 3)),
+		Emit.store(Emit.mem(Rax, 0), Rdx),
+		Emit.store(local(24), Rax),
+		Emit.lea(Rdi, Emit.mem(Rax, 8)),
+	]
+		.concat(byte_written_items(' '))
+		.concat(byte_written_items('+'))
+		.concat(byte_written_items('\n'))
+		.concat([
+			Emit.mov(R9, Rcx),
+			Emit.mark("runtime_inspect_text_spaces"),
+			Emit.test(R9, R9),
+			Emit.jcc(E, "runtime_inspect_text_joint"),
+		])
+		.concat(byte_written_items(' '))
+		.concat([
+			Emit.minus_imm(R9, 1),
+			Emit.jmp("runtime_inspect_text_spaces"),
+			Emit.mark("runtime_inspect_text_joint"),
+			Emit.zero(Rax),
+			Emit.store(local(32), Rax),
+			Emit.store(local(40), Rax),
+			Emit.store(local(48), Rax),
+			Emit.mark("runtime_inspect_text_next"),
+			Emit.load(Rdi, local(8)),
+			Emit.load(Rcx, Emit.mem(Rdi, 0)),
+			Emit.load(R8, local(40)),
+			Emit.cmp(R8, Rcx),
+			Emit.jcc(E, "runtime_inspect_text_last"),
+			text_byte_item({ reg: Rax, base: Rdi }),
+			Emit.plus_imm(R8, 1),
+			Emit.store(local(40), R8),
+			Emit.cmp_imm(Rax, 10),
+			Emit.jcc(Ne, "runtime_inspect_text_next"),
+			Emit.call("runtime_inspect_piece"),
+			Emit.jmp("runtime_inspect_text_next"),
+			Emit.mark("runtime_inspect_text_last"),
+			Emit.load(Rax, local(32)),
+			Emit.cmp(Rax, R8),
+			Emit.jcc(E, "runtime_inspect_text_done"),
+			Emit.call("runtime_inspect_piece"),
+			Emit.mark("runtime_inspect_text_done"),
+			Emit.load(Rax, local(48)),
+			Emit.mov(Rsp, Rbp),
+			Emit.restore(Rbp),
+			Emit.ret,
+			# The piece from the start to the place, quoted and joined on;
+			# called in the frame above, whose `rbp` it keeps.
+			Emit.mark("runtime_inspect_piece"),
+			Emit.load(Rdx, local(40)),
+			Emit.load(Rsi, local(32)),
+			Emit.minus(Rdx, Rsi),
+			Emit.save(Rdx),
+			Emit.lea(Rdi, Emit.mem(Rdx, 8)),
+			Emit.call(Runtime.allocate),
+			Emit.restore(Rcx),
+			Emit.store(Emit.mem(Rax, 0), Rcx),
+			Emit.lea(Rdi, Emit.mem(Rax, 8)),
+			Emit.load(R10, local(8)),
+			Emit.load(Rsi, local(32)),
+			Emit.lea(
+				Rsi,
+				Emit.mem_index({
+					base: R10,
+					index: Rsi,
+					displacement: 8,
+				}),
+			),
+			Emit.save(Rax),
+			Instruction(RepMovsb),
+			Emit.restore(Rdi),
+			Emit.load(Rax, local(40)),
+			Emit.store(local(32), Rax),
+			Emit.call("runtime_quoted"),
+			Emit.load(Rdi, local(48)),
+			Emit.test(Rdi, Rdi),
+			Emit.jcc(E, "runtime_inspect_piece_first"),
+			Emit.save(Rax),
+			Emit.load(Rsi, local(24)),
+			Emit.call("runtime_concat"),
+			Emit.mov(Rdi, Rax),
+			Emit.restore(Rsi),
+			Emit.call("runtime_concat"),
+			Emit.mark("runtime_inspect_piece_first"),
+			Emit.store(local(48), Rax),
+			Emit.ret,
+		])
+	[dispatch, quoted, text, key_text, list_items].join()
 }
 
 ## `runtime_inspect_list`: the array or object at `rdi` (`rdx` 0 for an
@@ -3003,8 +3385,22 @@ slice_items = {
 			])
 	# r11: how many places were given; r10: the array; r9: its length;
 	# rsi: the start; rdx: the end.
-	slice = [Emit.mark(Runtime.slice), Emit.mov(R11, Rcx)]
+	# r8: 1 for a string, whose bytes are sliced, 0 for an array.
+	slice = [
+		Emit.mark(Runtime.slice),
+		Emit.mov(R11, Rcx),
+		Emit.zero(R8),
+	]
+		.concat(tag_load_items(Rdi))
+		.concat([
+			Emit.cmp_imm(Rcx, Boxing.string_tag),
+			Emit.jcc(Ne, "runtime_slice_array"),
+			Emit.imm(R8, 1),
+			Emit.jmp("runtime_slice_listed"),
+			Emit.mark("runtime_slice_array"),
+		])
 		.concat(array_check_items)
+		.concat([Emit.mark("runtime_slice_listed")])
 		.concat(unboxed_items(Rdi))
 		.concat([
 			Emit.mov(R10, Rdi),
@@ -3032,6 +3428,8 @@ slice_items = {
 			Emit.jcc(Ge, "runtime_slice_counted"),
 			Emit.zero(Rdx),
 			Emit.mark("runtime_slice_counted"),
+			Emit.test(R8, R8),
+			Emit.jcc(Ne, "runtime_slice_string"),
 			Emit.save(R10),
 			Emit.save(Rsi),
 			Emit.save(Rdx),
@@ -3046,8 +3444,29 @@ slice_items = {
 			Emit.shl(Rcx, 3),
 			Instruction(RepMovsb),
 			Emit.ret,
-			Emit.mark("runtime_slice_not_a_number"),
+			Emit.mark("runtime_slice_string"),
+			Emit.save(R10),
+			Emit.save(Rsi),
+			Emit.save(Rdx),
+			Emit.lea(Rdi, Emit.mem(Rdx, 8)),
+			Emit.call(Runtime.allocate),
+			Emit.restore(Rcx),
+			Emit.restore(Rsi),
+			Emit.restore(R10),
+			Emit.store(Emit.mem(Rax, 0), Rcx),
+			Emit.lea(Rdi, Emit.mem(Rax, 8)),
+			Emit.lea(
+				Rsi,
+				Emit.mem_index({
+					base: R10,
+					index: Rsi,
+					displacement: 8,
+				}),
+			),
+			Instruction(RepMovsb),
 		])
+		.concat(boxed_string_items)
+		.concat([Emit.ret, Emit.mark("runtime_slice_not_a_number")])
 		.concat(stopping_items("runtime_text_slice_place"))
 	char_at = [Emit.mark(Runtime.char_at)]
 		.concat(unless_string_items({ reg: Rdi, label: "runtime_index_not_compiled" }))
@@ -4398,8 +4817,8 @@ spread_items = {
 				Emit.load(Rax, local(16)),
 			])
 			.concat(leave)
-	# An array's or a string's items would be integer keys, which node
-	# orders first.
+	# An object's entries are copied below; an array or a string goes to
+	# `${label}_listed`, boxed; anything else has no properties.
 	keyed = |label|
 		tag_load_items(Rsi)
 			.concat([
@@ -4408,19 +4827,52 @@ spread_items = {
 				Emit.cmp_imm(Rcx, Boxing.array_tag),
 				Emit.jcc(E, "${label}_listed"),
 				Emit.cmp_imm(Rcx, Boxing.string_tag),
-				Emit.jcc(Ne, "${label}_done"),
-				Emit.mark("${label}_listed"),
-			])
-			.concat(unboxed_items(Rsi))
-			.concat([
-				Emit.load(Rcx, Emit.mem(Rsi, 0)),
-				Emit.test(Rcx, Rcx),
-				Emit.jcc(Ne, "runtime_integer_key"),
+				Emit.jcc(E, "${label}_listed"),
 				Emit.jmp("${label}_done"),
 				Emit.mark("${label}_object"),
 			])
 			.concat(unboxed_items(Rsi))
 			.concat(not_an_error_items("${label}_plain"))
+	# An array's items, or a string's characters, set on the object at
+	# [rbp - 16] under their places' texts: `{ ...[10, 20] }` is
+	# `{ '0': 10, '1': 20 }`.
+	listed_fields =
+		[Emit.mark("runtime_spread_fields_listed")]
+			.concat(tag_load_items(Rsi))
+			.concat([
+				Emit.cmp_imm(Rcx, Boxing.array_tag),
+				Emit.jcc(E, "runtime_spread_fields_array"),
+				Emit.mov(Rdi, Rsi),
+				Emit.call(Runtime.items_of),
+				Emit.mov(Rsi, Rax),
+				Emit.mark("runtime_spread_fields_array"),
+			])
+			.concat(unboxed_items(Rsi))
+			.concat([
+				Emit.store(local(8), Rsi),
+				Emit.zero(Rax),
+				Emit.store(local(24), Rax),
+				Emit.mark("runtime_spread_fields_item"),
+				Emit.load(Rdi, local(8)),
+				Emit.load(Rcx, local(24)),
+				Emit.load(Rdx, Emit.mem(Rdi, 0)),
+				Emit.cmp(Rcx, Rdx),
+				Emit.jcc(Ae, "runtime_spread_fields_done"),
+				Emit.load(R8, Emit.mem(Rdi, 16)),
+				Emit.load(Rax, listed_item(Rcx)),
+				Emit.store(local(32), Rax),
+				Instruction(Cvtsi2sd({ to: Xmm0, from: Rcx })),
+				Instruction(MovqFromXmm({ to: Rax, from: Xmm0 })),
+				Emit.call(Runtime.number_text),
+				Emit.mov(Rsi, Rax),
+				Emit.load(Rdi, local(16)),
+				Emit.load(Rdx, local(32)),
+				Emit.call(Runtime.set_property),
+				Emit.load(Rcx, local(24)),
+				Emit.plus_imm(Rcx, 1),
+				Emit.store(local(24), Rcx),
+				Emit.jmp("runtime_spread_fields_item"),
+			])
 	# Each entry of the object at [rbp - 8] whose key isn't left out, set
 	# on the object at [rbp - 16].
 	copied = |label|
@@ -4488,6 +4940,7 @@ spread_items = {
 				Emit.mark("runtime_spread_fields_copy_done"),
 			])
 			.concat(leave)
+			.concat(listed_fields)
 	left =
 		framed({ label: Runtime.properties_left, size: 32 })
 			.concat(unboxed_items(Rsi))
@@ -4507,6 +4960,14 @@ spread_items = {
 				Emit.load(Rax, local(16)),
 			])
 			.concat(leave)
+			.append(Emit.mark("runtime_properties_left_listed"))
+			.concat(unboxed_items(Rsi))
+			.concat([
+				Emit.load(Rcx, Emit.mem(Rsi, 0)),
+				Emit.test(Rcx, Rcx),
+				Emit.jcc(E, "runtime_properties_left_done"),
+			])
+			.concat(stopping_items("runtime_text_rest_listed"))
 			.append(Emit.mark("runtime_spread_error"))
 			.concat(stopping_items("runtime_text_spread_error"))
 	[call_spread, log_spread, extreme_of, spread_fields, left].join()
@@ -4560,6 +5021,50 @@ exception_items = {
 				Emit.plus_imm(Rsp, 16),
 				Emit.ret,
 			])
+	# node's TypeError for a property of `undefined` or `null` (`rdi`) read
+	# (`rdx` 0) or written (1), the key's text at `rsi`: `Cannot read
+	# properties of null (reading 'x')`. The frame holds the value (8), the
+	# key (16) and which (24).
+	property_error = [
+		Emit.mark("runtime_property_error"),
+		Emit.save(Rbp),
+		Emit.mov(Rbp, Rsp),
+		Emit.minus_imm(Rsp, 32),
+		Emit.store(Emit.mem(Rbp, -8), Rdi),
+		Emit.store(Emit.mem(Rbp, -16), Rsi),
+		Emit.store(Emit.mem(Rbp, -24), Rdx),
+		Emit.address_of(Rdi, "runtime_text_cannot_read"),
+		Emit.test(Rdx, Rdx),
+		Emit.jcc(E, "runtime_property_error_verb"),
+		Emit.address_of(Rdi, "runtime_text_cannot_set"),
+		Emit.mark("runtime_property_error_verb"),
+		Emit.address_of(Rsi, "runtime_text_undefined"),
+		Emit.load(Rax, Emit.mem(Rbp, -8)),
+		Emit.imm(Rcx, Boxing.null_bits),
+		Emit.cmp(Rax, Rcx),
+		Emit.jcc(Ne, "runtime_property_error_value"),
+		Emit.address_of(Rsi, "runtime_text_null"),
+		Emit.mark("runtime_property_error_value"),
+		Emit.call("runtime_concat"),
+		Emit.mov(Rdi, Rax),
+		Emit.address_of(Rsi, "runtime_text_reading"),
+		Emit.load(Rdx, Emit.mem(Rbp, -24)),
+		Emit.test(Rdx, Rdx),
+		Emit.jcc(E, "runtime_property_error_participle"),
+		Emit.address_of(Rsi, "runtime_text_setting"),
+		Emit.mark("runtime_property_error_participle"),
+		Emit.call("runtime_concat"),
+		Emit.mov(Rdi, Rax),
+		Emit.load(Rsi, Emit.mem(Rbp, -16)),
+		Emit.call("runtime_concat"),
+		Emit.mov(Rdi, Rax),
+		Emit.address_of(Rsi, "runtime_text_quote_closed"),
+		Emit.call("runtime_concat"),
+		Emit.mov(Rsi, Rax),
+		Emit.address_of(Rdi, Runtime.error_name_label("TypeError")),
+		Emit.call(Runtime.new_error),
+		Emit.jmp(Runtime.throw),
+	]
 	message = [
 		Emit.mark(Runtime.error_message),
 		Emit.imm(Rcx, Boxing.undefined_bits),
@@ -4568,5 +5073,262 @@ exception_items = {
 		Emit.address_of(Rax, "runtime_text_empty"),
 		Emit.ret,
 	]
-	[throw, new_error, message].join()
+	[throw, new_error, property_error, message].join()
+}
+
+## `runtime_splice`, `runtime_last_index_of` and `runtime_from_char_codes`.
+## splice's frame holds the array (`[rbp - 8]`), the arguments (16), the
+## start (24), the count removed (32), what is removed (40), the array
+## that takes the old one's place (48) and the count put in (56). The new
+## array's items become the old array's, so every reference sees the change.
+edit_items : List(Assembly.Statement)
+edit_items = {
+	local = |offset| Emit.mem(Rbp, 0 - offset)
+	argument = |{ at, reg }| [
+		Emit.load(R10, local(16)),
+		Emit.load(R8, Emit.mem(R10, 16)),
+		Emit.load(reg, Emit.mem(R8, 8 * at)),
+	]
+	splice =
+		[
+			Emit.mark(Runtime.splice),
+			Emit.save(Rbp),
+			Emit.mov(Rbp, Rsp),
+			Emit.minus_imm(Rsp, 64),
+		]
+			.concat(array_check_items)
+			.concat(unboxed_items(Rdi))
+			.concat(unboxed_items(Rsi))
+			.concat([
+				Emit.store(local(8), Rdi),
+				Emit.store(local(16), Rsi),
+				Emit.load(R9, Emit.mem(Rdi, 0)),
+				Emit.load(R11, Emit.mem(Rsi, 0)),
+				Emit.zero(Rsi),
+				Emit.zero(Rdx),
+				Emit.test(R11, R11),
+				Emit.jcc(E, "runtime_splice_counted"),
+			])
+			.concat(argument({ at: 0, reg: Rsi }))
+			# The start, as `slice` takes one: from the end when negative,
+			# held between 0 and the length.
+			.concat(unless_number_items({ reg: Rsi, label: "runtime_slice_not_a_number" }))
+			.concat([
+				Emit.to_xmm(Xmm0, Rsi),
+				Instruction(Cvttsd2si({ to: Rsi, from: Xmm0 })),
+				Emit.cmp_imm(Rsi, 0),
+				Emit.jcc(Ge, "runtime_splice_start_counted"),
+				Emit.plus(Rsi, R9),
+				Emit.cmp_imm(Rsi, 0),
+				Emit.jcc(Ge, "runtime_splice_start_counted"),
+				Emit.zero(Rsi),
+				Emit.mark("runtime_splice_start_counted"),
+				Emit.cmp(Rsi, R9),
+				Emit.jcc(Le, "runtime_splice_start_held"),
+				Emit.mov(Rsi, R9),
+				Emit.mark("runtime_splice_start_held"),
+				# With no count, the rest goes; a count is held between 0 and
+				# what follows the start.
+				Emit.mov(Rax, R9),
+				Emit.minus(Rax, Rsi),
+				Emit.mov(Rdx, Rax),
+				Emit.cmp_imm(R11, 1),
+				Emit.jcc(E, "runtime_splice_counted"),
+			])
+			.concat(argument({ at: 1, reg: Rdx }))
+			.concat(unless_number_items({ reg: Rdx, label: "runtime_slice_not_a_number" }))
+			.concat([
+				Emit.to_xmm(Xmm0, Rdx),
+				Instruction(Cvttsd2si({ to: Rdx, from: Xmm0 })),
+				Emit.cmp_imm(Rdx, 0),
+				Emit.jcc(Ge, "runtime_splice_count_low"),
+				Emit.zero(Rdx),
+				Emit.mark("runtime_splice_count_low"),
+				Emit.cmp(Rdx, Rax),
+				Emit.jcc(Le, "runtime_splice_counted"),
+				Emit.mov(Rdx, Rax),
+				Emit.mark("runtime_splice_counted"),
+				Emit.store(local(24), Rsi),
+				Emit.store(local(32), Rdx),
+				# What is removed, copied out.
+				Emit.mov(Rdi, Rdx),
+				Emit.call(Runtime.new_array),
+				Emit.store(local(40), Rax),
+				Emit.mov(Rdi, Rdx),
+				Emit.load(R10, local(8)),
+				Emit.load(R8, Emit.mem(R10, 16)),
+				Emit.load(Rsi, local(24)),
+				Emit.lea(Rsi, listed_item(Rsi)),
+				Emit.load(Rcx, local(32)),
+				Emit.shl(Rcx, 3),
+				Instruction(RepMovsb),
+				# The count put in: the arguments past the first two.
+				Emit.load(R10, local(16)),
+				Emit.load(Rcx, Emit.mem(R10, 0)),
+				Emit.minus_imm(Rcx, 2),
+				Emit.cmp_imm(Rcx, 0),
+				Emit.jcc(Ge, "runtime_splice_put"),
+				Emit.zero(Rcx),
+				Emit.mark("runtime_splice_put"),
+				Emit.store(local(56), Rcx),
+				# The new length, and the items: those before the start, those
+				# put in, then those after what is removed.
+				Emit.load(R10, local(8)),
+				Emit.load(Rdi, Emit.mem(R10, 0)),
+				Emit.load(Rax, local(32)),
+				Emit.minus(Rdi, Rax),
+				Emit.plus(Rdi, Rcx),
+				Emit.call(Runtime.new_array),
+				Emit.store(local(48), Rax),
+				Emit.mov(Rdi, Rdx),
+				Emit.load(R10, local(8)),
+				Emit.load(Rsi, Emit.mem(R10, 16)),
+				Emit.load(Rcx, local(24)),
+				Emit.shl(Rcx, 3),
+				Instruction(RepMovsb),
+				Emit.load(R10, local(16)),
+				Emit.load(Rsi, Emit.mem(R10, 16)),
+				Emit.plus_imm(Rsi, 16),
+				Emit.load(Rcx, local(56)),
+				Emit.shl(Rcx, 3),
+				Instruction(RepMovsb),
+				Emit.load(R10, local(8)),
+				Emit.load(R8, Emit.mem(R10, 16)),
+				Emit.load(Rax, local(24)),
+				Emit.load(Rcx, local(32)),
+				Emit.plus(Rax, Rcx),
+				Emit.lea(Rsi, listed_item(Rax)),
+				Emit.load(Rcx, Emit.mem(R10, 0)),
+				Emit.minus(Rcx, Rax),
+				Emit.shl(Rcx, 3),
+				Instruction(RepMovsb),
+				Emit.load(Rax, local(48)),
+			])
+			.concat(unboxed_items(Rax))
+			.concat([
+				Emit.load(R10, local(8)),
+				Emit.load(Rcx, Emit.mem(Rax, 0)),
+				Emit.store(Emit.mem(R10, 0), Rcx),
+				Emit.load(Rcx, Emit.mem(Rax, 8)),
+				Emit.store(Emit.mem(R10, 8), Rcx),
+				Emit.load(Rcx, Emit.mem(Rax, 16)),
+				Emit.store(Emit.mem(R10, 16), Rcx),
+				Emit.load(Rax, local(40)),
+				Emit.mov(Rsp, Rbp),
+				Emit.restore(Rbp),
+				Emit.ret,
+			])
+	# An array's items from the last, compared by `===`; a string's places
+	# from the last where the string sought fits, byte by byte. r9 the
+	# place, r10 the receiver, r11 the value sought.
+	last_index_of =
+		[Emit.mark(Runtime.last_index_of), Emit.mov(R11, Rsi)]
+			.concat(tag_load_items(Rdi))
+			.concat([
+				Emit.cmp_imm(Rcx, Boxing.string_tag),
+				Emit.jcc(E, "runtime_last_index_of_string"),
+			])
+			.concat(array_check_items)
+			.concat(unboxed_items(Rdi))
+			.concat([
+				Emit.mov(R10, Rdi),
+				Emit.load(R9, Emit.mem(R10, 0)),
+				Emit.mark("runtime_last_index_of_item"),
+				Emit.minus_imm(R9, 1),
+				Emit.cmp_imm(R9, 0),
+				Emit.jcc(L, "runtime_last_index_of_none"),
+				Emit.load(R8, Emit.mem(R10, 16)),
+				Emit.load(Rdi, listed_item(R9)),
+				Emit.mov(Rsi, R11),
+				Emit.save(R9),
+				Emit.save(R10),
+				Emit.save(R11),
+				Emit.call(Runtime.strict_equal),
+				Emit.restore(R11),
+				Emit.restore(R10),
+				Emit.restore(R9),
+				Emit.imm(Rcx, Boxing.true_bits),
+				Emit.cmp(Rax, Rcx),
+				Emit.jcc(E, "runtime_last_index_of_found"),
+				Emit.jmp("runtime_last_index_of_item"),
+				Emit.mark("runtime_last_index_of_string"),
+			])
+			.concat(unless_string_items({ reg: Rsi, label: "runtime_index_of_sought_stop" }))
+			.concat(unboxed_items(Rdi))
+			.concat(unboxed_items(Rsi))
+			.concat([
+				Emit.load(R9, Emit.mem(Rdi, 0)),
+				Emit.load(Rdx, Emit.mem(Rsi, 0)),
+				Emit.minus(R9, Rdx),
+				Emit.mark("runtime_last_index_of_place"),
+				Emit.cmp_imm(R9, 0),
+				Emit.jcc(L, "runtime_last_index_of_none"),
+				Emit.zero(Rcx),
+				Emit.mark("runtime_last_index_of_byte"),
+				Emit.cmp(Rcx, Rdx),
+				Emit.jcc(E, "runtime_last_index_of_found"),
+				Emit.mov(R8, R9),
+				Emit.plus(R8, Rcx),
+				text_byte_item({ reg: Rax, base: Rdi }),
+				Emit.mov(R8, Rcx),
+				text_byte_item({ reg: R8, base: Rsi }),
+				Emit.cmp(Rax, R8),
+				Emit.jcc(Ne, "runtime_last_index_of_next"),
+				Emit.plus_imm(Rcx, 1),
+				Emit.jmp("runtime_last_index_of_byte"),
+				Emit.mark("runtime_last_index_of_next"),
+				Emit.minus_imm(R9, 1),
+				Emit.jmp("runtime_last_index_of_place"),
+				Emit.mark("runtime_last_index_of_found"),
+				Instruction(Cvtsi2sd({ to: Xmm0, from: R9 })),
+				Instruction(MovqFromXmm({ to: Rax, from: Xmm0 })),
+				Emit.ret,
+				Emit.mark("runtime_last_index_of_none"),
+				Emit.imm(Rax, double_bits(-1.0)),
+				Emit.ret,
+			])
+	# Each number made a whole one and its low 16 bits taken, as
+	# JavaScript's ToUint16 does; one past ASCII stops the program.
+	from_char_codes =
+		[Emit.mark(Runtime.from_char_codes)]
+			.concat(unboxed_items(Rdi))
+			.concat([
+				Emit.save(Rdi),
+				Emit.load(Rdi, Emit.mem(Rdi, 0)),
+				Emit.plus_imm(Rdi, 8),
+				Emit.call(Runtime.allocate),
+				Emit.restore(R10),
+				Emit.load(R9, Emit.mem(R10, 0)),
+				Emit.store(Emit.mem(Rax, 0), R9),
+				Emit.load(R8, Emit.mem(R10, 16)),
+				Emit.zero(R11),
+				Emit.mark("runtime_from_char_codes_next"),
+				Emit.cmp(R11, R9),
+				Emit.jcc(E, "runtime_from_char_codes_done"),
+				Emit.load(Rdx, listed_item(R11)),
+			])
+			.concat(unless_number_items({ reg: Rdx, label: "runtime_not_a_number_stop" }))
+			.concat([
+				Emit.to_xmm(Xmm0, Rdx),
+				Instruction(Cvttsd2si({ to: Rdx, from: Xmm0 })),
+				Emit.bit_and_imm(Rdx, 0xFFFF),
+				Emit.cmp_imm(Rdx, 0x80),
+				Emit.jcc(Ae, "runtime_from_char_codes_wide"),
+				Emit.byte_store(
+					Emit.mem_index({
+						base: Rax,
+						index: R11,
+						displacement: 8,
+					}),
+					Dl,
+				),
+				Emit.plus_imm(R11, 1),
+				Emit.jmp("runtime_from_char_codes_next"),
+				Emit.mark("runtime_from_char_codes_done"),
+			])
+			.concat(boxed_string_items)
+			.append(Emit.ret)
+			.append(Emit.mark("runtime_from_char_codes_wide"))
+			.concat(stopping_items("runtime_text_wide_char"))
+	[splice, last_index_of, from_char_codes].join()
 }
