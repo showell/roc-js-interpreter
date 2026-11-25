@@ -123,7 +123,7 @@ what node prints for it is what the interpreter must print.
 ### Classes are syntax sugar
 
 The parser writes each class declaration as plain functions before
-`Resolve` runs (`Parser.roc`, "classes"), so `Resolve`, `Compile` and the
+`Resolve` runs (`ClassDesugaring.roc`), so `Resolve`, `Compile` and the
 VM never meet a class, a `new` of one, `this` or `super`. There are no
 prototypes: each instance holds its methods as closures over it. This
 class and its subclass

@@ -7,8 +7,8 @@
 ## words, and the lookahead that only scans tokens (whether a loop, an arrow
 ## or a pattern assignment starts here, where a bracket closes).
 ##
-## It stands apart from Parser because the parser is being split: the scope
-## layout (ScopeLayout) and the class desugaring (ClassDesugaring) are to be
+## It stands apart from Parser because the parser is split: the scope
+## layout (ScopeLayout) and the class desugaring (ClassDesugaring) are
 ## modules of their own that Parser imports and that use these too. A module
 ## they all import, and that imports none of them, is the one place the
 ## basics can live without a cycle. The class records sit here only because
