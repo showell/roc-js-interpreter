@@ -1298,13 +1298,16 @@ item_address_items = [
 ]
 
 ## An array is 24 bytes, its length, its capacity and its items' address,
-## and its items are 8 bytes each; an object is 24 bytes, its count of
-## properties, its capacity and its entries' address, and its entries are
-## 16 bytes each, a key's address (a string) and the value. A full list is
-## copied to one twice its size. `runtime_object_entry` gives the address
-## of the value of the key `rsi` (a string) in the object `rdi`, or 0,
-## keeping `rsi`; `runtime_push_item` pushes `rsi` onto the array at `rdi`,
-## its new length in `rax`.
+## and its items are 8 bytes each; an object is 40 bytes, its count of
+## properties, its capacity, its entries' address, then its table's address
+## and the count of entries the table covers (ObjectTable's header), and
+## its entries are 16 bytes each, a key's address (a string) and the value.
+## A full list is copied to one twice its size.
+## `runtime_object_entry_scan`, which ObjectTable's `runtime_object_entry`
+## calls for an object of few keys, gives the address of the value of the
+## key `rsi` (a string) in the object `rdi`, or 0, keeping `rsi`, by
+## searching the entries in order; `runtime_push_item` pushes `rsi` onto the
+## array at `rdi`, its new length in `rax`.
 container_items : List(Assembly.Statement)
 container_items = {
 	new_array = [
@@ -1331,19 +1334,21 @@ container_items = {
 		.append(Emit.ret)
 	new_object = [
 		Emit.mark(Runtime.new_object),
-		Emit.imm(Rdi, 24 + 4 * 16),
+		Emit.imm(Rdi, 40 + 4 * 16),
 		Emit.call(Runtime.allocate),
 		Emit.zero(Rcx),
 		Emit.store(Emit.mem(Rax, 0), Rcx),
+		Emit.store(Emit.mem(Rax, 24), Rcx),
+		Emit.store(Emit.mem(Rax, 32), Rcx),
 		Emit.imm(Rcx, 4),
 		Emit.store(Emit.mem(Rax, 8), Rcx),
-		Emit.lea(Rdx, Emit.mem(Rax, 24)),
+		Emit.lea(Rdx, Emit.mem(Rax, 40)),
 		Emit.store(Emit.mem(Rax, 16), Rdx),
 	]
 		.concat(RuntimeBuilders.boxed_items(Boxing.object_tag))
 		.append(Emit.ret)
 	entry = [
-		Emit.mark("runtime_object_entry"),
+		Emit.mark("runtime_object_entry_scan"),
 		Emit.load(R10, Emit.mem(Rdi, 0)),
 		Emit.shl(R10, 4),
 		Emit.load(R11, Emit.mem(Rdi, 16)),
@@ -1482,6 +1487,9 @@ container_items = {
 			Emit.plus(R9, R11),
 			Emit.store(Emit.mem(R9, 0), Rsi),
 			Emit.store(Emit.mem(R9, 8), Rdx),
+			# The entries after it moved, so the table covers none of them.
+			Emit.zero(R8),
+			Emit.store(Emit.mem(Rdi, 32), R8),
 			Emit.load(Rcx, Emit.mem(Rdi, 0)),
 			Emit.plus_imm(Rcx, 1),
 			Emit.store(Emit.mem(Rdi, 0), Rcx),
