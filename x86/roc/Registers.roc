@@ -320,7 +320,7 @@ direct_registers = |instruction|
 		| Cvttsd2si({ to, from: _ })
 		| MovqFromXmm({ to, from: _ }) => [to]
 		Cvtsi2sd({ to: _, from }) | MovqToXmm({ to: _, from }) => [from]
-		Div(register) | Idiv(register) | Neg(register) => [register]
+		Div(register) | Idiv(register) | ImulWide(register) | Neg(register) => [register]
 		Push(register) | Pop(register) | CallReg(register) => [register]
 		Test({ left, right }) => [left, right]
 		Shift({ operation: _, reg, count: _ }) => [reg]

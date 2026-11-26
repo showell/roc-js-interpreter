@@ -10,10 +10,45 @@
 ## whole beside the runtime routines they call, and none of them needs the
 ## walk: Lowering's dispatch hands each its site and state, and takes back
 ## what it lowered.
+##
+## **`%` BY A KNOWN WHOLE NUMBER IS A MULTIPLY, NOT A CALL.** `%` of two
+## values that may be numbers is otherwise `runtime_remainder`'s: both
+## tags tested, both numbers made whole numbers of at most 2^53 in size (or
+## the program stopped), and an `idiv`. When the divisor is known before
+## the program runs (`known_divisor`), the work is in line instead. The
+## divisor is known when the straight run says where the stack's top came
+## from (IndexLowering's `Checked`, whose origins are forgotten wherever two
+## ways meet, so a divisor two ways bring, `n % (c ? 3 : 4)`, is never taken
+## for either): a number literal, or a boxed variable that holds one number
+## for good (`KnownFunctions.constant_numbers`, a `const` set from a literal
+## and captured by the function). The number must be whole, not 0, and at
+## most 2^53 in size; its sign is dropped, as JavaScript's `n % -d` is
+## `n % d`. A `const` of the code's own frame that no closure captures is a
+## slot, not a box, and takes the routine. In line
+## (`constant_remainder_items`):
+## - the dividend's tag is tested when its kind may not be a number, and it
+##   is made a 64-bit integer (`cvttsd2si`), held to it by the round trip
+##   back (`cvtsi2sd`, `ucomisd`): a fraction, an infinity, a NaN or a
+##   number of 2^63 or more in size fails it and takes the routine, which
+##   gives NaN for an infinity or a NaN. A whole double below 2^63 is an
+##   exact integer, so the in-line way takes dividends past 2^53 too, which
+##   the routine stops at;
+## - the quotient, rounded toward 0, is a multiply by a magic reciprocal
+##   (`remainder_magic`, Hacker's Delight's for a signed dividend: the high
+##   half of a 128-bit product, a shift, and 1 more for a negative
+##   dividend), and the remainder is the dividend less the quotient times
+##   the divisor, with the dividend's sign; a divisor of 1 leaves 0;
+## - the remainder is made a double and the dividend's sign bit or-ed in, so
+##   a remainder of 0 is -0 when the dividend is negative or -0, as
+##   JavaScript's, and one not 0 keeps the sign it has.
+## The expect under `magic_remainder` holds the multiply to Roc's own
+## remainder for the divisors the tests use, over dividends to 2^63 in
+## size, and x86/tests/remainder-constant.js holds the whole of it to node.
 import js.Ast
 import Assembly
 import Boxing
 import Emit
+import IndexLowering
 import LoweringBasics
 import Runtime
 import X86
@@ -21,13 +56,15 @@ import X86
 OperatorLowering :: [].{
 
 	## A binary operator on the two values on top of the stack, its answer in
-	## the place of the first.
+	## the place of the first. `checked` is what the straight run before it
+	## proved (IndexLowering's header), which says where the top came from.
 	binary_items : LoweringBasics.Site,
 	{
 		state : LoweringBasics.State,
 		operator : Ast.BinaryOperator,
+		checked : IndexLowering.Checked,
 	} -> Try(LoweringBasics.Lowered, [Refused(Str)])
-	binary_items = |site, { state, operator }| {
+	binary_items = |site, { state, operator, checked }| {
 		left = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 2)
 		right = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 1)
 		kinds = (LoweringBasics.kind_below(state, 1), LoweringBasics.kind_below(state, 0))
@@ -198,10 +235,10 @@ OperatorLowering :: [].{
 					Multiply => Mulsd
 					_ => Divsd
 				}
-				checked = LoweringBasics.number_check_items({ kind: kinds.0, place: left })
+				tested = LoweringBasics.number_check_items({ kind: kinds.0, place: left })
 					.concat(LoweringBasics.number_check_items({ kind: kinds.1, place: right }))
 				done = arithmetic(operation)
-				Ok({ ..done, statements: checked.concat(done.statements) })
+				Ok({ ..done, statements: tested.concat(done.statements) })
 			}
 			(Less, _)
 			| (LessOrEqual, _)
@@ -277,27 +314,42 @@ OperatorLowering :: [].{
 			(
 				Remainder,
 				_,
-			) if LoweringBasics.is_numeric(kinds.0) and LoweringBasics.is_numeric(kinds.1) =>
+			) if LoweringBasics.is_numeric(kinds.0) and LoweringBasics.is_numeric(kinds.1) => {
+				called = [
+					Emit.load(Rdi, left),
+					Emit.load(Rsi, right),
+					Emit.call(Runtime.remainder),
+					Emit.store(left, Rax),
+				]
+				statements = match known_divisor(site, { state, checked }) {
+					Ok(divisor) =>
+						constant_remainder_items(
+							site,
+							{
+								kind: kinds.0,
+								left,
+								divisor,
+								slow_items: called,
+							},
+						)
+					Err(Unknown) => called
+				}
 				Ok(
 					LoweringBasics.falling(
-						[
-							Emit.load(Rdi, left),
-							Emit.load(Rsi, right),
-							Emit.call(Runtime.remainder),
-							Emit.store(left, Rax),
-						],
+						statements,
 						LoweringBasics.with_top(LoweringBasics.without_top(state, 2), Number),
 					),
 				)
+			}
 			(
 				Power,
 				_,
 			) if LoweringBasics.is_numeric(kinds.0) and LoweringBasics.is_numeric(kinds.1) => {
-				checked = LoweringBasics.number_check_items({ kind: kinds.0, place: left })
+				tested = LoweringBasics.number_check_items({ kind: kinds.0, place: left })
 					.concat(LoweringBasics.number_check_items({ kind: kinds.1, place: right }))
 				Ok(
 					LoweringBasics.falling(
-						checked.concat([
+						tested.concat([
 							Emit.load(Rdi, left),
 							Emit.load(Rsi, right),
 							Emit.call(Runtime.power),
@@ -715,7 +767,14 @@ OperatorLowering :: [].{
 		skip : U64,
 	} -> Try(LoweringBasics.Lowered, [Refused(Str)])
 	same_jump_items = |site, { state, skip }| {
-		compared = binary_items(site, { state, operator: StrictEqual })?
+		compared = binary_items(
+			site,
+			{
+				state,
+				operator: StrictEqual,
+				checked: IndexLowering.nothing_proved(state.stack_kinds.len()),
+			},
+		)?
 		after = match compared.falls {
 			Falls(next) => next
 			Ends => crash "OperatorLowering.same_jump_items: a comparison falls through"
@@ -854,3 +913,266 @@ arm_load = |arm, to|
 		Bits(value) => MovRegImm({ to, value })
 		Place(from) => MovRegMem({ to, from })
 	}
+
+## The size of the divisor on top of the stack, when the straight run says
+## it is a number known before the program runs (a literal, or a boxed
+## variable `KnownFunctions.constant_numbers` holds), and that number is a
+## whole one, not 0, of at most 2^53 in size (the header's rule).
+known_divisor : LoweringBasics.Site,
+{
+	state : LoweringBasics.State,
+	checked : IndexLowering.Checked,
+} -> Try(U64, [Unknown])
+known_divisor = |site, { state, checked }| {
+	depth = state.stack_kinds.len()
+	known =
+		if checked.origins.len() != depth {
+			Err(Unknown)
+		} else {
+			match checked.origins.last() {
+				Ok(Literal(number)) => Ok(number)
+				Ok(Boxed(slot)) =>
+					match site.context.numbers.get(slot) {
+						Ok(number) => Ok(number)
+						Err(_) => Err(Unknown)
+					}
+				_ => Err(Unknown)
+			}
+		}
+	number = known?
+	size = if number < 0.0 {
+		-number
+	} else {
+		number
+	}
+	if size >= 1.0 and size <= 9007199254740992.0 and size.div_trunc_by(1.0) == size {
+		match size.to_u64_try() {
+			Ok(whole) => Ok(whole)
+			Err(_) => Err(Unknown)
+		}
+	} else {
+		Err(Unknown)
+	}
+}
+
+## `%` of the value at `left` by a whole number known before the program
+## runs, `divisor` its size, in line when the value is a number with no
+## fraction of less than 2^63 in size, else `slow_items`, the routine's
+## call (the header's rule).
+constant_remainder_items : LoweringBasics.Site,
+{
+	kind : LoweringBasics.Kind,
+	left : X86.Mem,
+	divisor : U64,
+	slow_items : List(Assembly.Statement),
+} -> List(Assembly.Statement)
+constant_remainder_items = |site, { kind, left, divisor, slow_items }| {
+	slow_label = LoweringBasics.inner_label(site, "slow")
+	done_label = LoweringBasics.inner_label(site, "done")
+	# The dividend in `rcx`: a double with no fraction, of less than 2^63 in
+	# size, survives the round trip through an integer; a fraction, an
+	# infinity, a NaN or a number past 2^63 doesn't.
+	whole = LoweringBasics.unless_number_items({ kind, place: left, label: slow_label })
+		.concat([
+			Instruction(MovsdLoad({ to: Xmm0, from: left })),
+			Instruction(Cvttsd2si({ to: Rcx, from: Xmm0 })),
+			Instruction(Cvtsi2sd({ to: Xmm1, from: Rcx })),
+			Instruction(Ucomisd({ left: Xmm0, right: Xmm1 })),
+			Emit.jcc(P, slow_label),
+			Emit.jcc(Ne, slow_label),
+		])
+	# The remainder in `rcx`, the dividend less the quotient times the
+	# divisor; the quotient, rounded toward 0, is the high half of the
+	# dividend times the magic multiplier, shifted, plus 1 for a negative
+	# dividend.
+	remainder =
+		if divisor == 1 {
+			[Emit.zero(Rcx)]
+		} else {
+			{ multiplier, shift } = remainder_magic(divisor)
+			added =
+				if multiplier < 0 {
+					[Emit.plus(Rdx, Rcx)]
+				} else {
+					[]
+				}
+			shifted =
+				if shift > 0 {
+					[
+						Instruction(
+							Shift({
+								operation: Sar,
+								reg: Rdx,
+								count: shift,
+							}),
+						),
+					]
+				} else {
+					[]
+				}
+			[Emit.imm(Rax, multiplier), Instruction(ImulWide(Rcx))]
+				.concat(added)
+				.concat(shifted)
+				.concat([
+					Emit.mov(Rax, Rcx),
+					Emit.shr(Rax, 63),
+					Emit.plus(Rdx, Rax),
+					Emit.imm(Rax, divisor.to_i64_wrap()),
+					Instruction(Imul({ to: Rdx, from: Rax })),
+					Emit.minus(Rcx, Rdx),
+				])
+		}
+	# The remainder made a double, with the dividend's sign bit or-ed in: a
+	# remainder not 0 has the dividend's sign already, and a 0 one is -0
+	# when the dividend is negative or -0.
+	signed = [
+		Instruction(Cvtsi2sd({ to: Xmm0, from: Rcx })),
+		Instruction(MovqFromXmm({ to: Rax, from: Xmm0 })),
+		Emit.load(Rdx, left),
+		Emit.shr(Rdx, 63),
+		Emit.shl(Rdx, 63),
+		Instruction(
+			Alu({
+				operation: Or,
+				to: Rax,
+				from: Rdx,
+			}),
+		),
+		Emit.store(left, Rax),
+		Emit.jmp(done_label),
+		Emit.mark(slow_label),
+	]
+	whole
+		.concat(remainder)
+		.concat(signed)
+		.concat(slow_items)
+		.append(Emit.mark(done_label))
+}
+
+## The multiplier and shift that divide a signed 64-bit integer by
+## `divisor`, at least 2, with a multiply (Hacker's Delight, figure 10-1,
+## for a positive divisor): the quotient of a dividend is the high half of
+## the dividend times `multiplier`, plus the dividend when `multiplier` is
+## negative, shifted right by `shift`, plus 1 when the dividend is
+## negative.
+RemainderMagic : { multiplier : I64, shift : U8 }
+
+## The search of figure 10-1, its names made words: `limit` is the largest
+## dividend below 2^63 whose remainder is `divisor - 1` (the book's `anc`),
+## and the power of two grows from 2^63 until 2^power over `divisor`,
+## rounded up, is close enough to the exact reciprocal for every dividend
+## up to `limit`. Each quotient and its rest is kept as the power grows (the
+## book's `q1`, `r1` of `limit`, `q2`, `r2` of `divisor`), and the
+## multiplier is the divisor's quotient plus 1.
+remainder_magic : U64 -> RemainderMagic
+remainder_magic = |divisor| {
+	two_to_63 : U64
+	two_to_63 = 9223372036854775808
+	limit = two_to_63 - 1 - two_to_63 % divisor
+	var $power = 63
+	var $limit_quotient = two_to_63 // limit
+	var $limit_rest = two_to_63 - $limit_quotient * limit
+	var $divisor_quotient = two_to_63 // divisor
+	var $divisor_rest = two_to_63 - $divisor_quotient * divisor
+	var $going = True
+	while $going {
+		$power = $power + 1
+		$limit_quotient = $limit_quotient.shl_wrap(1)
+		$limit_rest = $limit_rest.shl_wrap(1)
+		if $limit_rest >= limit {
+			$limit_quotient = $limit_quotient.plus_wrap(1)
+			$limit_rest = $limit_rest - limit
+		}
+		$divisor_quotient = $divisor_quotient.shl_wrap(1)
+		$divisor_rest = $divisor_rest.shl_wrap(1)
+		if $divisor_rest >= divisor {
+			$divisor_quotient = $divisor_quotient.plus_wrap(1)
+			$divisor_rest = $divisor_rest - divisor
+		}
+		gap = divisor - $divisor_rest
+		$going = $limit_quotient < gap or ($limit_quotient == gap and $limit_rest == 0)
+	}
+	multiplier = $divisor_quotient.plus_wrap(1).to_i64_wrap()
+	shift = ($power - 64).to_u8_wrap()
+	{ multiplier, shift }
+}
+
+## `dividend` over `divisor`, rounded down, as an arithmetic shift rounds.
+floor_quotient : I128, I128 -> I128
+floor_quotient = |dividend, divisor| {
+	rest = ((dividend % divisor) + divisor) % divisor
+	(dividend - rest) // divisor
+}
+
+## `dividend % divisor` as `constant_remainder_items`'s instructions work it
+## out, for the expect.
+magic_remainder : I64, U64 -> I64
+magic_remainder = |dividend, divisor| {
+	{ multiplier, shift } = remainder_magic(divisor)
+	two_to_64 : I128
+	two_to_64 = 18446744073709551616
+	wide = dividend.to_i128()
+	high = floor_quotient(wide * multiplier.to_i128(), two_to_64)
+	added = if multiplier < 0 {
+		high + wide
+	} else {
+		high
+	}
+	shifted = floor_quotient(added, ((1).to_i128()).shl_wrap(shift))
+	quotient = if dividend < 0 {
+		shifted + 1
+	} else {
+		shifted
+	}
+	(wide - quotient * divisor.to_i128()).to_i64_wrap()
+}
+
+expect {
+	# The magic remainder is the truncating one for every divisor the
+	# tests use, the race's among them, over dividends of both signs up to
+	# 2^63 in size.
+	divisors = [
+		2,
+		3,
+		7,
+		10,
+		500,
+		10000,
+		50000,
+		2147483647,
+		1000000007,
+		1099511627776,
+		9007199254740991,
+		9007199254740992,
+	]
+	dividends = [
+		0,
+		1,
+		-1,
+		2,
+		-2,
+		6,
+		-6,
+		7,
+		-7,
+		13,
+		-13,
+		2147483646,
+		2147483647,
+		-2147483648,
+		4294967296,
+		103723447396417,
+		9007199254740991,
+		9007199254740992,
+		-9007199254740992,
+		9007199254740993,
+		4611686018427387904,
+		9223372036854775807,
+		-9223372036854775807,
+	]
+	is_truncating = |divisor, dividend| {
+		truncated = dividend % divisor.to_i64_wrap()
+		magic_remainder(dividend, divisor) == truncated
+	}
+	divisors.all(|divisor| dividends.all(|dividend| is_truncating(divisor, dividend)))
+}

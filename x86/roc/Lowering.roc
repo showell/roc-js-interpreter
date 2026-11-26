@@ -2021,7 +2021,7 @@ instruction_items = |site, { instruction, state, checked }| {
 			Ok(LoweringBasics.falling(items, state))
 		}
 		Unary(operator, _) => OperatorLowering.unary_items(site, { state, operator })
-		Binary(operator, _) => OperatorLowering.binary_items(site, { state, operator })
+		Binary(operator, _) => OperatorLowering.binary_items(site, { state, operator, checked })
 		Jump(skip) => {
 			target = LoweringBasics.forward(site, skip)
 			Ok({

@@ -1789,7 +1789,8 @@ container_items = {
 }
 
 ## `runtime_remainder`, by `idiv`: the remainder has the dividend's sign,
-## and a zero one is -0 when the dividend is negative; `% 0` is NaN.
+## and a zero one is -0 when the dividend is negative; `% 0` is NaN, and so
+## is the remainder of an infinity or a NaN (its exponent's bits all set).
 ## `runtime_next_item`, for `for ... of`.
 loop_items : List(Assembly.Statement)
 loop_items = {
@@ -1800,6 +1801,13 @@ loop_items = {
 		.concat(
 			RuntimeBuilders.unless_number_items({ reg: Rsi, label: "runtime_not_a_number_stop" }),
 		)
+		.concat([
+			Emit.mov(Rax, Rdi),
+			Emit.shl(Rax, 1),
+			Emit.imm(Rcx, (0xFFE0000000000000).to_i64_wrap()),
+			Emit.cmp(Rax, Rcx),
+			Emit.jcc(Ae, "runtime_remainder_not_a_number"),
+		])
 		.concat(
 			RuntimeBuilders.whole_number_items({
 				reg: Rdi,

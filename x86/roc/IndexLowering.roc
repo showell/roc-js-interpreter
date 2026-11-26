@@ -68,10 +68,23 @@ IndexLowering :: [].{
 	## each stack place's origin, bottom first, the slots proved to hold whole
 	## numbers, and the (array, index) slots proved in range.
 	Checked : {
-		origins : List([Local(U64), Whole, Other]),
+		origins : List(IndexLowering.Origin),
 		whole_slots : List(U64),
 		slots_in_range : List((U64, U64)),
 	}
+
+	## Where a stack place came from: a variable's slot (`LoadLocal`), a
+	## number literal (`PushNumber`), a boxed variable (`LoadBoxed`, which
+	## holds a known number for good when `KnownFunctions.constant_numbers`
+	## says so), an arithmetic step that keeps whole numbers whole, or
+	## anything else.
+	Origin : [
+		Local(U64),
+		Literal(F64),
+		Boxed(U64),
+		Whole,
+		Other,
+	]
 
 	## What an index's checks may skip.
 	Checks : { whole : Bool, in_range : Bool }
@@ -169,6 +182,7 @@ IndexLowering :: [].{
 			} else {
 				match checked.origins.get(count - 1 - down) {
 					Ok(Whole) => True
+					Ok(Literal(number)) => is_whole_number(number)
 					Ok(Local(slot)) => checked.whole_slots.contains(slot)
 					_ => False
 				}
@@ -185,8 +199,9 @@ IndexLowering :: [].{
 			}
 		}
 		match instruction {
-			PushNumber(number) if is_whole_number(number) => pushed(1, Whole)
-			PushNumber(_) | PushText(_) | LoadBoxed(_) | Duplicate => pushed(1, Other)
+			PushNumber(number) => pushed(1, Literal(number))
+			LoadBoxed({ slot, name: _, at: _ }) => pushed(1, Boxed(slot))
+			PushText(_) | Duplicate => pushed(1, Other)
 			LoadLocal(slot) => pushed(1, Local(slot))
 			StoreLocal(slot) => stored(slot, pushed(1, Other))
 			SetLocal(slot) => stored(slot, pushed(0, Other))
