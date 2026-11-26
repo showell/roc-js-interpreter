@@ -101,7 +101,27 @@ Keys a program writes with `o.k` are stored as the literal's address, so the gua
 - **Risk:** low to medium. The guard makes a wrong guess slow, never wrong. The analysis must count the class keys a subclass adds (`þ` and each name in the chain) and the fields a parent's constructor writes first.
 - **Conflict with the Integer lane:** a textual one in Lowering.roc only (the property arms are far from the arithmetic and loop code, near lines 2124 and 2279). There is no semantic overlap, since a field is always a boxed value.
 
-### 2. Direct calls of class methods, guarded (about 350 instructions, ~13%, and better kinds)
+### 2. Direct calls of class methods, guarded (about 350 instructions, ~13%, and better kinds): done
+
+**Done (2026-11-26, x86/roc/MethodTables.roc and CallLowering's `method_call_items`), in two guards, neither of which infers the receiver's class.** The lookup reads the method from the receiver's class's table in line: the receiver an object, the shadowed flag clear, its first entry the instance's mark, and the table's entry at a place read from the class's table literal holding the key's literal by address. The call then tests the value it found: a function whose closure record's value entry is the value entry of one of the codes some class's table holds under that name, taking the receiver and the call's count of arguments. On a hit it calls that code's direct entry, the receiver its first argument and the record in `rbx`, so captured cells still come from the right closure. Any miss is the old lookup or the old call through the value. Testing the code, not the class key, means a subclass that inherits a method takes the direct call too, and an override, a plain object's function or a method set on an instance never does.
+
+Counted the same way, by static objdump of the small race (master 8e02a2f against the lane), on the common path of each call:
+
+| | before | after |
+|---|---|---|
+| `random.next()` | ~87 instructions: 35 in `transfers`, the lookup routine with its table search (~46), the function check (5), the value entry's count; 3 calls from `transfers`, more nested | ~59, all in `transfers` but the method; 1 call |
+| `payer.withdraw(amount)` | ~107 (38, the lookup ~62, the check, the count) | ~60 |
+| `payee.deposit(amount)` | ~91 | ~60 |
+| the five method calls of a transfer | ~460 instructions, 15 calls | ~300, 5 calls |
+| a transfer | ~1,550 instructions, ~19 calls | ~1,390, ~9 calls |
+
+The in-line table read is still about 33 instructions (two tag tests, the shadowed flag, the mark, the table's count and key), so the saving is about 160 a transfer, not the 350 planned. Most of what goes is calls and the r9 to r11 spills around them.
+
+`shale x86/bank.shale size=small runs=3` (load about 0.7): compiled 0.46 s, node 0.33 s, Roc 0.51 s, medians; compiled/node 1.40, as before this fix (0.42 s against 0.30 at load 1.2). The small size is too noisy to show it. At 10,000,000 transfers, three runs each, the master and the lane back to back at load about 0.7: compiled 2.28 s before, 1.96 s after (14% less), node 1.27 and 1.29; compiled/node 1.79 before, 1.52 after.
+
+**What it doesn't do yet: better kinds.** A method keeps `Value` parameters and gives a `Value`, so `deposit` and `withdraw` keep their tag tests on `amount` and `runtime_truthy` stays on `withdraw`'s result. A method is always reachable through a value, its class's table, so the parameter kinds pass (`parameter_kind`) treat it as escaping. Keeping kinds would need the method lowered twice, a body for its direct entry with its calls' kinds and one for its value entry with `Value`s, or a value entry that converts each argument to the kind the body takes and falls back when it can't. Either is a reshaping of the kinds passes, beyond this fix.
+
+The plan as first written:
 
 `random.next()` and `payer.withdraw(amount)` look the method up in the class table, check that it is a function, and call through the closure with an argument count and the missing-argument fill. When the method name belongs to exactly one class's table, the call site can test the receiver's class key (entry 1's key is `&"þC"`) and the shadowed flag (`[r13+56]`, which already exists for `runtime_get_method_hashed`), then call C's method directly with `this` in a register. Otherwise it keeps today's path.
 
