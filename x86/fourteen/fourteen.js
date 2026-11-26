@@ -14,7 +14,7 @@
 // places are an array made once in `main` and passed down, since js-x86
 // keeps a top-level variable a function reads in a cell of unknown kind.
 
-const ROUNDS = 1000; // x86/fourteen.shale's rounds= writes a copy with another
+const ROUNDS = 21000; // about a minute compiled; x86/fourteen.shale's rounds= writes a copy with another
 const ACCEPTED = 4;
 const REJECTED = 5;
 const POINTS = 16384;
