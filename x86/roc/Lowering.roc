@@ -1140,6 +1140,13 @@ loop_targets = |code| {
 ## flags, with no boolean made and tested. x86/tests/equal-jumps.js holds
 ## both operators, NaNs, -0 and a near miss (a `JumpIfFalse` that another
 ## way reaches) to node.
+##
+## **`Math.floor(a / b)` OF TWO `Integer`S IS ONE INTEGER DIVISION.** A `/`
+## of two `Integer`s that a call of `Math.floor` of one argument follows,
+## with no other way reaching the call and the divisor at least 1
+## (`integer_binary`), is lowered with the call as one
+## (`OperatorLowering.integer_floor_items`): its floored quotient, an
+## `Integer`, in the place of `Math`, and the walk passes the call by.
 fused_jump : LoweringBasics.Site,
 {
 	instruction : Bytecode.Op,
@@ -1194,6 +1201,26 @@ fused_jump = |site, { instruction, joined, ahead, state, origins }| {
 					} else {
 						Unfused
 					}
+			}
+		}
+		(Binary(Divide, _), Ok(CallMethod(_))) if !joined and integers_on_top(state) => {
+			floored = integer_binary(
+				site,
+				{
+					operator: Divide,
+					left: LoweringBasics.kind_below(state, 1),
+					right: LoweringBasics.kind_below(state, 0),
+					callee: kind_under(state, 2),
+					step: 1,
+					joined,
+				},
+			)
+			match floored {
+				Ok(kind) => {
+					done = OperatorLowering.integer_floor_items(site, { state, kind })
+					Fused({ done, through: 1 })
+				}
+				Err(NotInteger) => Unfused
 			}
 		}
 		(Binary(operator, _), Ok(JumpIfFalse(skip))) if !joined and is_equality(operator) =>
@@ -1546,7 +1573,17 @@ integer_literal = |site, { instruction, state, demoted, jump_joined }| {
 					}
 				)
 		Ok(Binary(operator, _)) =>
-			LoweringBasics.integer_arithmetic({ operator, left: beneath, right: kind }).is_ok()
+			integer_binary(
+				site,
+				{
+					operator,
+					left: beneath,
+					right: kind,
+					callee: kind_under(state, 1),
+					step: 2,
+					joined: jump_joined,
+				},
+			).is_ok()
 		Ok(GetIndex(_)) => takes_integer_index(beneath)
 		_ => False
 	}
@@ -1556,6 +1593,49 @@ integer_literal = |site, { instruction, state, demoted, jump_joined }| {
 		Err(NotInteger)
 	}
 }
+
+## The `Integer` a binary operator of two kinds gives where the walk lowers
+## it as integers: `+ - * %` (`LoweringBasics.integer_arithmetic`), and a
+## `/` whose quotient the instruction `step` past the site, a call of
+## `Math.floor` (`callee` the kind of what it calls), takes at once, with no
+## other way reaching that call (`joined` says whether one does), as
+## `Math.floor(a / b)` (`LoweringBasics.integer_floor_quotient`). `fused_jump`
+## lowers that `/` and the call as one.
+integer_binary : LoweringBasics.Site,
+{
+	operator : Ast.BinaryOperator,
+	left : LoweringBasics.Kind,
+	right : LoweringBasics.Kind,
+	callee : LoweringBasics.Kind,
+	step : U64,
+	joined : Bool,
+} -> Try(LoweringBasics.Kind, [NotInteger])
+integer_binary = |site, { operator, left, right, callee, step, joined }|
+	match operator {
+		Divide if !joined and floor_call_at(site, { step, callee }) =>
+			LoweringBasics.integer_floor_quotient(left, right)
+		_ => LoweringBasics.integer_arithmetic({ operator, left, right })
+	}
+
+## Whether the instruction `step` past the site is a call of one argument
+## of `Math.floor`, `callee` the kind of what it calls.
+floor_call_at : LoweringBasics.Site, { step : U64, callee : LoweringBasics.Kind } -> Bool
+floor_call_at = |site, { step, callee }|
+	match site.code.ops.get(site.at + step) {
+		Ok(CallMethod({ name: _, site: { count, written: _, at: _ } })) =>
+			count == 1 and callee == StaticMethod({ owner: "Math", name: "floor" })
+		_ => False
+	}
+
+## The kind `down` places below the stack's top, or `Undefined` where the
+## stack isn't that deep.
+kind_under : LoweringBasics.State, U64 -> LoweringBasics.Kind
+kind_under = |state, down|
+	if state.stack_kinds.len() > down {
+		LoweringBasics.kind_below(state, down)
+	} else {
+		Undefined
+	}
 
 ## Whether a slot may hold an `Integer`: not demoted (`Demoted`), and no
 ## cell, which closures share as a value.
@@ -1625,9 +1705,10 @@ integers_stepped = |state, { slot, step }|
 ## the stack (a push, a load, a step of a slot) keeps them all, and `Pop`
 ## drops its own. Of those that read the top, each keeps the places below
 ## what it reads, and keeps what it reads only where it takes an `Integer`:
-## a store or set of a slot that may hold one, `+ - *` of two whose result
-## stays one, an item read's or write's index (its value written is made a
-## double). An ordering of two `Integer`s fused with its `JumpIfFalse`
+## a store or set of a slot that may hold one, `+ - * %` of two whose result
+## stays one and the `/` of `Math.floor(a / b)` (`integer_binary`), the
+## argument of `Math.floor`, `ceil`, `round` or `trunc`, an item read's or
+## write's index (its value written is made a double). An ordering of two `Integer`s fused with its `JumpIfFalse`
 ## (`joined` says whether another way reaches the jump, which fuses none)
 ## keeps those two, and any ordering or equality a `JumpIfFalse` follows
 ## keeps nothing below them, since a jump carries no `Integer`. Any other
@@ -1666,13 +1747,23 @@ integers_kept = |site, { instruction, state, demoted, joined }| {
 				List.repeat(False, depth)
 			}
 		Binary(operator, _) if depth >= 2 => {
-			takes = LoweringBasics.integer_arithmetic({
-				operator,
-				left: below(1),
-				right: below(0),
-			}).is_ok()
+			takes = integer_binary(
+				site,
+				{
+					operator,
+					left: below(1),
+					right: below(0),
+					callee: kind_under(state, 2),
+					step: 1,
+					joined,
+				},
+			).is_ok()
 			keeping(2, [takes, takes])
 		}
+		CallMethod(
+			{ name: _, site: { count, written: _, at: _ } },
+		) if count == 1 and depth >= 3 and BuiltinLowering.keeps_integer(below(1)) =>
+			keeping(3, [False, False, True])
 		GetIndex(_) if depth >= 2 => keeping(2, [False, takes_integer_index(below(1))])
 		SetIndex(_) if depth >= 3 => keeping(3, [False, takes_integer_index(below(2)), False])
 		GetProperty(_, _) => keeping(1, [False])

@@ -571,6 +571,16 @@ BuiltinLowering :: [].{
 		}
 	}
 
+	## Whether a call of this kind gives back its one argument when that is
+	## an `Integer`, which it then takes as it is: `Math.floor`, `ceil`,
+	## `round` and `trunc` of a whole number are that number.
+	keeps_integer : LoweringBasics.Kind -> Bool
+	keeps_integer = |callee|
+		match callee {
+			StaticMethod({ owner: "Math", name }) => ["floor", "ceil", "round", "trunc"].contains(name)
+			_ => False
+		}
+
 	## A call of a builtin object's function: `Math`'s of numbers, `max` and
 	## `min` of any count of them, `pow` as `**`; `Object.keys`, `values` and
 	## `entries`. The answer takes the place of the builtin below the function.
@@ -598,7 +608,19 @@ BuiltinLowering :: [].{
 				)
 			}
 		}
+		# `Math.floor` of an `Integer` and its kin are the argument, copied.
+		kept_integer =
+			count == 1
+				and BuiltinLowering.keeps_integer(StaticMethod({ owner, name }))
+				and LoweringBasics.is_integer(LoweringBasics.kind_below(state, 0))
 		match (owner, name) {
+			(_, _) if kept_integer => {
+				copied = LoweringBasics.copy_items({
+					from: LoweringBasics.stack_place(site.code, base),
+					to: receiver,
+				})
+				Ok(LoweringBasics.falling(copied, after(LoweringBasics.kind_below(state, 0))))
+			}
 			("Math", "max") | ("Math", "min") => {
 				start = if name == "max" {
 					0xFFF0000000000000

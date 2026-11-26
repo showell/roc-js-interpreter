@@ -513,6 +513,98 @@ OperatorLowering :: [].{
 		)
 	}
 
+	## `Math.floor(a / b)` of the two `Integer`s on top, the divisor at least
+	## 1 (`LoweringBasics.integer_floor_quotient`, which gives `kind`): the
+	## quotient rounded down, in the place of `Math` below the function, the
+	## call's four places taken. A divisor whose range is one value is a
+	## constant: 1 gives the dividend, a power of two an arithmetic shift
+	## (which rounds down), any other the magic multiply. Any other divisor
+	## takes an `idiv`. Both round toward 0, so a dividend that may be
+	## negative takes 1 from the quotient where the remainder is negative.
+	integer_floor_items : LoweringBasics.Site,
+	{
+		state : LoweringBasics.State,
+		kind : LoweringBasics.Kind,
+	} -> LoweringBasics.Lowered
+	integer_floor_items = |site, { state, kind }| {
+		depth = state.stack_kinds.len()
+		receiver = LoweringBasics.stack_place(site.code, depth - 4)
+		left = LoweringBasics.stack_place(site.code, depth - 2)
+		right = LoweringBasics.stack_place(site.code, depth - 1)
+		signed = match LoweringBasics.kind_below(state, 1) {
+			Integer({ low, high: _ }) => low < 0
+			_ => crash "OperatorLowering.integer_floor_items: an Integer dividend"
+		}
+		statements = match constant_size(LoweringBasics.kind_below(state, 0)) {
+			Ok(1) => [Emit.load(Rax, left), Emit.store(receiver, Rax)]
+			Ok(size) if is_power_of_two(size) => [
+				Emit.load(Rax, left),
+				Instruction(
+					Shift({
+						operation: Sar,
+						reg: Rax,
+						count: power_of(size),
+					}),
+				),
+				Emit.store(receiver, Rax),
+			]
+			Ok(size) => {
+				# The remainder's sign, -1 or 0, added to the quotient in `rdx`.
+				rounded =
+					if signed {
+						[
+							Emit.imm(Rax, size.to_i64_wrap()),
+							Instruction(Imul({ to: Rax, from: Rdx })),
+							Emit.minus(Rcx, Rax),
+							Instruction(
+								Shift({
+									operation: Sar,
+									reg: Rcx,
+									count: 63,
+								}),
+							),
+							Emit.plus(Rdx, Rcx),
+						]
+					} else {
+						[]
+					}
+				[Emit.load(Rcx, left)]
+					.concat(magic_quotient_items({ divisor: size, signed }))
+					.concat(rounded)
+					.append(Emit.store(receiver, Rdx))
+			}
+			Err(Unknown) => {
+				rounded =
+					if signed {
+						[
+							Instruction(
+								Shift({
+									operation: Sar,
+									reg: Rdx,
+									count: 63,
+								}),
+							),
+							Emit.plus(Rax, Rdx),
+						]
+					} else {
+						[]
+					}
+				[
+					Emit.load(Rax, left),
+					Instruction(Cqo),
+					Emit.load(Rcx, right),
+					Instruction(Idiv(Rcx)),
+				]
+					.concat(rounded)
+					.append(Emit.store(receiver, Rax))
+			}
+		}
+		LoweringBasics.falling(
+			statements,
+			LoweringBasics.with_top(LoweringBasics.without_top(state, 4), kind),
+		)
+	}
+
 	## An ordering of the two `Integer`s on top and the `JumpIfFalse` after
 	## it, as one: a `cmp` and a signed jump to the target when the ordering
 	## is false. On the way that falls through the ordering holds, so a slot
@@ -1319,6 +1411,18 @@ constant_size = |kind|
 ## Whether a size is a power of two.
 is_power_of_two : U64 -> Bool
 is_power_of_two = |size| size > 0 and size.bitwise_and(size - 1) == 0
+
+## The power of two a size that is one is: 16 is 2^4.
+power_of : U64 -> U8
+power_of = |size| {
+	var $power = 0
+	var $left = size
+	while $left > 1 {
+		$left = $left.shr_wrap(1)
+		$power = $power + 1
+	}
+	$power
+}
 
 ## The quotient of the integer in `rcx` by `divisor`, at least 2, rounded
 ## toward 0, in `rdx`, by the magic multiply (`remainder_magic`; `rax`
