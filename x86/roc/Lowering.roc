@@ -487,9 +487,12 @@ numbers_escape = |{ calls, parameters, escaped }|
 most_passes : U64
 most_passes = 8
 
-## The most times one function's walk widens a loop's head to `Value` before
-## the loop's kinds must have settled: a loop that keeps changing them is
-## refused, so the walks end.
+## The most walks of one function that widen one loop's head (to `Value`, or
+## doubting a slot's whole number) before the loop's kinds must have settled:
+## a loop that keeps changing them is refused, so the walks end. Each head
+## has its own count, so a function of many ordinary loops, each widening
+## once or twice, settles however many loops it has, and the cap of the
+## whole function grows with its count of loop heads.
 most_widenings : U64
 most_widenings = 16
 
@@ -809,7 +812,10 @@ CodeFault : [
 code_refusal : LoweringBasics.Context, CodeFault -> [Refused(Str)]
 code_refusal = |context, fault| {
 	why = match fault {
-		LoopChangesKinds(at) => "a loop's kinds never settle, at instruction ${at.to_str()}"
+		LoopChangesKinds(at) => {
+			within = "within ${most_widenings.to_str()} widenings of its head"
+			"a loop's kinds don't settle ${within}, at instruction ${at.to_str()}"
+		}
 		TwoResultKinds => "it returns a value and a function"
 		TwoStacks(at) => "two ways reach instruction ${at.to_str()} with different stacks"
 		TwoSlotKinds(at) => "a variable holds values of two kinds at instruction ${at.to_str()}"
@@ -846,14 +852,12 @@ code_items = |context| {
 	# The slots that may never hold an `Integer` (x86/README.md, "An integer
 	# kind"): each met an `Integer` on one way and another kind on another.
 	var $demoted = []
-	# Every walk that doesn't return widens a loop's head, so after the last
-	# one this is the head of the loop whose kinds never settle.
-	var $widened_head = 0
-	# A demotion is no widening: each slot is demoted at most once, so those
-	# walks end too.
-	var $walks = 0
-	while $walks < most_widenings {
-		$walks = $walks + 1
+	# How many walks each loop's head has widened or doubted, by the head's
+	# instruction. A head is refused at its `most_widenings`th, so the walks
+	# end: each such walk counts at one head, a function has no more heads
+	# than instructions, and the other walks end on their own (below).
+	var $widenings = Dict.empty()
+	while True {
 		walk = code_walk(
 			context,
 			{
@@ -868,22 +872,23 @@ code_items = |context| {
 				if slots.all(|slot| $demoted.contains(slot)) {
 					crash "Lowering.code_items: a demoted slot holds no Integer"
 				}
+				# A demotion is no widening: each slot is demoted at most once,
+				# so those walks end too.
 				$demoted = $demoted.concat(slots)
 				# A loop's head widened before holds the slots' `Integer`s,
 				# which are doubles from now on.
 				$heads = $heads.map(|_, head| without_integers(head, slots))
-				$walks = $walks - 1
 			}
 			Ok(Widened({ at, state, integers_only })) => {
 				# A head whose `Integer`s alone widened widens each at most once,
 				# to the whole range, so those walks end too, as a demotion's.
-				if integers_only {
-					$walks = $walks - 1
+				if !integers_only {
+					$widenings = widened_once_more(context, { widenings: $widenings, at })?
 				}
 				$heads = $heads.insert(at, state)
-				$widened_head = at
 			}
 			Ok(Doubted({ at, slots })) => {
+				$widenings = widened_once_more(context, { widenings: $widenings, at })?
 				before = match $doubted.get(at) {
 					Ok(known) => known
 					Err(_) => []
@@ -894,7 +899,26 @@ code_items = |context| {
 			Err(refused) => return Err({ refused, calls: [] })
 		}
 	}
-	Err({ refused: code_refusal(context, LoopChangesKinds($widened_head)), calls: [] })
+}
+
+## The walks each loop's head has widened, with one more at the head `at`,
+## or the refusal of a loop whose kinds keep changing: it has used its
+## `most_widenings`.
+widened_once_more : LoweringBasics.Context,
+{ widenings : Dict(U64, U64), at : U64 } -> Try(
+	Dict(U64, U64),
+	{ refused : [Refused(Str)], calls : List(LoweringBasics.CallKinds) },
+)
+widened_once_more = |context, { widenings, at }| {
+	count = match widenings.get(at) {
+		Ok(before) => before + 1
+		Err(_) => 1
+	}
+	if count >= most_widenings {
+		Err({ refused: code_refusal(context, LoopChangesKinds(at)), calls: [] })
+	} else {
+		Ok(widenings.insert(at, count))
+	}
 }
 
 ## Whether a loop's head widened to `after` from `head` differs only in its
