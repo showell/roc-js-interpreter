@@ -4,6 +4,16 @@
 ## table it keeps (`runtime_object_index`) and the strings' hash
 ## (`runtime_text_hash`).
 ##
+## **A key the program writes is hashed ahead of time** (`key_hash`, the
+## same FNV-1a as `runtime_text_hash`): a property read, a property write
+## and a method's lookup of a name written in the program (`o.k`, `o.k = v`,
+## `o.m(...)`) load its hash into `r8` and call `runtime_get_property_hashed`
+## or `runtime_set_property_hashed`. On an object these find the key by
+## `runtime_object_entry_hashed`, which uses the hash given and skips
+## hashing the key's bytes; on anything else they go to
+## `runtime_get_property` and `runtime_set_property`, the hash unread. An
+## object of fewer than `threshold` keys is searched in order either way.
+##
 ## **An object keeps its entries in order**, as before: they are its
 ## properties in JavaScript's order, which `Object.keys`, printing and the
 ## spreads walk. Its header has two more words for the table: 24 bytes in,
@@ -34,15 +44,43 @@
 ##
 ## No object loses a key: the subset has no `delete`.
 import Assembly
+import Boxing
 import Emit
 import Runtime
+import RuntimeBuilders
 import X86
 
 ObjectTable :: [].{
 
 	## The routines, laid down with Runtime's.
 	items : List(Assembly.Statement)
-	items = [entry_items, index_items, hash_items].join()
+	items = [entry_items, index_items, hash_items, hashed_property_items].join()
+
+	## The routine that reads the property `rsi` of `rdi` as
+	## `runtime_get_property` does, the key's hash in `r8`.
+	get_property_hashed : Str
+	get_property_hashed = "runtime_get_property_hashed"
+
+	## The routine that sets the property `rsi` of `rdi` to `rdx` as
+	## `runtime_set_property` does, the key's hash in `r8`.
+	set_property_hashed : Str
+	set_property_hashed = "runtime_set_property_hashed"
+
+	## The hash `runtime_text_hash` gives the string `text`, as an
+	## immediate takes it: worked out ahead of time for a key the program
+	## writes.
+	key_hash : Str -> I64
+	key_hash = |text| {
+		var $hash = hash_offset
+		for byte in text.to_utf8() {
+			$hash = U64.bitwise_xor($hash, byte.to_u64()).times_wrap(hash_prime)
+		}
+		U64.bitwise_xor($hash, $hash.div_trunc_by(4294967296)).to_i64_wrap()
+	}
+
+	expect ObjectTable.key_hash("") == (14695981038468906945).to_i64_wrap()
+	expect ObjectTable.key_hash("balance") == 4756422021403512235
+	expect ObjectTable.key_hash("acct-217") == 2167080111786900480
 
 	## The count of keys from which an object's keys are found by its table.
 	threshold : I64
@@ -62,7 +100,7 @@ covered_place = 32
 hash_offset : U64
 hash_offset = 0xcbf29ce484222325
 
-hash_prime : I64
+hash_prime : U64
 hash_prime = 0x100000001b3
 
 ## Slot `reg` of the table at `r11`.
@@ -94,7 +132,9 @@ fold_r9 = Instruction(
 )
 
 ## `runtime_object_entry`: the address of the value of the key `rsi` (a
-## string) in the object `rdi`, or 0, keeping `rsi`. It changes `rax`,
+## string) in the object `rdi`, or 0, keeping `rsi`;
+## `runtime_object_entry_hashed` the same with the key's hash in `r8`. Each
+## changes `rax`,
 ## `rcx`, `rdx`, `rdi` and `r8` to `r11`, as the search in order does.
 ## `r11` holds the table, `r10` the entries and `r9` the slot, which
 ## `runtime_text_equal` keeps.
@@ -107,6 +147,16 @@ entry_items = [
 	Emit.call("runtime_object_index"),
 	Emit.mov(Rdx, Rsi),
 	Emit.call("runtime_text_hash"),
+	Emit.jmp("runtime_object_entry_hashed_probe"),
+	# The same, the key's hash given in `r8`.
+	Emit.mark("runtime_object_entry_hashed"),
+	Emit.load(R10, Emit.mem(Rdi, 0)),
+	Emit.cmp_imm(R10, ObjectTable.threshold),
+	Emit.jcc(B, "runtime_object_entry_scan"),
+	Emit.save(R8),
+	Emit.call("runtime_object_index"),
+	Emit.restore(Rax),
+	Emit.mark("runtime_object_entry_hashed_probe"),
 	Emit.load(R11, Emit.mem(Rdi, table_place)),
 	Emit.load(R10, Emit.mem(Rdi, 16)),
 	Emit.load(Rcx, Emit.mem(R11, 0)),
@@ -247,7 +297,7 @@ hash_items = [
 		}),
 	),
 	fold_r9,
-	Emit.imm(R9, hash_prime),
+	Emit.imm(R9, hash_prime.to_i64_wrap()),
 	Instruction(Imul({ to: Rax, from: R9 })),
 	Emit.plus_imm(R8, 1),
 	Emit.jmp("runtime_text_hash_byte"),
@@ -260,3 +310,37 @@ hash_items = [
 	Emit.restore(Rcx),
 	Emit.ret,
 ]
+
+## `runtime_get_property_hashed` and `runtime_set_property_hashed`: on an
+## object, the key `rsi` found by its hash in `r8`, its value read into `rax`
+## (`undefined` for none) or set to `rdx` (a key not there added by
+## `runtime_set_property`'s own way); on any other value, Runtime's routine
+## of the same name without the hash, which reads none.
+hashed_property_items : List(Assembly.Statement)
+hashed_property_items =
+	[Emit.mark(ObjectTable.get_property_hashed)]
+		.concat(RuntimeBuilders.tag_load_items(Rdi))
+		.concat([Emit.cmp_imm(Rcx, Boxing.object_tag), Emit.jcc(Ne, Runtime.get_property)])
+		.concat(RuntimeBuilders.unboxed_items(Rdi))
+		.concat([
+			Emit.call("runtime_object_entry_hashed"),
+			Emit.test(Rax, Rax),
+			Emit.jcc(E, "runtime_get_undefined"),
+			Emit.load(Rax, Emit.mem(Rax, 0)),
+			Emit.ret,
+			Emit.mark(ObjectTable.set_property_hashed),
+		])
+		.concat(RuntimeBuilders.tag_load_items(Rdi))
+		.concat([Emit.cmp_imm(Rcx, Boxing.object_tag), Emit.jcc(Ne, Runtime.set_property)])
+		.concat(RuntimeBuilders.unboxed_items(Rdi))
+		.concat([
+			Emit.save(Rdi),
+			Emit.save(Rdx),
+			Emit.call("runtime_object_entry_hashed"),
+			Emit.restore(Rdx),
+			Emit.restore(Rdi),
+			Emit.test(Rax, Rax),
+			Emit.jcc(E, "runtime_set_property_new"),
+			Emit.store(Emit.mem(Rax, 0), Rdx),
+			Emit.ret,
+		])
