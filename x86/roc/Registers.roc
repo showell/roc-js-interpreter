@@ -26,10 +26,13 @@
 ## but its `ret`.
 ##
 ## **LOOP-CARRIED PLACES FIRST.** The places renamed are chosen by how
-## many plain moves name them, but a place a loop carries from one time
-## round to the next comes before any that it doesn't (`loop_carried`):
-## between a label and a jump back to it, a place whose first plain move is
-## a load and which is also stored there, such as a counter or a carry. Its
+## many plain moves name them, but a place an innermost loop carries from
+## one time round to the next comes before any that it doesn't
+## (`loop_carried`): between a label and a jump back to it, with no other
+## loop inside, a place whose first plain move is a load and which is also
+## stored there, such as a counter or a carry. (An outer loop's are left to
+## the counts: they would take the inner loop's registers, which the fourteen
+## race's `main` showed.) Its
 ## store and the next time round's load are a chain through memory that
 ## the loop waits on and Forwarding can't take out, since it forgets at the
 ## loop's label; a bytecode stack place, named more often, is stored before
@@ -216,15 +219,18 @@ Registers :: [].{
 	}
 }
 
-## The places a loop carries from one time round to the next: between a
-## label and a jump back to it, a place whose first plain move there is a
-## load, and which is also stored there. Its store and its load the next time
-## round are a chain through memory that no forwarding inside one time round
-## removes, so it is kept in a register before any busier place.
+## The places an innermost loop carries from one time round to the next:
+## between a label and a jump back to it, with no other loop inside, a place
+## whose first plain move there is a load, and which is also stored there.
+## Its store and its load the next time round are a chain through memory
+## that no forwarding inside one time round removes, so it is kept in a
+## register before any busier place. An outer loop's are left to the
+## counts: what it carries round moves once a time round of its inner loop,
+## and would take an inner loop's registers.
 loop_carried : List(Assembly.Statement) -> Set(I32)
 loop_carried = |statements| {
 	var $marks = Dict.empty()
-	var $carried = Set.empty()
+	var $loops = []
 	var $at = 0
 	for statement in statements {
 		at = $at
@@ -236,13 +242,19 @@ loop_carried = |statements| {
 			JmpTo(label) | JccTo({ condition: _, label }) =>
 				match $marks.get(label) {
 					Ok(head) => {
-						body_statements = statements.sublist({ start: head, len: at - head })
-						$carried = $carried.union(carried_between(body_statements))
+						$loops = $loops.append({ head, back: at })
 					}
 					Err(_) => {}
 				}
 			_ => {}
 		}
+	}
+	holds = |outer, inner| outer.head < inner.head and inner.back < outer.back
+	innermost = $loops.drop_if(|outer| $loops.any(|inner| holds(outer, inner)))
+	var $carried = Set.empty()
+	for { head, back } in innermost {
+		body_statements = statements.sublist({ start: head, len: back - head })
+		$carried = $carried.union(carried_between(body_statements))
 	}
 	$carried
 }
