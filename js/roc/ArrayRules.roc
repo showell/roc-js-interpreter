@@ -42,6 +42,27 @@ ArrayRules :: [].{
 		$found
 	}
 
+	# Where in `items` an item last passes `test`, or none.
+	last_place : List(Heap.Value), (Heap.Value -> Bool) -> [Place(U64), NoPlace]
+	last_place = |items, test| {
+		var $found = NoPlace
+		var $position = 0
+		for item in items {
+			if test(item) {
+				$found = Place($position)
+			}
+			$position = $position + 1
+		}
+		$found
+	}
+
+	# A place far into a list is a whole number: a counter left to Roc's
+	# default, Dec, once made 2499 into 2499.0000000000005 here.
+	expect {
+		found = ArrayRules.last_place(List.repeat(Undefined, 2500), |_| True)
+		ArrayRules.place_number(found) == 2499.0
+	}
+
 	place_number : [Place(U64), NoPlace] -> F64
 	place_number = |found| match found {
 		Place(position) => position.to_f64()
@@ -157,15 +178,11 @@ ArrayRules :: [].{
 				} else {
 					target = arguments.first() ?? Undefined
 					items = ValueRules.items_of(machine.cells, id)
-					var $found = -1.0
-					var $position = 0
-					for item in items {
-						if ValueRules.is_strictly_equal(item, target) {
-							$found = $position.to_f64()
-						}
-						$position = $position + 1
-					}
-					{ machine: machine, value: Number($found) }
+					found = ArrayRules.last_place(
+						items,
+						|item| ValueRules.is_strictly_equal(item, target),
+					)
+					{ machine: machine, value: Number(ArrayRules.place_number(found)) }
 				}
 			}
 			"at" => {

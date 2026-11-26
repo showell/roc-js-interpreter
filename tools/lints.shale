@@ -98,7 +98,7 @@ const HELD = {
   -- IterNext, Bytecode.Op's own tag names, which its printer must match.
   ["js/roc/find_names_and_docs_that_say_too_little/abbreviation"] = 30,
   ["js/roc/find_names_and_docs_that_say_too_little/module_doc"] = 1,
-  ["js/find_functions_and_parameters_that_dont_earn_their_keep/single"] = 20,
+  ["js/find_functions_and_parameters_that_dont_earn_their_keep/single"] = 19,
   ["js/find_functions_and_parameters_that_dont_earn_their_keep/fixed"] = 2,
   ["js/find_functions_and_parameters_that_dont_earn_their_keep/constant"] = 1,
   -- JsVm.roc's, JsCanvas.roc's and JsDump.roc's `main!`, which Roc's

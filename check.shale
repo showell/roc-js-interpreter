@@ -49,10 +49,10 @@ const ROOTS = {"js-book/app/main.roc", "js/roc/JsApp.roc", "js/roc/JsCanvas.roc"
 -- NumberText.roc's 11, and NumberText.roc's alone from JsDump.roc, which
 -- imports no Canvas.
 const EXPECTS = {
-  {root = "js/roc/JsApp.roc", count = 19},
-  {root = "js/roc/JsCanvas.roc", count = 19},
+  {root = "js/roc/JsApp.roc", count = 20},
+  {root = "js/roc/JsCanvas.roc", count = 20},
   {root = "js/roc/JsDump.roc", count = 11},
-  {root = "js/roc/JsVm.roc", count = 19},
+  {root = "js/roc/JsVm.roc", count = 20},
 }
 
 const board = {lines = {}, failed = 0}
