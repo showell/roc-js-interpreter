@@ -1,6 +1,6 @@
 -- budget: steps=50000000
 -- x86/race.shale: the fib race, x86/race/fib_race.js, compiled by js-x86
--- against node and against x86/race/fib_race.roc, its line-for-line Roc
+-- against node and against x86/race/fibonacci_race.roc, its line-for-line Roc
 -- port, built by Roc's release build (LLVM, --opt=speed, from the shared
 -- cache). Each contestant computes the same F(N) and prints it; the
 -- race is the wall time of each one's whole run. check.shale does not run
@@ -20,7 +20,7 @@
 --
 -- It builds js-x86 on the dev backend (the executable's bytes are the same
 -- whatever the driver's build), writes the race's executable under the
--- build mount, builds fib_race.roc's release executable, then runs the
+-- build mount, builds fibonacci_race.roc's release executable, then runs the
 -- compiled executable, `node fib_race.js` and `fib-race-roc N` (Roc's N is
 -- its argument, so nothing of the race is known when Roc compiles it),
 -- niced, one after the other, never at once (the box has 2 cores), each timed from
@@ -36,8 +36,8 @@ use("./executables.shale")
 
 const WHO = "x86/race.shale"
 const RACE = "x86/race/fib_race.js"
-const ROC_RACE = "x86/race/fib_race.roc"
-const WANT_ROC_RACE = "x86: fib_race.roc's release executable, a contestant"
+const ROC_RACE = "x86/race/fibonacci_race.roc"
+const WANT_ROC_RACE = "x86: fibonacci_race.roc's release executable, a contestant"
 const VERIFY = "x86/race/verify.js"
 const WANT_VERIFY = "node: verify.js, BigInt's answer for the race"
 const SMALL_N = 100000
