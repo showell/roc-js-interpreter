@@ -16,6 +16,7 @@ import js.Bytecode
 import Assembly
 import Boxing
 import Emit
+import ObjectTable
 import Runtime
 import X86
 
@@ -598,6 +599,47 @@ LoweringBasics :: [].{
 			Prefix => stepped.append(Instruction(MovsdStore({ to: top, from: Xmm0 })))
 		}
 		Ok(LoweringBasics.falling(checked.concat(items), LoweringBasics.with_top(numbered, Number)))
+	}
+
+	## `o.k++`, `--o.k` and their kin, the receiver on top: the runtime's
+	## read, step and write (`runtime_update_property_hashed`), its answer, the
+	## old number or the new, in the receiver's place. A receiver that is
+	## `undefined` or `null` throws node's TypeError in the read.
+	property_update_items : LoweringBasics.Site,
+	{
+		state : LoweringBasics.State,
+		key : Str,
+		step : Bytecode.Update,
+	} -> Try(LoweringBasics.Lowered, [Refused(Str)])
+	property_update_items = |site, { state, key, step }| {
+		kind = LoweringBasics.kind_below(state, 0)
+		match kind {
+			Object | Value | Null | Undefined => {}
+			_ => return LoweringBasics.refusal(
+				site,
+				"`++` or `--` of the property `${key}` of ${LoweringBasics.kind_phrase(kind)}",
+			)
+		}
+		top = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 1)
+		fixity = match step.fixity {
+			Postfix => 0
+			Prefix => 1
+		}
+		items = [
+			Emit.load(Rdi, top),
+			Emit.address_of(Rsi, LoweringBasics.text_label(site, key)),
+			Emit.imm(R8, ObjectTable.key_hash(key)),
+			Emit.imm(Rdx, step.delta.to_bits().to_i64_wrap()),
+			Emit.imm(Rcx, fixity),
+			Emit.call(ObjectTable.update_property_hashed),
+			Emit.store(top, Rax),
+		]
+		Ok(
+			LoweringBasics.falling(
+				items,
+				LoweringBasics.with_top(LoweringBasics.without_top(state, 1), Number),
+			),
+		)
 	}
 
 	## Whether a kind may be a number: arithmetic on it is checked or free.

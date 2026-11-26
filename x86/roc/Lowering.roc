@@ -546,6 +546,7 @@ literals_of = |program| {
 				GetProperty(key, _) => [key]
 				MethodLookup(key, _) => [key]
 				SetProperty(key, _) => [key]
+				UpdateProperty({ key, step: _ }) => [key]
 				SetField(key) => [key]
 				PropertiesLeft({ keys, at: _ }) => keys
 				# The ReferenceError's message of a variable read or written
@@ -3206,6 +3207,10 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 				}
 				_ => LoweringBasics.update_items(site, { state, slot, step })
 			}
+		UpdateProperty({ key, step }) => LoweringBasics.property_update_items(
+			site,
+			{ state, key, step },
+		)
 		UpdateBoxed({ slot, name: _, kind, step }) =>
 			match kind {
 				Fixed => Ok(BuiltinLowering.constant_assigned_items)

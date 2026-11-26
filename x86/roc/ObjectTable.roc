@@ -64,7 +64,14 @@ ObjectTable :: [].{
 
 	## The routines, laid down with Runtime's.
 	items : List(Assembly.Statement)
-	items = [entry_items, index_items, hash_items, hashed_property_items, method_items].join()
+	items = [
+		entry_items,
+		index_items,
+		hash_items,
+		hashed_property_items,
+		method_items,
+		update_items,
+	].join()
 
 	## The routine that reads the property `rsi` of `rdi`, a name some
 	## class's method has, as `runtime_get_property_hashed` does: of an
@@ -81,6 +88,13 @@ ObjectTable :: [].{
 	## `runtime_set_property` does, the key's hash in `r8`.
 	set_property_hashed : Str
 	set_property_hashed = "runtime_set_property_hashed"
+
+	## The routine of `o.k++` and its kin: the property `rsi` of `rdi`, its
+	## hash in `r8`, read, held to be a number, stepped by the double whose
+	## bits are in `rdx` and written back; the answer in `rax` is the old
+	## number when `rcx` is 0 (postfix), the new one when it is 1 (prefix).
+	update_property_hashed : Str
+	update_property_hashed = "runtime_update_property_hashed"
 
 	## The hash `runtime_text_hash` gives the string `text`, as an
 	## immediate takes it: worked out ahead of time for a key the program
@@ -430,3 +444,41 @@ method_items =
 			Emit.load(Rax, Emit.mem(Rax, 0)),
 			Emit.ret,
 		])
+
+## `runtime_update_property_hashed`, a read and a write of the property as
+## `o.k` and `o.k = v` make them, the number between stepped. Its frame holds
+## the receiver (`[rbp - 8]`), the key (16), its hash (24), the step (32),
+## the fixity (40) and the answer (48).
+update_items : List(Assembly.Statement)
+update_items = [
+	Emit.mark(ObjectTable.update_property_hashed),
+	Emit.save(Rbp),
+	Emit.mov(Rbp, Rsp),
+	Emit.minus_imm(Rsp, 48),
+	Emit.store(RuntimeBuilders.local(8), Rdi),
+	Emit.store(RuntimeBuilders.local(16), Rsi),
+	Emit.store(RuntimeBuilders.local(24), R8),
+	Emit.store(RuntimeBuilders.local(32), Rdx),
+	Emit.store(RuntimeBuilders.local(40), Rcx),
+	Emit.call(ObjectTable.get_property_hashed),
+	Emit.call(Runtime.check_number),
+	Emit.store(RuntimeBuilders.local(48), Rax),
+	Emit.to_xmm(Xmm0, Rax),
+	Emit.load(Rax, RuntimeBuilders.local(32)),
+	Emit.to_xmm(Xmm1, Rax),
+	Emit.double_sum(Xmm0, Xmm1),
+	Instruction(MovqFromXmm({ to: Rdx, from: Xmm0 })),
+	Emit.load(Rcx, RuntimeBuilders.local(40)),
+	Emit.test(Rcx, Rcx),
+	Emit.jcc(E, "runtime_update_property_answered"),
+	Emit.store(RuntimeBuilders.local(48), Rdx),
+	Emit.mark("runtime_update_property_answered"),
+	Emit.load(Rdi, RuntimeBuilders.local(8)),
+	Emit.load(Rsi, RuntimeBuilders.local(16)),
+	Emit.load(R8, RuntimeBuilders.local(24)),
+	Emit.call(ObjectTable.set_property_hashed),
+	Emit.load(Rax, RuntimeBuilders.local(48)),
+	Emit.mov(Rsp, Rbp),
+	Emit.restore(Rbp),
+	Emit.ret,
+]
