@@ -290,9 +290,10 @@ ClassDesugaring :: [].{
 		method = ParserBasics.name_after_dot(ParserBasics.advance(ParserBasics.advance(parser)))?
 		if parent.methods.contains(method.value) {
 			named = { ..code, supers: code.supers.append(method.value) }
+			receiver = Name("this", Unresolved, site)
 			Ok({
 				parser: { ..method.parser, receiver: InMethod(named) },
-				value: Member(Name("this", Unresolved, site), ClassDesugaring.super_key(method.value), site),
+				value: Member(receiver, ClassDesugaring.super_key(method.value), site),
 			})
 		} else {
 			ClassDesugaring.class_refused(parser, NoSuchSuper(method.value))
@@ -409,7 +410,10 @@ ClassDesugaring :: [].{
 				{
 					inherited_parts: [Spread(parents, at)],
 					super_parts: $supers.map(
-						|method| Field({ key: ClassDesugaring.super_key(method), value: Member(parents, method, at) }),
+						|method| {
+							parent_method = Member(parents, method, at)
+							Field({ key: ClassDesugaring.super_key(method), value: parent_method })
+						},
 					),
 				}
 			}
@@ -450,13 +454,14 @@ ClassDesugaring :: [].{
 			List.concat([Single(this)], forwarded),
 			at,
 		)
+		own_table = named("#methods ${name}")
 		maker = {
 			name: name,
 			parameters: parameters,
 			binding: binding,
 			names: parameters.append("this"),
 			statements: [
-				Declare(Const, [declared("this", Instance(class_names, named("#methods ${name}")))]),
+				Declare(Const, [declared("this", Instance(class_names, own_table))]),
 				Expression(constructs),
 				Return(this),
 			],

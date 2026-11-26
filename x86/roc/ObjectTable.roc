@@ -334,7 +334,12 @@ hashed_property_items =
 			Emit.ret,
 		])
 		.concat(inherited_items({ label: "runtime_get_inherited", entry: "runtime_object_entry" }))
-		.concat(inherited_items({ label: "runtime_get_inherited_hashed", entry: "runtime_object_entry_hashed" }))
+		.concat(
+			inherited_items({
+				label: "runtime_get_inherited_hashed",
+				entry: "runtime_object_entry_hashed",
+			}),
+		)
 		.concat([Emit.mark(ObjectTable.set_property_hashed)])
 		.concat(RuntimeBuilders.tag_load_items(Rdi))
 		.concat([Emit.cmp_imm(Rcx, Boxing.object_tag), Emit.jcc(Ne, Runtime.set_property)])
@@ -358,7 +363,7 @@ hashed_property_items =
 inherited_items : { label : Str, entry : Str } -> List(Assembly.Statement)
 inherited_items = |{ label, entry }|
 	[Emit.mark(label)]
-		.concat(RuntimeBuilders.instance_jump_items({ reg: Rdi, label: "${label}_table" }))
+		.concat(RuntimeBuilders.instance_jump_items("${label}_table"))
 		.concat([
 			Emit.jmp("runtime_get_undefined"),
 			Emit.mark("${label}_table"),

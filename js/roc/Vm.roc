@@ -386,7 +386,10 @@ dispatch! = |host, program, machine, op|
 		AppendSpread({ source, at }) => Instructions.spread_appended(machine, source, at)
 		NewObject => Machine.allocated(machine, Object([]))
 		NewInstance(classes) => match Machine.value_at(machine, 1) {
-			Reference(methods) => Machine.allocated(Machine.dropped(machine, 1), Instance({ names: classes, methods: methods }, []))
+			Reference(methods) => {
+				class = { names: classes, methods: methods }
+				Machine.allocated(Machine.dropped(machine, 1), Instance(class, []))
+			}
 			_ => crash "Vm.step: a class's table is an object (ClassDesugaring's `#methods`)"
 		}
 		InstanceOf(name) => Instructions.instance_tested(machine, name)
@@ -458,13 +461,27 @@ called! = |host, program, machine, calling| {
 plain_called! : Canvas.Host, Bytecode.Program, Machine.Machine, Bytecode.CallSite => Machine.Machine
 plain_called! = |host, program, machine, site| {
 	result_at = machine.top - site.count - 1
-	called!(host, program, machine, { count: site.count, result_at: result_at, naming: Written(site.written), at: site.at, receiving: NotGiven })
+	calling = {
+		count: site.count,
+		result_at: result_at,
+		naming: Written(site.written),
+		at: site.at,
+		receiving: NotGiven,
+	}
+	called!(host, program, machine, calling)
 }
 
 spread_called! : Canvas.Host, Bytecode.Program, Machine.Machine, { written : Str, at : Ast.Where } => Machine.Machine
 spread_called! = |host, program, machine, { written, at }| {
 	{ machine: unpacked, count } = Instructions.spread_unpacked(machine)
-	called!(host, program, unpacked, { count: count, result_at: unpacked.top - count - 1, naming: Written(written), at: at, receiving: NotGiven })
+	calling = {
+		count: count,
+		result_at: unpacked.top - count - 1,
+		naming: Written(written),
+		at: at,
+		receiving: NotGiven,
+	}
+	called!(host, program, unpacked, calling)
 }
 
 spread_method_called! : Canvas.Host, Bytecode.Program, Machine.Machine, { name : Str, written : Str, at : Ast.Where } => Machine.Machine
@@ -501,23 +518,17 @@ method_called! = |host, program, machine, { name, site }| {
 			{ cells, machine: rest } = Machine.lent(machine)
 			Machine.with_got(rest, CollectionRules.collection_method(Machine.shell(cells, rest), place, name, arguments, site.at), result_at)
 		}
-		# A class's method takes the receiver first: it goes in the callee's
-		# place, just below the arguments, so the frame starts there.
-		Held =>
-			if Instructions.takes_receiver(program, machine, Machine.value_at(machine, count + 1)) {
-				callee = Machine.value_at(machine, count + 1)
-				receiving = Machine.with_value_at(machine, count + 1, receiver)
-				entered = match callee {
-					Reference(id) => match Heap.cell_at(machine.cells, id) {
-						Fun(closure) => Instructions.closure_entered(program, receiving, { environment: closure.scope, calling: { count: count + 1, result_at: result_at, naming: Written(site.written), at: site.at, receiving: Given } })
-						_ => crash "Vm.method_called!: a method is a closure"
-					}
-					_ => crash "Vm.method_called!: a method is a closure"
-				}
-				entered
-			} else {
-				called!(host, program, machine, { count: count, result_at: result_at, naming: Written(site.written), at: site.at, receiving: NotGiven })
+		# A class's method takes the receiver first (Instructions' `place_receiver`).
+		Held => {
+			calling = {
+				count: count,
+				result_at: result_at,
+				naming: Written(site.written),
+				at: site.at,
+				receiving: Given(receiver),
 			}
+			called!(host, program, machine, calling)
+		}
 	}
 }
 
@@ -751,7 +762,13 @@ closure_called! = |host, program, machine, { environment, arguments, at }| {
 		$machine = Machine.pushed($machine, argument)
 	}
 	floor = $machine.depth + 1
-	calling = { count: arguments.len(), result_at: result_at, naming: Shown, at: at, receiving: NotGiven }
+	calling = {
+		count: arguments.len(),
+		result_at: result_at,
+		naming: Shown,
+		at: at,
+		receiving: NotGiven,
+	}
 	if $machine.depth >= max_callback_depth {
 		Instructions.stack_exceeded($machine, at)
 	} else {
@@ -777,7 +794,14 @@ call_function! = |host, program, machine, { callee, arguments, at }| {
 	if $machine.depth >= max_callback_depth {
 		Instructions.stack_exceeded($machine, at)
 	} else {
-		entered = called!(host, program, $machine, { count: arguments.len(), result_at: result_at, naming: Shown, at: at, receiving: NotGiven })
+		calling = {
+			count: arguments.len(),
+			result_at: result_at,
+			naming: Shown,
+			at: at,
+			receiving: NotGiven,
+		}
+		entered = called!(host, program, $machine, calling)
 		if entered.depth >= floor {
 			loop!(host, program, entered, floor)
 		} else {

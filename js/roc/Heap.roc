@@ -528,10 +528,13 @@ Heap :: [].{
 	has_property : List(Heap.Property), Str -> Bool
 	has_property = |properties, key| properties.any(|found| found.key == key)
 
+	# An instance's parts and the key read of it.
+	InstanceRead : { class : Heap.Class, properties : List(Heap.Property), key : Str }
+
 	# The property `key` of an instance of `class` holding `properties`: its
 	# own, or else its class's method of that name; `Missing` for neither.
-	instance_property : List(Heap.Cell), Heap.Class, List(Heap.Property), Str -> Try(Heap.Value, [Missing])
-	instance_property = |cells, class, properties, key|
+	instance_property : List(Heap.Cell), Heap.InstanceRead -> Try(Heap.Value, [Missing])
+	instance_property = |cells, { class, properties, key }|
 		match properties.find_first(|found| found.key == key) {
 			Ok(found) => Ok(found.value)
 			Err(NotFound) => match Heap.cell_at(cells, class.methods) {

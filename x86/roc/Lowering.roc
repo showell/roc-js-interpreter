@@ -1002,7 +1002,7 @@ call_kinds = |context, { instruction, state }|
 ## entry, and packs them into an array in its slot. Both go on to make the
 ## cells of its own variables a closure captures.
 ##
-## A class's method (`Bytecode.Code`'s `receiver`) takes its first
+## A class's method (`Bytecode.Code`'s `form`, `Method`) takes its first
 ## parameter, `this`, from `rdx` at the entry through a value, and each
 ## argument the caller pushed in the parameter after its own: every call
 ## through a value sets `rdx`, to a method call's receiver, or else to
@@ -1071,7 +1071,7 @@ entry_items = |context, { code, frame_bytes }| {
 		]
 		Each(_) => []
 	}
-	received = code.receiver == TakesReceiver
+	received = code.form == Method
 	var $direct = packed
 	var $counted = match code.arguments {
 		Packed(slot) if received => [

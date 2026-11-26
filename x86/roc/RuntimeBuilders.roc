@@ -38,14 +38,14 @@ RuntimeBuilders :: [].{
 	instance_mark : Str
 	instance_mark = "runtime_text_instance_mark"
 
-	## The statements that jump to `label` when the object at `reg`
+	## The statements that jump to `label` when the object at `rdi`
 	## (unboxed) is an instance of a class. They change `rcx` and `rdx`.
-	instance_jump_items : { reg : X86.Register, label : Str } -> List(Assembly.Statement)
-	instance_jump_items = |{ reg, label }| [
-		Emit.load(Rcx, Emit.mem(reg, 0)),
+	instance_jump_items : Str -> List(Assembly.Statement)
+	instance_jump_items = |label| [
+		Emit.load(Rcx, Emit.mem(Rdi, 0)),
 		Emit.test(Rcx, Rcx),
 		Emit.jcc(E, "${label}_past"),
-		Emit.load(Rcx, Emit.mem(reg, 16)),
+		Emit.load(Rcx, Emit.mem(Rdi, 16)),
 		Emit.load(Rcx, Emit.mem(Rcx, 0)),
 		Emit.address_of(Rdx, RuntimeBuilders.instance_mark),
 		Emit.cmp(Rcx, Rdx),

@@ -559,9 +559,12 @@ Instructions :: [].{
 					properties,
 					key,
 				)
-				Instance(class, properties) => match Heap.instance_property(machine.cells, class, properties, key) {
-					Ok(value) => Found(value)
-					Err(Missing) => Elsewhere
+				Instance(class, properties) => {
+					read = { class, properties, key }
+					match Heap.instance_property(machine.cells, read) {
+						Ok(value) => Found(value)
+						Err(Missing) => Elsewhere
+					}
 				}
 				Array(items) if key == "length" => Found(Number(items.len().to_f64()))
 				_ => Elsewhere
@@ -664,31 +667,47 @@ Instructions :: [].{
 	# value.
 	Naming : [Written(Str), Shown]
 
-	# Whether a call's first argument is the receiver of a method call
-	# (`Given`), or a method it enters takes `undefined` there (`NotGiven`).
-	Receiving : [Given, NotGiven]
+	# What a call gives a class's method as its receiver: a method call's
+	# receiver (`Given`), or nothing (`NotGiven`), for which the method takes
+	# `undefined`. A function of any other form takes no receiver.
+	Receiving : [Given(Heap.Value), NotGiven]
 
-	Calling : { count : U64, result_at : U64, naming : Instructions.Naming, at : Ast.Where, receiving : Instructions.Receiving }
-
-	# Whether the value `callee` is a closure of a class's method, whose
-	# first parameter is the receiver.
-	takes_receiver : Bytecode.Program, Machine.Machine, Heap.Value -> Bool
-	takes_receiver = |program, machine, callee|
-		match callee {
-			Reference(id) => match Heap.cell_at(machine.cells, id) {
-				Fun(closure) => match Heap.cell_at(machine.cells, closure.scope) {
-					Environment({ code, boxes: _ }) => Machine.code_of(program, code).receiver == TakesReceiver
-					_ => False
-				}
-				_ => False
-			}
-			_ => False
-		}
+	Calling : {
+		count : U64,
+		result_at : U64,
+		naming : Instructions.Naming,
+		at : Ast.Where,
+		receiving : Instructions.Receiving,
+	}
 
 	# The machine after a call too deep, as node throws it: a RangeError.
 	stack_exceeded : Machine.Machine, Ast.Where -> Machine.Machine
 	stack_exceeded = |machine, at|
 		Machine.with_error(machine, RangeError, "Maximum call stack size exceeded", at)
+
+	# A class's method takes its receiver as its first argument: a method
+	# call's in the callee's place, just below the arguments, so nothing
+	# moves, or else `undefined`, put in before the arguments. The machine
+	# with it there, and the count of arguments then.
+	Received : { machine : Machine.Machine, count : U64 }
+
+	place_receiver : Machine.Machine, Instructions.Calling -> Instructions.Received
+	place_receiver = |machine, calling|
+		match calling.receiving {
+			Given(receiver) => {
+				callee_place = machine.top - calling.count - 1
+				placed = machine.stack.set(callee_place, receiver) ?? crash "Instructions: a callee"
+				{ machine: { ..machine, stack: placed }, count: calling.count + 1 }
+			}
+			NotGiven => {
+				arguments = Machine.arguments_of(machine, calling.count)
+				var $shifted = Machine.pushed(Machine.dropped(machine, calling.count), Undefined)
+				for argument in arguments {
+					$shifted = Machine.pushed($shifted, argument)
+				}
+				{ machine: $shifted, count: calling.count + 1 }
+			}
+		}
 
 	closure_entered : Bytecode.Program, Machine.Machine, { environment : U64, calling : Instructions.Calling } -> Machine.Machine
 	closure_entered = |program, machine, { environment, calling }| {
@@ -697,16 +716,9 @@ Instructions :: [].{
 			_ => crash "Instructions.closure_entered: a VM closure's scope names its environment"
 		}
 		entered_code = Machine.code_of(program, code)
-		# A method called by anything but a method call takes `undefined`
-		# as its receiver, before the arguments.
 		{ machine: given, count } =
-			if entered_code.receiver == TakesReceiver and calling.receiving == NotGiven {
-				arguments = Machine.arguments_of(machine, calling.count)
-				var $shifted = Machine.pushed(Machine.dropped(machine, calling.count), Undefined)
-				for argument in arguments {
-					$shifted = Machine.pushed($shifted, argument)
-				}
-				{ machine: $shifted, count: calling.count + 1 }
+			if entered_code.form == Method {
+				Instructions.place_receiver(machine, calling)
 			} else {
 				{ machine: machine, count: calling.count }
 			}
@@ -725,7 +737,12 @@ Instructions :: [].{
 				pc: 0,
 				base: base,
 			}
-			Instructions.frame_filled(inside, { code: entered_code, given: count, boxes: boxes })
+			filling = {
+				code: entered_code,
+				given: count,
+				boxes: boxes,
+			}
+			Instructions.frame_filled(inside, filling)
 		}
 	}
 

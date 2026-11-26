@@ -11,6 +11,7 @@
 ## builtins, the calls), each a module of its own that Lowering imports and
 ## that uses these too: a module they all import, and that imports none of
 ## them, is the one place the basics can live without a cycle.
+import js.Ast
 import js.Bytecode
 import Assembly
 import Boxing
@@ -65,7 +66,7 @@ LoweringBasics :: [].{
 		parent : U64,
 		captures : List(U64),
 		name : Str,
-		form : [Ordinary, MakesInstances, Method],
+		form : Ast.Form,
 	}
 
 	## What `held_function` reads: the program, where each code is made, and

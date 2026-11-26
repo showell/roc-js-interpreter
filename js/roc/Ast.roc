@@ -245,6 +245,14 @@ Ast :: [].{
 		}
 	}
 
+	## What a function is to a call. A class is a function that makes its
+	## instances (`MakesInstances`), which console.log refuses to print, since
+	## node prints `[class C]`. A class's method (`Method`) takes the receiver
+	## as its first parameter, `this`: a method call passes the receiver
+	## there, and any other call `undefined`, before the arguments
+	## (ClassDesugaring's doc). Every other function is `Ordinary`.
+	Form : [Ordinary, MakesInstances, Method]
+
 	FunctionDefinition : {
 		name : Str,
 		# The names the parameters bind, in order.
@@ -254,12 +262,7 @@ Ast :: [].{
 		names : List(Str),
 		statements : List(Ast.Statement),
 		capture : Ast.Capture,
-		# A class is a function that makes its instances (`MakesInstances`),
-		# which console.log refuses to print, since node prints `[class C]`.
-		# A class's method (`Method`) takes the receiver as its first
-		# parameter, `this`: a method call passes the receiver there, and any
-		# other call `undefined`, before the arguments (ClassDesugaring's doc).
-		form : [Ordinary, MakesInstances, Method],
+		form : Ast.Form,
 		at : Ast.Where,
 	}
 

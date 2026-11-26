@@ -200,17 +200,13 @@ Bytecode :: [].{
 	## takes apart in its own code.
 	Arguments : [Each(U64), Packed(U64)]
 
-	## Whether a code is a class's method, whose first parameter is the
-	## receiver (`Ast`'s `Method`): a method call passes the receiver there,
-	## and any other call `undefined`, before the arguments.
-	Receiver : [TakesReceiver, NoReceiver]
-
 	Code : {
 		ops : List(Bytecode.Op),
 		frame_size : U64,
 		arguments : Bytecode.Arguments,
 		entry : List(Bytecode.Entry),
-		receiver : Bytecode.Receiver,
+		# Its function's form: a `Method` takes the receiver first.
+		form : Ast.Form,
 	}
 
 	## Every function's code, which of them is the program's own, and where

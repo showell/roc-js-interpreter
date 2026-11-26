@@ -736,7 +736,11 @@ spread_items = {
 		]
 			.concat(RuntimeBuilders.tag_load_items(Rsi))
 			.concat([Emit.cmp_imm(Rcx, Boxing.array_tag), Emit.jcc(Ne, "runtime_not_an_array")])
-			.concat([Emit.save(Rbp), Emit.mov(Rbp, Rsp), Emit.save(Rdx)])
+			.concat([
+				Emit.save(Rbp),
+				Emit.mov(Rbp, Rsp),
+				Emit.save(Rdx),
+			])
 			.concat(RuntimeBuilders.unboxed_items(Rsi))
 			.concat([
 				Emit.load(Rcx, Emit.mem(Rsi, 0)),
@@ -1010,7 +1014,7 @@ exception_items = {
 		.concat(RuntimeBuilders.tag_load_items(Rdi))
 		.concat([Emit.cmp_imm(Rcx, Boxing.object_tag), Emit.jcc(Ne, "runtime_instance_of_false")])
 		.concat(RuntimeBuilders.unboxed_items(Rdi))
-		.concat(RuntimeBuilders.instance_jump_items({ reg: Rdi, label: marked }))
+		.concat(RuntimeBuilders.instance_jump_items(marked))
 		.concat([
 			Emit.jmp("runtime_instance_of_false"),
 			Emit.mark(marked),

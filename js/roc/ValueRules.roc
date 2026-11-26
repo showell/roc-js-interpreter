@@ -703,14 +703,11 @@ ValueRules :: [].{
 
 	# ---- properties ------------------------------------------------------------
 
-	# An object's property `key`, its `value` when `found`; else undefined,
-	# or a fault for one of Object.prototype's names, which the subset has
-	# not.
-	own_or_missing : ValueRules.Machine, { found : Bool, value : Heap.Value, key : Str, site : Ast.Where } -> ValueRules.Got
-	own_or_missing = |machine, { found, value, key, site }|
-		if found {
-			{ machine: machine, value: value }
-		} else if ValueRules.is_prototype_name(key) {
+	# A property `key` an object doesn't have: undefined, or a fault for
+	# one of Object.prototype's names, which the subset has not.
+	missing_property : ValueRules.Machine, { key : Str, site : Ast.Where } -> ValueRules.Got
+	missing_property = |machine, { key, site }|
+		if ValueRules.is_prototype_name(key) {
 			ValueRules.fault_got(
 				machine,
 				"unsupported: Object.prototype's `${key}`${ValueRules.line_note(site)}",
@@ -723,13 +720,15 @@ ValueRules :: [].{
 	property = |machine, object, key, site|
 		match object {
 			Reference(id) => match Heap.cell_at(machine.cells, id) {
-				Object(properties) => ValueRules.own_or_missing(
-					machine,
-					{ found: Heap.has_property(properties, key), value: Heap.property_value(properties, key), key, site },
-				)
-				Instance(class, properties) => match Heap.instance_property(machine.cells, class, properties, key) {
-					Ok(value) => { machine: machine, value: value }
-					Err(Missing) => ValueRules.own_or_missing(machine, { found: False, value: Undefined, key, site })
+				Object(properties) =>
+					if Heap.has_property(properties, key) {
+						{ machine: machine, value: Heap.property_value(properties, key) }
+					} else {
+						ValueRules.missing_property(machine, { key, site })
+					}
+				Instance(class, properties) => match Heap.instance_property(machine.cells, { class, properties, key }) {
+					Ok(found) => { machine: machine, value: found }
+					Err(Missing) => ValueRules.missing_property(machine, { key, site })
 				}
 				Array(items) => {
 					if key == "length" {
