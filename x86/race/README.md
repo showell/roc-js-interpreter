@@ -118,3 +118,13 @@ Measured as before: medians of 5 and of 7 runs of the 1-second race, alternated 
 12. **The walk follows jumps** (`Moves.settled_labels`): a jump reads what its label reads, found by walking the program backward again until no label's set grows, so a value dead on both ways of a branch is dead before it. The loop 129 instructions to 113 (28 at `rbp`); with it, two more joins, a `movq` from an xmm register and the store after it made one `movsd` store, and a load and the `movq` into an xmm register after it one `movsd` load. The race fell back: F(62,738) and F(62,654), medians of 5 and of 7, against F(64,418) and F(64,301) for 11 beside them. With those two xmm joins taken out again the loop is 117 instructions (28 at `rbp`), and the race F(64,137) and F(64,323) (medians of 5 and 7), against 11's F(63,801) and F(64,687) beside it: the same. That is what the branch keeps, being no slower and fewer instructions. A guess at why the xmm joins lost, not measured: `s` and `i` are then stored from an xmm register and loaded back into a general one, and a store forwarded across the two kinds of register costs more than the moves it saved.
 
 So here the instructions saved bought their share: 11 took out 15% of the loop's instructions, and the work done in the same time rose by 15% to 20%. What is left, read in the loop: every variable still lives in the frame (28 loads and stores at `rbp` a limb); each item read and write tests its index's tag and unboxes the array's address again; `BASE` is made with `movabs` and moved to an xmm register twice; a branch whose two ways are as likely as each other (`s >= BASE`) decides the carry.
+
+The 20-second race after 11 and 12, the same box and day, load average 0.57, with master's run just after it (load 0.78):
+
+    compiled: F(293764), 61393 digits, elapsed 19963 ms, PASS, verified; after the verdict 182 ms (wall 20145 ms)
+    node: F(387876), 81061 digits, elapsed 19961 ms, PASS, verified; after the verdict 51 ms (wall 20012 ms)
+
+    master, compiled: F(248446), 51922 digits, elapsed 19957 ms, PASS, verified; after the verdict 178 ms (wall 20135 ms)
+    master, node: F(328619), 68677 digits, elapsed 19966 ms, PASS, verified; after the verdict 73 ms (wall 20039 ms)
+
+From F(248,446), the compiled program did about 1.4 times its earlier work in this pair, more than the 1-second medians said (node's own run moved by as much between the two, F(328,619) to F(387,876), so a single pair is noisy). Against the node run beside it, node now does about 1.74 times the compiled program's work, down from about 2.4.
