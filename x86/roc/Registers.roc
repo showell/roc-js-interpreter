@@ -2,10 +2,12 @@
 ## The lowering moves every value through the frame, an instruction at a
 ## time, so a loop's variables and the bytecode's stack places are stored
 ## and loaded back again and again, each load waiting for its store.
-## `promote_statements` takes one function's statements and renames each of its three
-## busiest places at `rbp` to a register of its own (`r9`, `r10`, `r11`,
-## which no lowered instruction uses, only the runtime's routines): a load
-## of the place becomes a move from the register, a store a move to it.
+## `promote_statements` takes one function's statements and renames each of
+## its four busiest places at `rbp` to a register of its own (`r9`, `r10`,
+## `r11`, which no lowered instruction uses, only the runtime's routines,
+## and `rbx`, which only a function that captures cells uses, for its
+## closure record): a load of the place becomes a move from the register, a
+## store a move to it.
 ##
 ## **THE RULE, KEPT CONSERVATIVE.** A place is renamed only when every
 ## instruction that names it is one of the four plain moves (`mov` to or
@@ -13,7 +15,8 @@
 ## index, so nothing takes its address or reads a byte of it. A function is
 ## renamed only when it has a loop, so recursive fib, which has none, pays
 ## nothing for it; when nothing in it names `rbp` but as such a place's base;
-## and when nothing in it names `r9`, `r10` or `r11` already. The caller
+## and a spare register the function names itself (`rbx` in a function that
+## captures cells) is left to it, the places going to the others. The caller
 ## (`Lowering.code_walk`) renames nothing in a program with a `try`: a throw
 ## a handler catches would skip the restores below, and the handler's
 ## function would carry on with its caller's registers spoiled. With no
@@ -49,12 +52,13 @@ Registers :: [].{
 		}
 		var $counts = Dict.empty()
 		var $barred = []
+		# The spare registers the function names itself, which it keeps.
+		var $named_spares = []
 		for statement in statements {
 			match statement {
 				Instruction(instruction) => {
-					if registers_named(instruction).any(is_spare) {
-						return statements
-					}
+					named_here = registers_named(instruction).keep_if(is_spare)
+					$named_spares = $named_spares.concat(named_here)
 					match plain_place(instruction) {
 						Ok(displacement) => {
 							$counts = $counts.insert(
@@ -83,6 +87,8 @@ Registers :: [].{
 				_ => {}
 			}
 		}
+		same = |one, other| X86.register_index(one) == X86.register_index(other)
+		free = spare_registers.drop_if(|spare| $named_spares.any(|named| same(named, spare)))
 		chosen =
 			$counts
 				.to_list()
@@ -101,11 +107,11 @@ Registers :: [].{
 							Same
 						},
 				)
-				.take_first(spare_registers.len())
+				.take_first(free.len())
 				.map_with_index(
 					|(displacement, _), at| {
 						register =
-							spare_registers.get(at)
+							free.get(at)
 								?? crash "Registers.promote_statements: a spare register"
 						{ displacement, register }
 					},
@@ -190,7 +196,7 @@ Registers :: [].{
 
 ## The registers a function's places may be kept in.
 spare_registers : List(X86.Register)
-spare_registers = [R9, R10, R11]
+spare_registers = [R9, R10, R11, Rbx]
 
 ## Whether a register is one of the spare ones.
 is_spare : X86.Register -> Bool
