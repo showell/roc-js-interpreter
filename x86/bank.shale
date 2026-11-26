@@ -1,0 +1,117 @@
+-- budget: steps=50000000
+-- x86/bank.shale: the bank race, x86/bank/bank_race.js, compiled by js-x86
+-- against node, as x86/race.shale runs the fib race. check.shale does not
+-- run it: its numbers are timings. From the repository's root:
+--
+--   shale x86/bank.shale                       # the race as written, 20 seconds
+--   shale x86/bank.shale budget=1000           # a budget of 1 s
+--   shale x86/bank.shale budget=1000 warmup=0  # the same with no untimed warm-up
+--
+-- `budget=` is the race's BUDGET_MS, in milliseconds, and `warmup=` its
+-- WARMUP, the transfers run before the clock starts (the file's own value
+-- unset; 0, or at least the race's CHECK_AT): the script writes a copy of
+-- bank_race.js with those lines changed, under the build mount, and both
+-- contestants run the copy. `runs=` races each contestant that many times,
+-- one after the other in turn, and prints the medians of the transfers
+-- each made while its clock ran.
+--
+-- It builds js-x86 on the dev backend, writes the race's executable under
+-- the build mount, then runs the executable and node, niced, one after the
+-- other, never at once (the box has 2 cores). Each contestant's answer is
+-- checked by x86/bank/verify.js, a second implementation of the ledger, run
+-- in node to the same count: its checksum line, its audits line and its
+-- last line must be verify.js's exactly. Each contestant's line says how
+-- many transfers it made while its clock ran (and in all, the warm-up's
+-- included), the elapsed time the program measured itself, its PASS or
+-- FAIL, whether its answer is right, and the time outside its clock (the
+-- run's wall time less its elapsed: the start, the warm-up, the final
+-- checksum and the exit).
+
+use("./executables.shale")
+
+const WHO = "x86/bank.shale"
+const RACE = "x86/bank/bank_race.js"
+const VERIFY = "x86/bank/verify.js"
+const WANT_VERIFY = "node: verify.js, the second ledger's answer for the race"
+const BUDGET_LINE = "const BUDGET_MS = 20000;"
+const AFTER_MS = 60000
+
+-- A contestant's run: its wall time and what it printed, its summary parsed.
+function raced(who, argv, want, budget)
+  local r = run(argv, {timeout_ms = budget + AFTER_MS, whole = 100000, want = want, nice = 19})
+  if r.ended ~= "exit" or r.code ~= 0 then fail(WHO .. ": " .. who .. " ended " .. r.ended .. " " .. get(r, "code", -1) .. ": " .. sub(r.out, 1, 2000)) end
+  local said = lines(r.out)
+  local reached = re_find(r.out, "reached ([0-9]+) transfers")
+  local timed = re_find(r.out, "elapsed ([0-9]+) ms of")
+  local clocked = re_find(r.out, "timed ([0-9]+) transfers")
+  if reached == nil or timed == nil or clocked == nil or #said ~= 5 then fail(WHO .. ": " .. who .. " printed no summary: " .. sub(r.out, 1, 2000)) end
+  return {who = who, lines = said, n = reached.group, clocked = clocked.group, elapsed = tonumber(timed.group), verdict = said[4], ms = r.ms}
+end
+
+-- Whether a contestant's answer is verify.js's: its checksum, audits and
+-- last lines, exactly.
+function verified(c, budget)
+  local v = run({"node", real(VERIFY), c.n}, {timeout_ms = budget + AFTER_MS, whole = 10000, want = WANT_VERIFY, nice = 19})
+  if v.code ~= 0 then fail(WHO .. ": verify.js exited " .. get(v, "code", -1) .. ": " .. sub(v.out, 1, 2000)) end
+  local want = lines(v.out)
+  local got = {c.lines[1], c.lines[2], c.lines[5]}
+  if #want ~= 3 then return "wrong (verify.js printed " .. #want .. " lines)" end
+  for i = 1, 3 do
+    if got[i] ~= want[i] then return "WRONG at line " .. i .. ": " .. got[i] .. ", verify.js's " .. want[i] end
+  end
+  return "verified"
+end
+
+-- The race's text with its budget and its warm-up set.
+function race_text(budget, warmup)
+  local text = read(RACE)
+  if #grep(RACE, BUDGET_LINE) ~= 1 then fail(WHO .. ": " .. RACE .. " has no line `" .. BUDGET_LINE .. "` to set the budget in") end
+  local w = re_find(text, "\nconst WARMUP = ([0-9]+);")
+  if w == nil then fail(WHO .. ": " .. RACE .. " has no line `const WARMUP = N;` to set the warm-up in") end
+  if warmup < 0 then warmup = tonumber(w.group) end
+  text = re_replace(text, "const BUDGET_MS = 20000;", "const BUDGET_MS = " .. budget .. ";")
+  return re_replace(text, "\nconst WARMUP = [0-9]+;", "\nconst WARMUP = " .. warmup .. ";")
+end
+
+function median(list)
+  local sorted = {}
+  for x in list do push(sorted, x) end
+  sort(sorted)
+  return sorted[(#sorted + 1) // 2]
+end
+
+function main()
+  local budget = arg("budget", 20000)
+  local warmup = arg("warmup", -1)
+  local runs = arg("runs", 1)
+  if budget < 100 then fail(WHO .. ": budget=" .. budget .. " is under 100 ms, too short to plan a batch in") end
+  local exe = built_roc(WHO, "x86/roc/JsToX86.roc", "js-x86", "dev")
+  local dir = executables_dir()
+  local path = dir .. "/bank-bank_race"
+  local copy = dir .. "/bank-bank_race.js"
+  local text = race_text(budget, warmup)
+  replace(copy, text)
+  local size = written_executable(WHO, exe, text, path)
+  local node = run({"node", "--version"}, {timeout_ms = 10000, whole = 1000, want = WANT_NODE})
+  local uptime = trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out)
+  print("the race's executable: " .. size .. " bytes; budget " .. budget .. " ms; " .. "warm-up " .. re_find(text, "\nconst WARMUP = ([0-9]+);").group .. " transfers; node " .. trim(node.out) .. "; " .. uptime)
+  local reached = {compiled = {}, node = {}}
+  for i = 1, runs do
+    local contestants = {
+      raced("compiled", {real(path)}, WANT_BINARY, budget),
+      raced("node", {"node", real(copy)}, WANT_NODE, budget),
+    }
+    for c in contestants do
+      if re_find(c.lines[3], " of " .. budget .. ",") == nil then fail(WHO .. ": " .. c.who .. " raced another budget: " .. c.lines[3]) end
+      local checked = verified(c, budget)
+      push(reached[c.who], tonumber(c.clocked))
+      print(c.who .. ": " .. c.clocked .. " transfers timed (" .. c.n .. " in all), elapsed " .. c.elapsed .. " ms, " .. c.verdict .. ", " .. checked .. "; outside the clock " .. (c.ms - c.elapsed) .. " ms (wall " .. c.ms .. " ms)")
+    end
+  end
+  if runs > 1 then
+    local after = trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out)
+    print("medians of " .. runs .. ": compiled " .. median(reached.compiled) .. ", node " .. median(reached.node) .. " transfers timed; " .. after)
+  end
+end
+
+main()
