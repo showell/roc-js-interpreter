@@ -185,7 +185,7 @@ function race() {
   const right = early === CHECKSUM_AT && ledger.unbalanced === 0;
   console.log(early === CHECKSUM_AT ? "checksum after " + CHECK_AT + " transfers " + early + ", as expected" : "checksum after " + CHECK_AT + " transfers " + early + ", not " + CHECKSUM_AT);
   console.log("audits " + ledger.audits + ", unbalanced " + ledger.unbalanced);
-  console.log("batches " + batches + ", elapsed " + elapsed + " ms of " + BUDGET_MS + ", warm-up " + WARMUP + " transfers");
+  console.log("batches " + batches + ", elapsed " + elapsed + " ms of " + BUDGET_MS + ", warm-up " + WARMUP + " transfers, timed " + (step - Math.max(WARMUP, 0)) + " transfers");
   console.log(elapsed <= BUDGET_MS && right ? "PASS" : "FAIL");
   console.log("reached " + step + " transfers, final checksum " + checksum(accounts, names));
 }

@@ -12,8 +12,8 @@
 -- unset; 0, or at least the race's CHECK_AT): the script writes a copy of
 -- bank_race.js with those lines changed, under the build mount, and both
 -- contestants run the copy. `runs=` races each contestant that many times,
--- one after the other in turn, and prints the median of the transfers
--- reached.
+-- one after the other in turn, and prints the medians of the transfers
+-- each made while its clock ran.
 --
 -- It builds js-x86 on the dev backend, writes the race's executable under
 -- the build mount, then runs the executable and node, niced, one after the
@@ -21,10 +21,11 @@
 -- checked by x86/bank/verify.js, a second implementation of the ledger, run
 -- in node to the same count: its checksum line, its audits line and its
 -- last line must be verify.js's exactly. Each contestant's line says how
--- many transfers it reached, the elapsed time the program measured itself,
--- its PASS or FAIL, whether its answer is right, and the time after its
--- verdict (the run's wall time less its elapsed: the start, the warm-up,
--- the final checksum and the exit).
+-- many transfers it made while its clock ran (and in all, the warm-up's
+-- included), the elapsed time the program measured itself, its PASS or
+-- FAIL, whether its answer is right, and the time outside its clock (the
+-- run's wall time less its elapsed: the start, the warm-up, the final
+-- checksum and the exit).
 
 use("./executables.shale")
 
@@ -42,8 +43,9 @@ function raced(who, argv, want, budget)
   local said = lines(r.out)
   local reached = re_find(r.out, "reached ([0-9]+) transfers")
   local timed = re_find(r.out, "elapsed ([0-9]+) ms of")
-  if reached == nil or timed == nil or #said ~= 5 then fail(WHO .. ": " .. who .. " printed no summary: " .. sub(r.out, 1, 2000)) end
-  return {who = who, lines = said, n = reached.group, elapsed = tonumber(timed.group), verdict = said[4], ms = r.ms}
+  local clocked = re_find(r.out, "timed ([0-9]+) transfers")
+  if reached == nil or timed == nil or clocked == nil or #said ~= 5 then fail(WHO .. ": " .. who .. " printed no summary: " .. sub(r.out, 1, 2000)) end
+  return {who = who, lines = said, n = reached.group, clocked = clocked.group, elapsed = tonumber(timed.group), verdict = said[4], ms = r.ms}
 end
 
 -- Whether a contestant's answer is verify.js's: its checksum, audits and
@@ -102,13 +104,13 @@ function main()
     for c in contestants do
       if re_find(c.lines[3], " of " .. budget .. ",") == nil then fail(WHO .. ": " .. c.who .. " raced another budget: " .. c.lines[3]) end
       local checked = verified(c, budget)
-      push(reached[c.who], tonumber(c.n))
-      print(c.who .. ": " .. c.n .. " transfers, elapsed " .. c.elapsed .. " ms, " .. c.verdict .. ", " .. checked .. "; after the verdict " .. (c.ms - c.elapsed) .. " ms (wall " .. c.ms .. " ms)")
+      push(reached[c.who], tonumber(c.clocked))
+      print(c.who .. ": " .. c.clocked .. " transfers timed (" .. c.n .. " in all), elapsed " .. c.elapsed .. " ms, " .. c.verdict .. ", " .. checked .. "; outside the clock " .. (c.ms - c.elapsed) .. " ms (wall " .. c.ms .. " ms)")
     end
   end
   if runs > 1 then
     local after = trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out)
-    print("medians of " .. runs .. ": compiled " .. median(reached.compiled) .. ", node " .. median(reached.node) .. " transfers; " .. after)
+    print("medians of " .. runs .. ": compiled " .. median(reached.compiled) .. ", node " .. median(reached.node) .. " transfers timed; " .. after)
   end
 end
 
