@@ -1,8 +1,7 @@
-// Math.floor, Math.ceil and Math.trunc in line (BuiltinLowering's header):
-// whole numbers, fractions either side of 0, -0 and the -0 a rounding of a
-// small negative number gives, numbers near and past 2^52 and 2^63, and
-// what takes the routine instead: a NaN, the infinities, a number of 2^63
-// or more in size. Each rounding printed is a whole number of at most 2^53,
+// Math.floor, Math.ceil and Math.trunc (LanguageRoutines' routines): whole
+// numbers, fractions either side of 0, -0 and the -0 a rounding of a small
+// negative number gives, numbers near and past 2^52 and 2^63, a NaN and the
+// infinities. Each rounding printed is a whole number of at most 2^53,
 // which console.log writes; a larger one is held to itself.
 const numbers = [0, 1, -1, 0.5, -0.5, 0.25, -0.75, 1.5, -1.5, 2.999, -2.999, 7, -7, 4095.9, 16383, -16383.5, 4503599627370495.5, -4503599627370495.5, 4503599627370496, 9007199254740991, -9007199254740991, 5e-324, -5e-324];
 
