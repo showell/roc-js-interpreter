@@ -1,32 +1,31 @@
 -- budget: steps=50000000
 -- x86/race.shale: the fib race, x86/race/fib_race.js, compiled by js-x86
--- against node. check.shale does not run it: it takes about a minute, and
--- its numbers are timings. From the repository's root:
+-- against node. Each contestant computes the same F(N) and prints it; the
+-- race is the wall time of each one's whole run. check.shale does not run
+-- it: the full size takes minutes, and its numbers are timings. From the
+-- repository's root:
 --
---   shale x86/race.shale               # the race as written, 20 seconds
---   shale x86/race.shale budget=1000   # the same race with a budget of 1 s
+--   shale x86/race.shale               # F(N) for the file's own N, about a minute compiled
+--   shale x86/race.shale size=small    # F(SMALL_N), about a second compiled, for tuning
+--   shale x86/race.shale n=200000      # any N of at least 1000
+--   shale x86/race.shale size=small runs=5   # five runs of each in turn, and the medians
 --
--- `budget=` is the race's BUDGET_MS, in milliseconds: the script writes a
--- copy of fib_race.js with that one line changed, under the build mount,
--- and both contestants run the copy. Each run's timeout is the budget and
--- a minute more, for the printing after the verdict, so a long race (60 s)
--- needs only a longer Bash call around it.
---
--- (It sits beside x86/bench.shale, not in x86/race/, since a library is
--- named only beside a script's own file or below it, and both name
--- x86/executables.shale.)
+-- `n=` (or `size=small`) writes a copy of fib_race.js with its `const N`
+-- line changed, under the build mount, and both contestants run the copy;
+-- unset, the copy is the file as written. (It sits beside x86/bench.shale,
+-- not in x86/race/, since a library is named only beside a script's own
+-- file or below it, and both name x86/executables.shale.)
 --
 -- It builds js-x86 on the dev backend (the executable's bytes are the same
--- whatever the driver's build), writes the race's executable under the build
--- mount, then runs the executable and node's `node fib_race.js`, niced, one
--- after the other, never at once (the box has 2 cores). Each contestant's
--- answer is checked by x86/race/verify.js, BigInt's F(n) for the n it
--- reached: its summary lines and its last line, the whole of F(n) in
--- decimal, must be verify.js's exactly. Each contestant's line says how far
--- it got, its digits, the elapsed time the program measured itself, its
--- PASS or FAIL, whether its answer is right, and the time after its verdict
--- (the run's wall time less its elapsed: chiefly the building and printing
--- of the whole number, with the start and the exit).
+-- whatever the driver's build), writes the race's executable under the
+-- build mount, then runs the executable and `node fib_race.js`, niced, one
+-- after the other, never at once (the box has 2 cores), each timed from
+-- outside by its wall clock, start to exit. Each contestant's whole output
+-- is checked: for an N in HASHES, its sha256 must be the one stored there
+-- (BigInt's output for that N, computed once with x86/race/verify.js);
+-- for any other N, it must be verify.js's output exactly. Each
+-- contestant's line says its wall time and whether its output matched;
+-- node's line adds the ratio of the compiled time to node's.
 
 use("./executables.shale")
 
@@ -34,63 +33,122 @@ const WHO = "x86/race.shale"
 const RACE = "x86/race/fib_race.js"
 const VERIFY = "x86/race/verify.js"
 const WANT_VERIFY = "node: verify.js, BigInt's answer for the race"
-const BUDGET_LINE = "const BUDGET_MS = 20000;"
-const AFTER_MS = 60000
+const SMALL_N = 100000
+const TIMEOUT_MS = 600000
 
--- A contestant's run: its wall time and what it printed, its summary parsed.
-function raced(who, argv, want, budget)
-  local r = run(argv, {timeout_ms = budget + AFTER_MS, whole = 4000000, want = want, nice = 19})
+-- sha256 of verify.js's whole output for an N, so the full size needs no
+-- BigInt run: `node x86/race/verify.js N | sha256sum`.
+const HASHES = {}
+
+function sha256(text)
+  local r = must(run({"sha256sum"}, {stdin = text, timeout_ms = 60000, tail = 2}))
+  return sub(trim(r.out), 1, 64)
+end
+
+-- A contestant's run: its wall time and its whole output.
+function raced(who, argv, want)
+  local r = run(argv, {timeout_ms = TIMEOUT_MS, whole = 4000000, want = want, nice = 19})
   if r.ended ~= "exit" or r.code ~= 0 then fail(WHO .. ": " .. who .. " ended " .. r.ended .. " " .. get(r, "code", -1) .. ": " .. sub(r.out, 1, 2000)) end
-  local said = lines(r.out)
-  local reached = re_find(r.out, "reached F\\(([0-9]+)\\): ([0-9]+) digits")
-  local timed = re_find(r.out, "elapsed ([0-9]+) ms of")
-  if reached == nil or timed == nil or #said < 7 then fail(WHO .. ": " .. who .. " printed no summary: " .. sub(r.out, 1, 2000)) end
-  local n = re_find(said[3], "F\\(([0-9]+)\\)").group
-  return {who = who, out = r.out, lines = said, n = n, digits = re_find(said[3], ": ([0-9]+) digits").group, elapsed = tonumber(timed.group), verdict = said[6], ms = r.ms}
+  return {who = who, out = r.out, ms = r.ms}
 end
 
--- Whether a contestant's answer is BigInt's: its summary lines (all but the
--- batches' and the verdict's) and its whole number, exactly.
-function verified(c, budget)
-  local v = run({"node", real(VERIFY), c.n}, {timeout_ms = budget + AFTER_MS, whole = 4000000, want = WANT_VERIFY, nice = 19})
+-- What an output must be for `n`: a hash, or verify.js's output.
+function wanted(n)
+  local key = "" .. n
+  if has_key(HASHES, key) then return {hash = HASHES[key]} end
+  local v = run({"node", real(VERIFY), key}, {timeout_ms = TIMEOUT_MS, whole = 4000000, want = WANT_VERIFY, nice = 19})
   if v.code ~= 0 then fail(WHO .. ": verify.js exited " .. get(v, "code", -1) .. ": " .. sub(v.out, 1, 2000)) end
-  local want = lines(v.out)
-  local got = {c.lines[1], c.lines[2], c.lines[3], c.lines[4], c.lines[7]}
-  if #c.lines ~= 7 or #want ~= 5 then return "wrong (" .. #c.lines .. " lines, verify.js " .. #want .. ")" end
-  for i = 1, 5 do
-    if got[i] ~= want[i] then return "WRONG at line " .. i .. ": " .. sub(got[i], 1, 80) .. ", BigInt's " .. sub(want[i], 1, 80) end
-  end
-  return "verified"
+  return {out = v.out}
 end
 
--- The race's text with its budget set to `budget` milliseconds.
-function race_text(budget)
+-- Whether a contestant's output is what `want` says, and where it isn't.
+function checked(c, want)
+  if has_key(want, "hash") then
+    if sha256(c.out) == want.hash then return "matched (sha256)" end
+    return "WRONG: sha256 " .. sub(sha256(c.out), 1, 16) .. ", stored " .. sub(want.hash, 1, 16) .. "; first line " .. sub(lines(c.out)[1], 1, 80)
+  end
+  if c.out == want.out then return "matched (verify.js)" end
+  local got = lines(c.out)
+  local exp = lines(want.out)
+  for i = 1, #exp do
+    if i > #got or got[i] ~= exp[i] then
+      local line = "(none)"
+      if i <= #got then line = got[i] end
+      return "WRONG at line " .. i .. ": " .. sub(line, 1, 80) .. ", BigInt's " .. sub(exp[i], 1, 80)
+    end
+  end
+  return "WRONG: " .. #got .. " lines, verify.js " .. #exp
+end
+
+-- Milliseconds as seconds, to the hundredth.
+function secs(ms)
+  local hundredths = (ms + 5) // 10
+  local frac = "" .. hundredths % 100
+  if #frac < 2 then frac = "0" .. frac end
+  return (hundredths // 100) .. "." .. frac .. " s"
+end
+
+-- a / b to the hundredth.
+function ratio(a, b)
+  local hundredths = (a * 100 + b // 2) // b
+  local frac = "" .. hundredths % 100
+  if #frac < 2 then frac = "0" .. frac end
+  return (hundredths // 100) .. "." .. frac
+end
+
+function median(list)
+  local sorted = {}
+  for x in list do push(sorted, x) end
+  sort(sorted)
+  return sorted[(#sorted + 1) // 2]
+end
+
+-- The race's text with N set to `n`, and the N it holds.
+function race_text(n)
   local text = read(RACE)
-  if #grep(RACE, BUDGET_LINE) ~= 1 then fail(WHO .. ": " .. RACE .. " has no line `" .. BUDGET_LINE .. "` to set the budget in") end
-  return re_replace(text, "const BUDGET_MS = 20000;", "const BUDGET_MS = " .. budget .. ";")
+  local m = re_find(text, "\nconst N = ([0-9]+);")
+  if m == nil then fail(WHO .. ": " .. RACE .. " has no line `const N = <digits>;` to set N in") end
+  if n < 0 then return {text = text, n = tonumber(m.group)} end
+  return {text = re_replace(text, "\nconst N = [0-9]+;", "\nconst N = " .. n .. ";"), n = n}
 end
 
 function main()
-  local budget = arg("budget", 20000)
-  if budget < 100 then fail(WHO .. ": budget=" .. budget .. " is under 100 ms, too short to plan a batch in") end
+  local size = arg("size", "full")
+  local n = arg("n", -1)
+  local runs = arg("runs", 1)
+  if size == "small" then
+    if n >= 0 then fail(WHO .. ": give n= or size=small, not both") end
+    n = SMALL_N
+  elseif size ~= "full" then
+    fail(WHO .. ": size=" .. size .. " is neither full nor small")
+  end
+  if n >= 0 and n < 1000 then fail(WHO .. ": n=" .. n .. " is under 1000, the F(1000) the race checks on the way") end
+  if runs < 1 then fail(WHO .. ": runs=" .. runs .. " is under 1") end
+  local race = race_text(n)
   local exe = built_roc(WHO, "x86/roc/JsToX86.roc", "js-x86", "dev")
   local dir = executables_dir()
   local path = dir .. "/race-fib_race"
   local copy = dir .. "/race-fib_race.js"
-  local text = race_text(budget)
-  replace(copy, text)
-  local size = written_executable(WHO, exe, text, path)
+  replace(copy, race.text)
+  local bytes = written_executable(WHO, exe, race.text, path)
+  local want = wanted(race.n)
   local node = run({"node", "--version"}, {timeout_ms = 10000, whole = 1000, want = WANT_NODE})
   local uptime = trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out)
-  print("the race's executable: " .. size .. " bytes; budget " .. budget .. " ms; node " .. trim(node.out) .. "; " .. uptime)
-  local contestants = {
-    raced("compiled", {real(path)}, WANT_BINARY, budget),
-    raced("node", {"node", real(copy)}, WANT_NODE, budget),
-  }
-  for c in contestants do
-    if re_find(c.lines[5], " of " .. budget .. "$") == nil then fail(WHO .. ": " .. c.who .. " raced another budget: " .. c.lines[5]) end
-    local checked = verified(c, budget)
-    print(c.who .. ": F(" .. c.n .. "), " .. c.digits .. " digits, elapsed " .. c.elapsed .. " ms, " .. c.verdict .. ", " .. checked .. "; after the verdict " .. (c.ms - c.elapsed) .. " ms (wall " .. c.ms .. " ms)")
+  print("F(" .. race.n .. "); the race's executable: " .. bytes .. " bytes; node " .. trim(node.out) .. "; " .. uptime)
+  local times = {compiled = {}, node = {}}
+  for i = 1, runs do
+    local compiled = raced("compiled", {real(path)}, WANT_BINARY)
+    local js = raced("node", {"node", real(copy)}, WANT_NODE)
+    push(times.compiled, compiled.ms)
+    push(times.node, js.ms)
+    print("compiled: " .. secs(compiled.ms) .. ", " .. checked(compiled, want))
+    print("node: " .. secs(js.ms) .. ", " .. checked(js, want) .. "; compiled/node " .. ratio(compiled.ms, js.ms))
+  end
+  if runs > 1 then
+    local after = trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out)
+    local c = median(times.compiled)
+    local j = median(times.node)
+    print("medians of " .. runs .. ": compiled " .. secs(c) .. ", node " .. secs(j) .. "; compiled/node " .. ratio(c, j) .. "; " .. after)
   end
 end
 

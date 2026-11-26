@@ -1,4 +1,9 @@
-// bank_race.js: how many transfers can a bank ledger make in BUDGET_MS?
+// bank_race.js: a bank ledger makes TRANSFERS transfers.
+//
+// The race is a fixed amount of work: each contestant makes the same
+// transfers, and x86/bank.shale times each one's whole run from outside.
+// TRANSFERS is chosen so that the compiled program takes about a minute on
+// our box.
 //
 // The bank has COUNT accounts, each an Account (a class: a name, a balance
 // in whole cents and three counters, with deposit and withdraw methods),
@@ -17,25 +22,16 @@
 // sums the balances: money only moves, so the total must be the opening
 // total, and an audit that finds another counts as unbalanced.
 //
-// The race is timed as the fib race is (x86/race/fib_race.js): the program
-// reads its own clock between batches and sizes each batch from the time a
-// transfer has cost so far, planning each to use at most a share of the
-// time left, and stops when that share is too small to plan in. Before the
-// clock starts, WARMUP transfers run untimed (none when WARMUP is 0), so
-// node's compiler has warmed up before it is timed. The first CHECK_AT
-// transfers are always run first, warm-up or not, and the checksum of every
-// account after them is held to CHECKSUM_AT, computed offline with node
-// (x86/bank/verify.js): a mismatch is a FAIL whatever the time. So is an
-// unbalanced audit, and a last clock reading past BUDGET_MS. After the
-// PASS or FAIL line, the program prints how many transfers it reached and
-// the checksum of every account then, which verify.js reproduces.
+// The first CHECK_AT transfers run first, and the checksum of every account
+// after them is printed beside CHECKSUM_AT, computed offline with node
+// (x86/bank/verify.js). The program prints that line, the audits and how
+// many were unbalanced, and last the transfers made and the checksum of
+// every account then; x86/bank.shale holds all three lines to verify.js's.
 //
 // The arithmetic is whole numbers: cents, counts, and the checksum kept
-// below a prime. Only the batch planning uses fractions, and none is
-// printed.
+// below a prime.
 
-const BUDGET_MS = 20000;
-const WARMUP = 2000000; // untimed transfers before the clock starts; 0 or at least CHECK_AT
+const TRANSFERS = 15000000; // at least CHECK_AT; x86/bank.shale's transfers= writes a copy with another
 const COUNT = 500; // accounts
 const SEED = 20261126;
 const MULTIPLIER = 48271;
@@ -45,9 +41,6 @@ const AUDIT_EVERY = 10000;
 const CHECK_AT = 100000;
 const CHECKSUM_AT = 401234543; // computed offline: node x86/bank/verify.js 100000
 const PRIME = 1000000007;
-const SHARE = 0.5; // a batch may plan to use this share of the time left
-const LAST_MS = 25; // stop when a share of the time left is less than this
-const GROWTH = 4; // a batch is at most this many times the last one
 
 class Account {
   constructor(name, balance) {
@@ -147,47 +140,14 @@ function race() {
   }
   const ledger = { total: audit(accounts), audits: 0, unbalanced: 0 };
 
-  const opened = Date.now();
   const random = new Random(SEED);
   transfers(accounts, names, ledger, random, 0, CHECK_AT);
   const early = checksum(accounts, names);
-  let step = CHECK_AT;
-  if (WARMUP > CHECK_AT) {
-    transfers(accounts, names, ledger, random, CHECK_AT, WARMUP);
-    step = WARMUP;
-  }
-  // With a warm-up the clock starts after it; without one, the first
-  // CHECK_AT transfers were the first batch.
-  const start = WARMUP > 0 ? Date.now() : opened;
-  let elapsed = Date.now() - start;
-  let batches = WARMUP > 0 ? 0 : 1;
-  let lastBatch = step;
-  let perTransfer = Math.max(Date.now() - opened, 1) / step;
+  transfers(accounts, names, ledger, random, CHECK_AT, TRANSFERS);
 
-  while (true) {
-    const left = BUDGET_MS - elapsed;
-    const plan = SHARE * left;
-    if (plan < LAST_MS) break;
-    let k = Math.floor(plan / perTransfer);
-    if (k > GROWTH * lastBatch) k = GROWTH * lastBatch;
-    if (k < 1) break;
-    const before = Date.now();
-    transfers(accounts, names, ledger, random, step, step + k);
-    step = step + k;
-    const after = Date.now();
-    elapsed = after - start;
-    batches = batches + 1;
-    lastBatch = k;
-    const took = after - before;
-    if (took > 0) perTransfer = took / k;
-  }
-
-  const right = early === CHECKSUM_AT && ledger.unbalanced === 0;
   console.log(early === CHECKSUM_AT ? "checksum after " + CHECK_AT + " transfers " + early + ", as expected" : "checksum after " + CHECK_AT + " transfers " + early + ", not " + CHECKSUM_AT);
   console.log("audits " + ledger.audits + ", unbalanced " + ledger.unbalanced);
-  console.log("batches " + batches + ", elapsed " + elapsed + " ms of " + BUDGET_MS + ", warm-up " + WARMUP + " transfers, timed " + (step - Math.max(WARMUP, 0)) + " transfers");
-  console.log(elapsed <= BUDGET_MS && right ? "PASS" : "FAIL");
-  console.log("reached " + step + " transfers, final checksum " + checksum(accounts, names));
+  console.log("made " + TRANSFERS + " transfers, final checksum " + checksum(accounts, names));
 }
 
 race();
