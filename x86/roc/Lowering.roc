@@ -162,7 +162,11 @@ items_with_numbers = |program, numbers_arrays| {
 			} else {
 				Dict.empty()
 			}
-		$begun = $begun.append({ returns: $returns, parameters: $parameters, escaped: $escaped_codes })
+		$begun = $begun.append({
+			returns: $returns,
+			parameters: $parameters,
+			escaped: $escaped_codes,
+		})
 		var $escaped = $escaped_codes
 		var $first_refusal = Ok({})
 		var $calls = []
@@ -187,7 +191,7 @@ items_with_numbers = |program, numbers_arrays| {
 					$found = match lowered.result {
 						Gives(kind) =>
 							if $rising {
-								$found.insert(index, risen($found.get(index), kind))
+								$found.insert(index, met_result($found.get(index), kind))
 							} else {
 								$found.insert(index, kind)
 							}
@@ -248,7 +252,11 @@ items_with_numbers = |program, numbers_arrays| {
 		}
 		# Kinds that go round would go round for good, and so would kinds
 		# still moving after `most_passes`: from here on they only rise.
-		next = { returns: $found, parameters: $called, escaped: $escaped }
+		next = {
+			returns: $found,
+			parameters: $called,
+			escaped: $escaped,
+		}
 		$rising = $rising or $begun.contains(next) or pass + 1 >= most_passes
 		$returns = $found
 		$parameters = $called
@@ -259,13 +267,13 @@ items_with_numbers = |program, numbers_arrays| {
 
 ## A function's result, as the passes that only rise keep it: met with what
 ## the last pass found.
-risen : Try(LoweringBasics.Kind, _), LoweringBasics.Kind -> LoweringBasics.Kind
-risen = |before, kind|
+met_result : Try(LoweringBasics.Kind, _), LoweringBasics.Kind -> LoweringBasics.Kind
+met_result = |before, kind|
 	match before {
 		Ok(known) =>
 			match LoweringBasics.met_kind(known, kind) {
 				Ok(met) => met
-				Err(Apart) => crash "Lowering.risen: results are values"
+				Err(Apart) => crash "Lowering.met_result: results are values"
 			}
 		Err(_) => kind
 	}
