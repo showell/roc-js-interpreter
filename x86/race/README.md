@@ -202,3 +202,19 @@ The 20-second race after 15 and 16, the branch's run first (load 0.57), then mas
     master, node: F(382645), 79968 digits, elapsed 19960 ms, PASS, verified; after the verdict 52 ms (wall 20012 ms)
 
 From F(288,960), about 2.05 times master's work. Against the node run beside it, the compiled program does about 1.16 times node's work.
+
+## A loop's counter with no fraction (2026-11-26, 1-second copies)
+
+Measured as before, alternated with master's executable (2bb67ea, the state after 16), load average 0.86 to 0.89.
+
+17. **A loop's counter is known to hold no fraction** (IndexLowering's header, "A LOOP'S COUNTER IS KNOWN TO HOLD NO FRACTION"; `at_loop_head`, `unkept_at_back`, and `Doubted` in Lowering's `code_items`).
+    - **What the proof means now:** a slot's whole-number proof says it holds no fraction. An infinity or a NaN still fails the range test, which stays, so the whole-number test alone can be skipped.
+    - **Where it comes from:** a store or set proves it from a whole number literal, from a slot already proved, or from `+`, `-` or `*` of two such known numbers. These overflow to an infinity or a NaN, never to a fraction, so no guard is needed.
+    - **At a loop's head:** when only the instruction before falls to the head, the walk takes the slots proved there and checks that guess at each jump back. A slot that one way back doesn't prove is doubted, and the function is lowered again without it, beside the kinds' widening.
+    - **The effect here:** `let i = 0` and `i = i + 1` keep `i` proved all through addInto's loops, so `a[i]` loses its `cvtsi2sd`, `ucomisd`, `jp` and `jne`.
+    - **The test:** `x86/tests/whole-counters.js` holds counters stepped by 1 and by 2 and multiplied by 3, plus a counter that takes a fraction on the way round (doubted, its reads tested again, node's `undefined`), to node.
+    - **The numbers:** F(90,810) on master against F(92,049) with 17, medians of 9, about 1.03 times the work.
+
+What 17 doesn't do, and why. The counter is still a double, so each access still makes it a whole number with `cvttsd2si`, and the step is still `addsd` with the constant 1.0 made with `movabs`. Keeping it as an integer in a register needs a kind of its own for a slot and a stack place whose bits are an integer, not a double. Every consumer would take it or make it a double first. A meeting of two ways where one holds an integer and the other a double would convert on one way; today a meeting only merges kinds whose bits agree. The loop head's widening would then have to go integer to double. That is a change to the walk's kinds and meetings throughout, and it is left for a round of its own.
+
+A guess at what is left, not measured: the loop now waits on the carry. Each limb's carry is stored to the frame after the `cmov` and loaded back before the next limb's `addsd`, a chain of about 15 cycles a limb through memory. Keeping `carry` in a register would shorten it. Registers chooses its four places by how often the code names them, so it chooses `i` and the stack places, not `carry`.
