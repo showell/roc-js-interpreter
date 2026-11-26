@@ -168,3 +168,7 @@ Every call site stores r9, r10 and r11 and loads them back, including the ~30 ca
 - The `Account` instance is exactly one key short of the hash index (7 against 8), so the hash index never helps the field accesses, which are half the work. The dictionary, which the hash index was built for, is now only about 12%.
 - The Roc port does twice our hashing and still wins, because its field access is free.
 - `next()` reads `this.seed` back right after writing it: three wasted lookups per transfer.
+
+## Fix 3, tried (2026-11-26): parked, too small to carry its analysis
+
+Branch `x86-leafregs` (e81ecc6, f02cd63; not merged) computes, from the runtime's own statements, which routines keep r9-r11 and rbx (a fixed point over the call graph, new module SpareKeeping.roc), and Registers skips the spills around calls to them. It is sound by its tests and a planted wrong mark, but it saves about 12 instructions of ~1,390 a transfer, not the ~100 estimated: fixes 1 and 2 already took most runtime calls out of a transfer, the method calls go to program code, and the dictionary probes use r9-r11 themselves. A new analysis with subtle assumptions (a caught throw's path, exits recognised by their syscall number) isn't worth about 1%. The branch is kept in case a later race leans on runtime calls in a hot loop.
