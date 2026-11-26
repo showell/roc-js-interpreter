@@ -27,7 +27,9 @@
 // capture in a cell, a value of unknown kind at every use, and a function's
 // own variable in its frame with its kind known; addInto reads each length
 // once, and takes the common part, where both numbers have a limb, in a loop
-// of its own. x86/race/README.md has what each choice measured.
+// of its own; the carry is chosen by a conditional of two numbers, which
+// js-x86 makes with no jump, so the loop has no branch the limbs' values
+// decide. x86/race/README.md has what each choice measured.
 
 const BUDGET_MS = 20000;
 const BASE = 10000000; // 10^7: a limb, and the sum of two limbs and a carry, stay exact
@@ -47,24 +49,14 @@ function addInto(a, b) {
   let i = 0;
   while (i < aLength) {
     const s = a[i] + b[i] + carry;
-    if (s >= BASE) {
-      a[i] = s - BASE;
-      carry = 1;
-    } else {
-      a[i] = s;
-      carry = 0;
-    }
+    carry = s >= BASE ? 1 : 0;
+    a[i] = s - carry * BASE;
     i = i + 1;
   }
   while (i < bLength) {
     const s = b[i] + carry;
-    if (s >= BASE) {
-      a.push(s - BASE);
-      carry = 1;
-    } else {
-      a.push(s);
-      carry = 0;
-    }
+    carry = s >= BASE ? 1 : 0;
+    a.push(s - carry * BASE);
     i = i + 1;
   }
   if (carry > 0) a.push(carry);
