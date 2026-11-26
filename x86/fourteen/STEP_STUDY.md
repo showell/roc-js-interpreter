@@ -86,7 +86,9 @@ The limits are absolute sizes per optimized function, not a percentage of the ca
 
 Savings are per point and at full size, estimated from the counts above unless marked measured. They overlap a little; in order, they would take the race from about 152 ns a point to about 70 (about 24 s, near node's 21.7 s).
 
-### 1. 32-bit division when the ranges allow it (measured: about 41 ns a point, 14 s)
+### 1. 32-bit division when the ranges allow it (measured: about 41 ns a point, 14 s) (DONE)
+
+**Done (2026-11-26):** the unsigned half, `xor rdx, rdx; div ecx` for a dividend in [0, 2^32) and a divisor in [1, 2^32) (`OperatorLowering.fits_div32`, `X86.Div32`; x86/README.md, "An integer kind"). The fourteen race compiled at 300 rounds, 7 runs of each alternated, CPU time, niced, load 0.35 to 0.45: **median 823 ms on master ea504a7, 551 ms with it (33% less; 167 to 112 ns a point).** At full size that is about 52.4 s down to about 35 s. The signed `cdq; idiv r32` for ranges within ±2^31 is not done: fourteen doesn't need it, and the brief kept a possibly negative dividend on today's path. The operands stay 64-bit loads, which are already right for values below 2^32, so no 32-bit `mov` was added; the zero is the 64-bit `xor rdx, rdx`, one byte longer than `xor edx, edx`.
 
 When an `Integer` division or remainder has a dividend in [0, 2^32) and a divisor in [1, 2^32), emit `xor edx, edx; div r32` instead of `cqo; idiv r64`; when both lie within ±2^31 and the divisor's range holds no 0 or -1, `cdq; idiv r32`. The bounds the integer kind already proves (`program` is 0 to 4095, `place` an item of an array of 1 to 1024) are all it needs. Unsigned `div r32` gives the floor and the remainder of non-negative operands, so `Math.floor(a / b)` and `a % b` need no sign fix-up. This beats LLVM's `div r64`, which Roc's `U64` forces.
 
