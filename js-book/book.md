@@ -127,7 +127,7 @@ A cell is one of these:
 
 {{lines js/roc/Heap.roc from "Cell : [" to "Freed(Heap.Free),"}}
 
-An `Instance` is an object marked with the names of its class and of each class it extends, which `x instanceof C` reads, and holding its class's table of methods, where a property the instance lacks is read. Two variables that hold one array hold one index, so each sees the other's writes.
+An `Instance` is an object marked with the names of its class and of each class it extends, which `x instanceof C` reads, and holding its class's table of methods, where a property outside the instance's own fields is read. Two variables that hold one array hold one index, so each sees the other's writes.
 
 ### The free list
 
@@ -611,7 +611,7 @@ The limits fall in three groups: the runtime is small on purpose, the language i
 The language itself is fairly complete: numbers, strings, arrays, objects, closures, `let` and `const`, `try` and `finally`, `switch`, destructuring, optional chains, spread, Maps, Sets and classes ({{chapter Introduction}}). These are its known differences from node:
 
 - Printing or listing a class instance, or printing a class, is refused: node prints an instance by its class's name first (`js/README.md`, "Classes are syntax sugar").
-- An instance's property named `"þsuper m"` reads its class's parent's method `m`, which is the key `super.m` is written as, where node's is `undefined` (the same section). No ASCII text is that key.
+- An instance's property named `"þsuper m"` reads its class's parent's method `m`, which is the key `super.m` is written as, where node's is `undefined` (the same section). The key starts with þ, outside ASCII, so only a program that spells that letter can reach it.
 - An exhausted Map iterator still sees entries added after it finished, where node's stays done. No corpus program holds this yet.
 - A builtin's callback (`map`, `sort`, a Map's `forEach`) throws a RangeError once 400 calls wait under it, where a plain call goes 10,000 deep, near node's own limit (`f4320451`).
 - A string method that counts positions is refused on non-ASCII text: JavaScript counts UTF-16 units, and these strings are UTF-8 (`js/README.md`, "The subset").
