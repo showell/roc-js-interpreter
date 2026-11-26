@@ -5,8 +5,9 @@
 ## immediate.
 ##
 ## Registers are named, never numbered, so no instruction can name a
-## register that doesn't exist. A general register operand is always 64 bits
-## wide (REX.W), and an SSE2 operand is the low double of an xmm register.
+## register that doesn't exist. A general register operand is 64 bits wide
+## (REX.W), but for `Div32`'s, and an SSE2 operand is the low double of an xmm
+## register.
 ##
 ## A jump or a call takes its offset as a rel32 already worked out, relative
 ## to the end of the instruction, and so does a memory operand at `Rip`: the
@@ -103,6 +104,11 @@ X86 :: [].{
 		# rdx:rax divided by the register, signed: the quotient in rax, the
 		# remainder, with the dividend's sign, in rdx.
 		Idiv(X86.Register),
+		# edx:eax divided by the register's low 32 bits, unsigned (`div r32`):
+		# the quotient in eax, the remainder in edx, each zero-extended into
+		# rax and rdx, as every write of a 32-bit register is. On Skylake it
+		# takes about 4 ns, against about 10 for `div r64` and `idiv r64`.
+		Div32(X86.Register),
 		# rax's sign copied through rdx, for a signed divide.
 		Cqo,
 		Neg(X86.Register),
@@ -280,6 +286,14 @@ X86 :: [].{
 					reg: 7,
 					operand: Direct(register_number(reg)),
 				}),
+			)
+			Div32(reg) => append_encoded(
+				out,
+				{ ..integer_layout({
+					opcode: [0xF7],
+					reg: 6,
+					operand: Direct(register_number(reg)),
+				}), wide: Narrow },
 			)
 			Cqo => out.concat([0x48, 0x99])
 			Neg(reg) => append_encoded(
@@ -674,6 +688,10 @@ X86 :: [].{
 	expect hex_of(Div(Rcx)) == "48 f7 f1"
 	expect hex_of(Idiv(R9)) == "49 f7 f9"
 	expect hex_of(Idiv(Rcx)) == "48 f7 f9"
+	expect hex_of(Div32(Rcx)) == "f7 f1"
+	expect hex_of(Div32(Rbx)) == "f7 f3"
+	expect hex_of(Div32(R9)) == "41 f7 f1"
+	expect hex_of(Div32(R15)) == "41 f7 f7"
 	expect hex_of(Cqo) == "48 99"
 	expect hex_of(Neg(Rax)) == "48 f7 d8"
 	expect hex_of(Neg(R11)) == "49 f7 db"

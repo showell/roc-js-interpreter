@@ -36,7 +36,7 @@
 ## conditional jump that and what the way it falls to reads.
 ## `settled_labels` finds what each label reads by walking the program
 ## backward again until no label's set grows. Any other instruction (a call,
-## a `ret`, a `syscall`, a divide, `rep movsb`) and any other statement (a
+## a `ret`, a `syscall`, a 64-bit divide, `rep movsb`) and any other statement (a
 ## call of a label, a `lea` of one, data) reads every register, and so does
 ## a label whose address is taken (by a call, a `lea` or a distance), so
 ## nothing is taken out that a way the walk can't follow may read. Two moves
@@ -139,7 +139,8 @@ written_unless_compare = |operation, to|
 
 ## The registers an instruction reads and writes, for the instructions whose
 ## every register is named; `Opaque` for the rest (a call, a `ret`, a
-## `syscall`, a divide, `rep movsb`, a jump), which may read any register.
+## `syscall`, a 64-bit divide, `rep movsb`, a jump), which may read any
+## register.
 accesses : X86.Instruction -> Try(Access, [Opaque])
 accesses = |instruction|
 	match instruction {
@@ -161,6 +162,12 @@ accesses = |instruction|
 			writes: general_unit(to),
 		})
 		Neg(register) => Ok({ reads: general_unit(register), writes: general_unit(register) })
+		# `div r32` reads edx:eax and its divisor, and writes eax and edx,
+		# each zero-extended into its whole register.
+		Div32(register) => Ok({
+			reads: both(both(general_unit(Rax), general_unit(Rdx)), general_unit(register)),
+			writes: both(general_unit(Rax), general_unit(Rdx)),
+		})
 		Shift({ operation: _, reg, count: _ }) => Ok({
 			reads: general_unit(reg),
 			writes: general_unit(reg),

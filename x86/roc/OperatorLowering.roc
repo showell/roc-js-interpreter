@@ -503,6 +503,7 @@ OperatorLowering :: [].{
 				integer_remainder_items({
 					left,
 					right,
+					dividend: LoweringBasics.kind_below(state, 1),
 					divisor: LoweringBasics.kind_below(state, 0),
 				})
 			_ => [Emit.load(Rax, left)].concat(operated).append(Emit.store(left, Rax))
@@ -519,8 +520,9 @@ OperatorLowering :: [].{
 	## call's four places taken. A divisor whose range is one value is a
 	## constant: 1 gives the dividend, a power of two an arithmetic shift
 	## (which rounds down), any other the magic multiply. Any other divisor
-	## takes an `idiv`. Both round toward 0, so a dividend that may be
-	## negative takes 1 from the quotient where the remainder is negative.
+	## takes a 32-bit `div` when both ranges fit one (`fits_div32`), else an
+	## `idiv`. Both round toward 0, so a dividend that may be negative takes 1
+	## from the quotient where the remainder is negative.
 	integer_floor_items : LoweringBasics.Site,
 	{
 		state : LoweringBasics.State,
@@ -531,11 +533,13 @@ OperatorLowering :: [].{
 		receiver = LoweringBasics.stack_place(site.code, depth - 4)
 		left = LoweringBasics.stack_place(site.code, depth - 2)
 		right = LoweringBasics.stack_place(site.code, depth - 1)
-		signed = match LoweringBasics.kind_below(state, 1) {
+		dividend = LoweringBasics.kind_below(state, 1)
+		divisor = LoweringBasics.kind_below(state, 0)
+		signed = match dividend {
 			Integer({ low, high: _ }) => low < 0
 			_ => crash "OperatorLowering.integer_floor_items: an Integer dividend"
 		}
-		statements = match constant_size(LoweringBasics.kind_below(state, 0)) {
+		statements = match constant_size(divisor) {
 			Ok(1) => [Emit.load(Rax, left), Emit.store(receiver, Rax)]
 			Ok(size) if is_power_of_two(size) => [
 				Emit.load(Rax, left),
@@ -573,6 +577,8 @@ OperatorLowering :: [].{
 					.concat(rounded)
 					.append(Emit.store(receiver, Rdx))
 			}
+			Err(Unknown) if fits_div32({ dividend, divisor }) =>
+				div32_items({ left, right }).append(Emit.store(receiver, Rax))
 			Err(Unknown) => {
 				rounded =
 					if signed {
@@ -1394,14 +1400,16 @@ constant_remainder_items = |site, { kind, left, divisor, slow_items }| {
 ## range holds no 0 (`LoweringBasics.integer_arithmetic` says so), the
 ## remainder at `left`. A divisor whose range is one value is a constant of
 ## that size (`n % -d` is `n % d`): 1 gives 0, a power of two up to 2^31 an
-## `and`, any other the magic multiply. Any other divisor takes an `idiv`,
-## whose remainder has the dividend's sign, as `%`'s has.
+## `and`, any other the magic multiply. Any other divisor takes a 32-bit
+## `div` when both ranges fit one (`fits_div32`), else an `idiv`, whose
+## remainder has the dividend's sign, as `%`'s has.
 integer_remainder_items : {
 	left : X86.Mem,
 	right : X86.Mem,
+	dividend : LoweringBasics.Kind,
 	divisor : LoweringBasics.Kind,
 } -> List(Assembly.Statement)
-integer_remainder_items = |{ left, right, divisor }|
+integer_remainder_items = |{ left, right, dividend, divisor }|
 	match constant_size(divisor) {
 		Ok(1) => [Emit.zero(Rax), Emit.store(left, Rax)]
 		Ok(size) if is_power_of_two(size) and size <= 2147483648 => [
@@ -1413,6 +1421,8 @@ integer_remainder_items = |{ left, right, divisor }|
 			[Emit.load(Rcx, left)]
 				.concat(magic_remainder_items({ divisor: size, signed: False }))
 				.append(Emit.store(left, Rcx))
+		Err(Unknown) if fits_div32({ dividend, divisor }) =>
+			div32_items({ left, right }).append(Emit.store(left, Rdx))
 		Err(Unknown) => [
 			Emit.load(Rax, left),
 			Instruction(Cqo),
@@ -1421,6 +1431,83 @@ integer_remainder_items = |{ left, right, divisor }|
 			Emit.store(left, Rdx),
 		]
 	}
+
+## Whether a division may be a 32-bit unsigned `div` (`div32_items`): the
+## dividend in [0, 2^32) and the divisor in [1, 2^32). Unsigned, the
+## quotient is the floor and the remainder has the dividend's sign, 0 or
+## more, as `Math.floor(a / b)` and `a % b` want. A `div r32` takes about 4
+## ns on Skylake, against about 10 for `idiv r64` (x86/fourteen/STEP_STUDY.md).
+fits_div32 : { dividend : LoweringBasics.Kind, divisor : LoweringBasics.Kind } -> Bool
+fits_div32 = |{ dividend, divisor }| {
+	most = 4294967295
+	match (dividend, divisor) {
+		(Integer(one), Integer(other)) =>
+			one.low >= 0 and one.high <= most and other.low >= 1 and other.high <= most
+		_ => False
+	}
+}
+
+## The `Integer` at `left` divided by the one at `right`, both fitting
+## `fits_div32`: the quotient in `rax` and the remainder in `rdx`. Each
+## operand is loaded whole, so its high half is 0 and its low half the
+## value; `div ecx` reads `edx:eax` and `ecx`.
+div32_items : { left : X86.Mem, right : X86.Mem } -> List(Assembly.Statement)
+div32_items = |{ left, right }| [
+	Emit.load(Rax, left),
+	Emit.zero(Rdx),
+	Emit.load(Rcx, right),
+	Instruction(Div32(Rcx)),
+]
+
+## Whether `fits_div32` takes a dividend from `low` to `high` and a divisor
+## from `least` to `most`, for the expects.
+fits_ranges : {
+	low : I64,
+	high : I64,
+	least : I64,
+	most : I64,
+} -> Bool
+fits_ranges = |{ low, high, least, most }|
+	fits_div32({ dividend: Integer({ low, high }), divisor: Integer({ low: least, high: most }) })
+
+# Both at their tops, 2^32 - 1, fit; a dividend that may be 2^32 or -1, a
+# divisor that may be 0, negative or 2^32 don't.
+expect fits_ranges({
+	low: 0,
+	high: 4294967295,
+	least: 1,
+	most: 4294967295,
+})
+expect !fits_ranges({
+	low: 0,
+	high: 4294967296,
+	least: 1,
+	most: 6,
+})
+expect !fits_ranges({
+	low: -1,
+	high: 100,
+	least: 1,
+	most: 6,
+})
+expect !fits_ranges({
+	low: 0,
+	high: 100,
+	least: 0,
+	most: 6,
+})
+expect !fits_ranges({
+	low: 0,
+	high: 100,
+	least: -6,
+	most: -1,
+})
+expect !fits_ranges({
+	low: 0,
+	high: 100,
+	least: 1,
+	most: 4294967296,
+})
 
 ## The size of an `Integer` divisor whose range is one value, not 0.
 constant_size : LoweringBasics.Kind -> Try(U64, [Unknown])
