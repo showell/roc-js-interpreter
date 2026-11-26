@@ -45,7 +45,22 @@ Found by compiling a copy of the race with js-x86 and, at each refusal or stop, 
 3. **A string's `padEnd`.** *Done 2026-11-26*, with 4: `padEnd` is one of the methods StringMethods' table holds. One site: line 349, `"headline:".padEnd(12)`. A refusal: `the method \`padEnd\` of a string is not compiled yet`. **Small:** a runtime routine beside the string methods already written; it touches MethodTables and the string runtime. (The copy used the literal `"headline:   "`.)
 4. **A string's methods on a value whose kind isn't known.** *Done 2026-11-26*: `runtime_string_method` (x86/README.md, "A string's methods") calls a string method's routine when the value is a string, and the value's own property otherwise; `trim`, `trimStart`, `trimEnd`, `toUpperCase`, `toLowerCase`, `substring`, `repeat`, `padStart`, `padEnd`, `startsWith`, `endsWith`, `replace`, `replaceAll` and a known string's `concat` are written, and 18 and 59 of the corpus match node with them. Before that, the program compiled, and its executable stops at once with `x86: this property read is not compiled yet`, at `line.trim()` (line 104), whose `line` is an item of `split`'s array, so a `Value`. `runtime_get_property` (Runtime.roc's `property_items`) reads only a string's or an array's `length`, an object's property and a Map's or Set's `size`; it has no way to a string method when the receiver's kind is found as the program runs. **Medium:** a dynamic dispatch of the string methods, which also needs each method itself: x86/README.md's corpus list names `trim` and `toUpperCase` as not written. The sites that will meet it: `trim` (104, 105), `split` (103, 105, 335), `charCodeAt` (31, 52), `toUpperCase` (331), `toLowerCase` (336), `replaceAll` (337), `slice` and `indexOf` of a string (349). It touches MethodTables and Runtime's property and method routines.
 
-I stopped there, so whatever lies past 4 is not known yet. Likely next, unverified: array destructuring with a default (`job = "retired"`, line 105), the object rest pattern (`...rest`), the catch pattern (`catch ({ name, message })`), labelled `break` out of nested loops, `do ... while`, and `**`.
+I stopped there, so whatever lay past 4 was not known then. The guesses made then (array destructuring with a default, the object rest pattern, the catch pattern, labelled `break`, `do ... while`, `**`) all compile, as the next section found.
+
+## What it meets now (2026-11-26, after blockers 1, 3 and 4)
+
+With `o.k++` and the string methods in, the race as written meets **blocker 2** alone: `the function \`day\`: a loop's kinds never settle, at instruction 445` (54 the same, at its top level's instruction 480). The cap is the other lane's area and a design question, so it is unchanged.
+
+**Past it, the race compiles and runs.** A scratch copy (not committed) split `day` into a function a stage, `censusStage` to `eveningStage`, each under 16 loops, and `day` calling them in turn; nothing else changed. Its executable prints what node prints, byte for byte, at 30, 300 and (below) up to the heap's end. Times on the shared box (load 2.2 to 2.7), niced, five runs at 30 rounds and three at 300, the compiled program then node:
+
+| rounds | compiled | node |
+|---|---|---|
+| 30 (`size=small`) | 150 to 164 ms (148 to 160 ms CPU) | 183 to 196 ms |
+| 300 | 1,543 to 1,872 ms (1,482 to 1,644 ms CPU) | 697 to 833 ms |
+
+So the compiled day costs about 5 ms to node's warm 2.4 ms: about twice node, once node's start (about 0.13 s) is paid. At 30 rounds the start hides it. Which stage dominates is not measured yet.
+
+**The next blocker at the race's size is memory.** No collector runs, and a day allocates about 2 to 3.5 MB (300 rounds fit the heap of 1 GiB; 600, 800, 1,000, 1,500 and 2,000 stop with `x86: out of memory: the heap of 1 GiB is full, and no collector runs yet`). 10,000 rounds would need some 20 to 35 GB. That is the collector's milestone, not a method or an instruction.
 
 **Milestone 4 (fractions):** the crow's distance was the one fraction printed, and it now prints whole hundredths (above). Nothing else in the race prints or checksums a fraction: every ledger is an integer below 1,000,003.
 
