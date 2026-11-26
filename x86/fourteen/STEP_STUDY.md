@@ -96,7 +96,9 @@ When an `Integer` division or remainder has a dividend in [0, 2^32) and a diviso
 - **Risk:** low. The rule reads bounds already proved; expects at 2^32 - 1, 2^31 and a negative dividend hold its edges, and a test with divisions at those ranges against node.
 - **Not bloat:** the same instruction count, one byte shorter.
 
-### 2. Inline `step`: thresholds that admit a small leaf into a small caller (estimated: about 25 ns a point, 8 to 10 s)
+### 2. Inline `step`: thresholds that admit a small leaf into a small caller (estimated: about 25 ns a point, 8 to 10 s) (DONE)
+
+**Done (2026-11-26):** the proposal below as written, as named constants in Inlining.roc (`most_leaf_instructions` 64, `most_growth_percent` 25, `least_growth_instructions` 64, `most_growth_instructions` 256, `always_leaf_instructions` 16; a small leaf still counts toward the 256). `step` is inlined into `f` (1 site, 45 instructions; 392 bytes more of executable). The fourteen race compiled at 300 rounds, 7 runs of each alternated, CPU time, niced, load 0.80 to 0.82: **median 541 ms on master 16759b7, 472 ms with it (13% less; 110 to 96 ns a point).** Less than estimated: `run` stays a double in the inlined body, which is recommendation 3. The bank and fib races compile to the same bytes. Across x86/tests/ the inlined total went from 13 sites and 73 instructions to 47 and 683, most of it inline-small.js's 21 sites at the cap.
 
 Today `step` (44 instructions) is over the leaf limit of 40, and `f` (40) may grow by only 10. Inlined, the 174 instructions a point of the call go: the pushes, the frame, the saves, the stack check, the argument loads and the `ret`.
 

@@ -18,8 +18,17 @@
 ## - the callee has at most `most_leaf_instructions` instructions that some way
 ##   reaches;
 ## - the call is inside a loop of the caller;
-## - the caller grows by at most `most_growth_percent` of its own count of
-##   instructions from all of its inlined sites together.
+## - the caller grows, from all of its inlined sites together, by at most
+##   the larger of `most_growth_percent` of its own count of instructions
+##   and `least_growth_instructions`, and never by more than
+##   `most_growth_instructions`;
+## - a callee of at most `always_leaf_instructions` is inlined past the
+##   first of those two growth limits, though never past the second.
+##
+## The numbers are V8's inlining limits (`--max-inlined-bytecode-size` and
+## its kin), scaled to our instructions: x86/fourteen/STEP_STUDY.md, section
+## 3, finds fourteen's `step` 75 of V8's bytecode bytes and 44 of ours, so
+## one of ours is about 1.7 of V8's bytes.
 ##
 ## **WHEN IN DOUBT, NO INLINING.** A program with a `try` anywhere is left
 ## as it is (a throw lands with every variable a value). So is a callee
@@ -84,14 +93,33 @@ Inlining :: [].{
 		}
 	}
 
-	## The most instructions a callee may have for its calls to be inlined.
+	## The most instructions a callee may have for its calls to be inlined:
+	## V8's 460-byte callee is about 250 of ours; a quarter of it, since we
+	## inline at every loop site with no count of how often it runs.
 	most_leaf_instructions : U64
-	most_leaf_instructions = 40
+	most_leaf_instructions = 64
 
 	## How much a caller may grow from its inlined sites, in hundredths of its
-	## own count of instructions.
+	## own count of instructions: a large caller's share, which V8's
+	## absolute budgets don't scale.
 	most_growth_percent : U64
 	most_growth_percent = 25
+
+	## The growth any caller may take whatever its size, one leaf of the
+	## largest: V8's budgets are per function, not a ratio, so a small caller
+	## may take a leaf about its own size.
+	least_growth_instructions : U64
+	least_growth_instructions = 64
+
+	## The most a caller may grow, however large it is: V8's 920 bytes
+	## inlined into one function are about 540 of ours; about half of it.
+	most_growth_instructions : U64
+	most_growth_instructions = 256
+
+	## A callee this small is inlined past the caller's share, within
+	## `most_growth_instructions`: V8's 27-byte small function, about 16 of ours.
+	always_leaf_instructions : U64
+	always_leaf_instructions = 16
 }
 
 ## How an instruction moves the stack: what it takes from the top, and what
@@ -99,9 +127,11 @@ Inlining :: [].{
 Effect : { taken : U64, given : U64 }
 
 ## A leaf's body, ready to be placed: its instructions, each jump's target a
-## place in the body (its length the place after its last), and its frame.
+## place in the body (its length the place after its last), how many of the
+## leaf's own instructions some way reaches, and its frame.
 Body : {
 	instructions : List(Placed),
+	reached : U64,
 	parameters : U64,
 	frame_size : U64,
 }
@@ -138,7 +168,9 @@ code_inlined : LoweringBasics.Known,
 	instructions : U64,
 }
 code_inlined = |known, { code, index }| {
-	allowed = code.ops.len() * Inlining.most_growth_percent // 100
+	quarter = code.ops.len() * Inlining.most_growth_percent // 100
+	floored = U64.max(quarter, Inlining.least_growth_instructions)
+	share = U64.min(floored, Inlining.most_growth_instructions)
 	var $chosen = []
 	var $grown = 0
 	var $frame = code.frame_size
@@ -150,7 +182,12 @@ code_inlined = |known, { code, index }| {
 						match leaf_body(known, made) {
 							Ok(body) => {
 								growth = body.instructions.len() + body.parameters
-								if $grown + growth <= allowed {
+								limit = if body.reached <= Inlining.always_leaf_instructions {
+									Inlining.most_growth_instructions
+								} else {
+									share
+								}
+								if $grown + growth <= limit {
 									$chosen = $chosen.append({
 										load,
 										call: at,
@@ -411,7 +448,12 @@ leaf_body = |known, made| {
 			$instructions = $instructions.append(placed)
 		}
 	}
-	Ok({ instructions: $instructions, parameters, frame_size: code.frame_size })
+	Ok({
+		instructions: $instructions,
+		reached: kept.len(),
+		parameters,
+		frame_size: code.frame_size,
+	})
 }
 
 ## The stack's depth at each instruction of a leaf, from its entry, or

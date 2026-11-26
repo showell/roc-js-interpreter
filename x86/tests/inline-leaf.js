@@ -1,4 +1,4 @@
-// inlined: 2 sites, 26 instructions
+// inlined: 6 sites, 80 instructions
 // A leaf function called in a loop is put in line (x86/roc/Inlining.roc),
 // and the same leaf called outside a loop is called as ever. Each call
 // must give what node gives: the inlined bodies' returns, their captured

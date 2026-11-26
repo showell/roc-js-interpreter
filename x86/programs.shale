@@ -38,7 +38,7 @@ const CORPUS = "x86/corpus.txt"
 const REPORT = arg("corpus", "held") == "report"
 -- The sites and instructions inlined across x86/tests/: a commit that moves
 -- it says why.
-const INLINED = "inlined: 13 sites, 73 instructions"
+const INLINED = "inlined: 47 sites, 683 instructions"
 
 function js_files(dir)
   local out = {}

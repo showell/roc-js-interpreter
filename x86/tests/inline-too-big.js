@@ -1,13 +1,13 @@
-// inlined: 1 sites, 4 instructions
+// inlined: 2 sites, 32 instructions
 // Inlining's budget, at its edges: a leaf called in a loop that is over
-// the size limit (`most_leaf_instructions`) is called as ever; so is one
-// under it whose inlining would grow its caller past `most_growth_percent`
-// (`medium` in `climb`); and so is a small function that is no leaf, since
-// it calls the function it is handed (`outer`). A small leaf called in a
-// loop of a large enough caller (`small` in `main`) is the one site put in
-// line. `wide`, whose literal of 420 numbers makes it large, meets `big`
-// and `outer`, so the size limit and the leaf rule each keep a site out
-// alone. All give what node gives.
+// the size limit (`most_leaf_instructions`, `big`) is called as ever; so
+// is a small function that is no leaf, since it calls the function it is
+// handed (`outer`). `wide`, whose literal of 420 numbers gives it room to
+// grow, meets `big` and `outer`, so the size limit and the leaf rule each
+// keep a site out alone. `medium` in `climb` is put in line by the floor
+// (`least_growth_instructions`): a quarter of `climb`, a small caller,
+// would be too little for it. `small` in `main` is put in line too. All
+// give what node gives.
 function big(x) {
   let y = x;
   if (y > 100) y = y - 100;
