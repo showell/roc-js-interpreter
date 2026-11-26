@@ -31,7 +31,7 @@
 // The arithmetic is whole numbers: cents, counts, and the checksum kept
 // below a prime.
 
-const TRANSFERS = 15000000; // at least CHECK_AT; x86/bank.shale's transfers= writes a copy with another
+const TRANSFERS = 18000000; // at least CHECK_AT; x86/bank.shale's transfers= writes a copy with another
 const COUNT = 500; // accounts
 const SEED = 20261126;
 const MULTIPLIER = 48271;

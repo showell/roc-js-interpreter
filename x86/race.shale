@@ -38,7 +38,7 @@ const TIMEOUT_MS = 600000
 
 -- sha256 of verify.js's whole output for an N, so the full size needs no
 -- BigInt run: `node x86/race/verify.js N | sha256sum`.
-const HASHES = {}
+const HASHES = {["740000"] = "d5f4013933480b5983a65518c13f471105157327e2fba2f0ee504c2384004f9e"}
 
 function sha256(text)
   local r = must(run({"sha256sum"}, {stdin = text, timeout_ms = 60000, tail = 2}))

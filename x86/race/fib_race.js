@@ -28,7 +28,7 @@
 // js-x86 makes with no jump, so the loop has no branch the limbs' values
 // decide. x86/race/README.md has what each choice measured.
 
-const N = 650000; // at least 1000; x86/race.shale's n= writes a copy with another
+const N = 740000; // at least 1000; x86/race.shale's n= writes a copy with another
 const BASE = 10000000; // 10^7: a limb, and the sum of two limbs and a carry, stay exact
 
 // a += b, in place; a and b are limb arrays, b at least as long as a and
