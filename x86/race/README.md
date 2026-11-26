@@ -179,6 +179,8 @@ Measured as before, alternated with master's executable (5bf3cef, the state afte
 
     With 15 the select's loop costs the same on random limbs as on limbs that never carry: no misses are left. At 1 second the compiled program now does more work than node does (F(87,028) against node's F(82,537)).
 
+16. **`rbx` a fourth spare register** (Registers' header has the rule). A looping function's four busiest frame places now go to `r9`, `r10`, `r11` and `rbx`. A function that names a spare register itself keeps that one and gives its places the others; before, any spare it named made it rename nothing. `rbx` is named only by a function that captures cells, which reads its closure record there. This was tried before 15 and gave nothing then. Now that the loop has no misses, its chains through the frame show. addInto's first loop 81 instructions (20 at `rbp`) to 80 (14). Medians with and without it, alternated: F(91,653) against F(88,821) (7 runs), F(90,431) against F(86,355) (9), F(89,031) against F(84,143) (9), all at load 0.7 to 0.9. A fourth set, at load 0.9 to 1.3 after a busy minute, went the other way, F(69,864) against F(73,446), its spread 52k to 89k. That is about 1.06 to 1.12 times the work.
+
 Tried and not in the branch: the xmm homes of the last section again, now that the loop has no misses to hide its chains behind. F(88,927) without them and F(88,928) with them, medians of 7: no gain.
 
 The 20-second race after 15, the branch's run first (load 0.54), then master's (load 0.78), the same box and day:
@@ -190,3 +192,13 @@ The 20-second race after 15, the branch's run first (load 0.54), then master's (
     master, node: F(368725), 77059 digits, elapsed 19958 ms, PASS, verified; after the verdict 65 ms (wall 20023 ms)
 
 From F(279,315), the compiled program did about 2.1 times its earlier work. It now does about 1.1 times the work of the node run beside it: the compiled program is ahead of node in the 20-second race. Its time after the verdict, mostly building and printing the 84,000-digit number, is 318 ms against node's 49 ms.
+
+The 20-second race after 15 and 16, the branch's run first (load 0.57), then master's (load 0.90):
+
+    compiled: F(413510), 86419 digits, elapsed 19960 ms, PASS, verified; after the verdict 335 ms (wall 20295 ms)
+    node: F(384308), 80316 digits, elapsed 19968 ms, PASS, verified; after the verdict 60 ms (wall 20028 ms)
+
+    master, compiled: F(288960), 60389 digits, elapsed 19967 ms, PASS, verified; after the verdict 210 ms (wall 20177 ms)
+    master, node: F(382645), 79968 digits, elapsed 19960 ms, PASS, verified; after the verdict 52 ms (wall 20012 ms)
+
+From F(288,960), about 2.05 times master's work. Against the node run beside it, the compiled program does about 1.16 times node's work.
