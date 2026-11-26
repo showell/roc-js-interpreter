@@ -304,7 +304,12 @@ items_with_numbers = |program, numbers_arrays| {
 							.concat(RuntimeCode.items)
 							.concat(literal_statements(literals))
 							.concat(closures)
-					Ok(Jumps.thread_jumps(Moves.trim_moves(Forwarding.forward_loads(statements))))
+					# Jumps first, so that the labels its threading leaves unnamed
+					# (an item read's `done`) no longer end Forwarding's and Moves'
+					# straight runs; then again, for the jumps Moves leaves next to
+					# their labels.
+					threaded = Jumps.thread_jumps(statements)
+					Ok(Jumps.thread_jumps(Moves.trim_moves(Forwarding.forward_loads(threaded))))
 				}
 				Err(refused) => Err(refused)
 			}

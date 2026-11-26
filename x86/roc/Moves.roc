@@ -4,12 +4,17 @@
 ## Registers' spare registers is `mov rax, [rbp-48]` then `mov r9, rax`, and
 ## a sum stored back is `mov rax, r9`, the store, and `mov r9, rax` again.
 ## `trim_moves` walks the whole program twice, the runtime's routines too,
-## and does three things, each of which leaves what every register the code
+## and does four things, each of which leaves what every register the code
 ## reads holds as it was:
 ##
 ## - **A copy between two registers that already hold one value is
 ##   dropped** (`copies_dropped`, forward): after `mov r9, rax`, a
 ##   `mov rax, r9` or a second `mov r9, rax` copies nothing.
+## - **A WHOLE NUMBER MADE ONCE: a `cvttsd2si` into a register that already
+##   holds what it would make is dropped** (`copies_dropped` too): after
+##   `cvttsd2si rcx, xmm0`, with neither written since, a second one of
+##   `xmm0`, or of a register known to hold `xmm0`'s value, makes nothing
+##   new. So `x[i] + y[i]` makes `i` an integer once.
 ## - **A move into a register nothing reads before it is written again is
 ##   dropped** (`dead_dropped`, backward): `mov r9, rax` then `mov r9, rcx`.
 ## - **A move through a register nothing reads after is joined into
@@ -31,7 +36,11 @@
 ## are joined only with no label a statement names between them (the
 ## lowering marks every instruction's place, and a label nothing names is
 ## passed by, as Forwarding passes it), and a copy is known only along a
-## straight run. `rsp` and `rbp` are always read. Only plain moves are
+## straight run, which goes on past a conditional jump (it writes no
+## register, so the way that falls through holds what was known before
+## it). Lowering runs Jumps before this, so the labels Jumps leaves unnamed
+## (an item read's `done`, once its `jmp done` is gone) end no straight
+## run. `rsp` and `rbp` are always read. Only plain moves are
 ## taken out or joined: into a general or an xmm register, from a
 ## register, an immediate, an address (`lea`) or a place at `rbp`; a load
 ## from anywhere else stays, so no load that could fault is lost. No store
@@ -479,15 +488,62 @@ without_written = |sames, written|
 		) != 0,
 	)
 
+## A whole number made of a double (`cvttsd2si`): the general register
+## `to` holds the integer part of the xmm register `from`, by their units'
+## numbers.
+Truncated : { to : U8, from : U8 }
+
+## What is known with the registers `written` (as bits) written.
+truncations_without : List(Truncated), U32 -> List(Truncated)
+truncations_without = |truncations, written|
+	truncations.drop_if(
+		|truncated| U32.bitwise_and(
+			written,
+			both(U32.shl_wrap(1, truncated.to), U32.shl_wrap(1, truncated.from)),
+		) != 0,
+	)
+
+## A `cvttsd2si` whose register already holds what it would make: the same
+## register made of the same xmm register, or of one known to hold its value.
+is_known_truncation : { truncations : List(Truncated), sames : List(Same) }, X86.Instruction -> Bool
+is_known_truncation = |{ truncations, sames }, instruction|
+	match instruction {
+		Cvttsd2si({ to, from }) => {
+			to_unit = X86.register_index(to)
+			from_unit = 16 + X86.xmm_index(from)
+			same_source = |source| {
+				known = is_known_same(sames, { one: source, other: from_unit })
+				source == from_unit or known
+			}
+			truncations.any(|truncated| truncated.to == to_unit and same_source(truncated.from))
+		}
+		_ => False
+	}
+
+## The truncation an instruction makes, if it is a `cvttsd2si`.
+truncation_made : X86.Instruction -> List(Truncated)
+truncation_made = |instruction|
+	match instruction {
+		Cvttsd2si({ to, from }) => [{ to: X86.register_index(to), from: 16 + X86.xmm_index(from) }]
+		_ => []
+	}
+
 ## The statements, walked forward, with each copy between two registers
-## known to hold one value taken out.
+## known to hold one value taken out, and each `cvttsd2si` into a register
+## that already holds what it would make. What is known holds along a
+## straight run and past a conditional jump, which writes no register, to
+## the way that falls through.
 copies_dropped : List(Assembly.Statement), Set(Str) -> List(Assembly.Statement)
 copies_dropped = |statements, named| {
 	var $kept = List.with_capacity(statements.len())
 	var $sames = []
+	var $truncations = []
 	for statement in statements {
 		match statement {
 			Mark(label) if !named.contains(label) => {
+				$kept = $kept.append(statement)
+			}
+			JccTo(_) => {
 				$kept = $kept.append(statement)
 			}
 			Instruction(instruction) =>
@@ -496,6 +552,7 @@ copies_dropped = |statements, named| {
 						if to == from or is_known_same($sames, { one: to, other: from }) {
 							{}
 						} else {
+							$truncations = truncations_without($truncations, U32.shl_wrap(1, to))
 							kept_sames = without_written($sames, U32.shl_wrap(1, to))
 							$sames =
 								kept_sames
@@ -515,16 +572,23 @@ copies_dropped = |statements, named| {
 							$kept = $kept.append(statement)
 						}
 					(Err(NotCopy), Ok({ reads: _, writes })) => {
-						$sames = without_written($sames, writes)
-						$kept = $kept.append(statement)
+						known = { truncations: $truncations, sames: $sames }
+						if !is_known_truncation(known, instruction) {
+							$sames = without_written($sames, writes)
+							made = truncation_made(instruction)
+							$truncations = truncations_without($truncations, writes).concat(made)
+							$kept = $kept.append(statement)
+						}
 					}
 					(Err(NotCopy), Err(Opaque)) => {
 						$sames = []
+						$truncations = []
 						$kept = $kept.append(statement)
 					}
 				}
 			_ => {
 				$sames = []
+				$truncations = []
 				$kept = $kept.append(statement)
 			}
 		}
@@ -582,6 +646,35 @@ expect {
 			Instruction(Ret),
 		],
 	)
+}
+
+# A second `cvttsd2si` of the same value into the same register goes, past
+# a conditional jump, which writes no register; with that register written
+# between, it stays.
+expect {
+	head = [
+		Assembly.Statement.Instruction(MovqToXmm({ to: Xmm0, from: R9 })),
+		Instruction(Cvttsd2si({ to: Rcx, from: Xmm0 })),
+		JccTo({ condition: Ae, label: "out" }),
+		Instruction(MovRegReg({ to: Rax, from: R9 })),
+		Instruction(MovqToXmm({ to: Xmm1, from: Rax })),
+	]
+	tail = [
+		Assembly.Statement.Instruction(MovMemReg({ to: slot(-8), from: Rcx })),
+		Instruction(Ret),
+		Mark("out"),
+		Instruction(Ret),
+	]
+	again = Assembly.Statement.Instruction(Cvttsd2si({ to: Rcx, from: Xmm1 }))
+	stepped = Instruction(
+		AluImm({
+			operation: Add,
+			to: Rcx,
+			value: 1,
+		}),
+	)
+	spoiled = head.append(stepped).append(again).concat(tail)
+	trims_to(head.append(again).concat(tail), head.concat(tail)) and trims_to(spoiled, spoiled)
 }
 
 # A jump reads what its label reads: `rax`, read at the loop's top, stays

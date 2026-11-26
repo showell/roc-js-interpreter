@@ -25,6 +25,18 @@
 ## `try`, a throw ends the program, and so does every way out of a function
 ## but its `ret`.
 ##
+## **LOOP-CARRIED PLACES FIRST.** The places renamed are chosen by how
+## many plain moves name them, but a place a loop carries from one time
+## round to the next comes before any that it doesn't (`loop_carried`):
+## between a label and a jump back to it, a place whose first plain move is
+## a load and which is also stored there, such as a counter or a carry. Its
+## store and the next time round's load are a chain through memory that
+## the loop waits on and Forwarding can't take out, since it forgets at the
+## loop's label; a bytecode stack place, named more often, is stored before
+## it is loaded each time round, and Forwarding already makes most of its
+## loads register moves. In the fib race's addInto this keeps `i` and
+## `carry` in registers, with the two busiest stack places.
+##
 ## **WHAT THE FRAME STILL HOLDS.** Around every call (a routine of the
 ## runtime, a function of the program, through a value too) and every
 ## `syscall` (which spoils `r11`), each register is stored to its place
@@ -91,6 +103,7 @@ Registers :: [].{
 		}
 		same = |one, other| X86.register_index(one) == X86.register_index(other)
 		free = spare_registers.drop_if(|spare| $named_spares.any(|named| same(named, spare)))
+		carried = loop_carried(statements)
 		chosen =
 			$counts
 				.to_list()
@@ -100,14 +113,21 @@ Registers :: [].{
 					| count >= 4 and displacement < 0 and !$barred.contains(displacement),
 				)
 				.sort_with(
-					|(_, one_count), (_, other_count)|
-						if one_count > other_count {
+					|(one, one_count), (other, other_count)| {
+						one_carried = carried.contains(one)
+						other_carried = carried.contains(other)
+						if one_carried and !other_carried {
+							Before
+						} else if other_carried and !one_carried {
+							After
+						} else if one_count > other_count {
 							Before
 						} else if one_count < other_count {
 							After
 						} else {
 							Same
-						},
+						}
+					},
 				)
 				.take_first(free.len())
 				.map_with_index(
@@ -194,6 +214,65 @@ Registers :: [].{
 		}
 		$out
 	}
+}
+
+## The places a loop carries from one time round to the next: between a
+## label and a jump back to it, a place whose first plain move there is a
+## load, and which is also stored there. Its store and its load the next time
+## round are a chain through memory that no forwarding inside one time round
+## removes, so it is kept in a register before any busier place.
+loop_carried : List(Assembly.Statement) -> Set(I32)
+loop_carried = |statements| {
+	var $marks = Dict.empty()
+	var $carried = Set.empty()
+	var $at = 0
+	for statement in statements {
+		at = $at
+		$at = $at + 1
+		match statement {
+			Mark(label) => {
+				$marks = $marks.insert(label, at)
+			}
+			JmpTo(label) | JccTo({ condition: _, label }) =>
+				match $marks.get(label) {
+					Ok(head) => {
+						body_statements = statements.sublist({ start: head, len: at - head })
+						$carried = $carried.union(carried_between(body_statements))
+					}
+					Err(_) => {}
+				}
+			_ => {}
+		}
+	}
+	$carried
+}
+
+## The places of a loop's body, in order, that are loaded before they are
+## first stored, and stored too.
+carried_between : List(Assembly.Statement) -> Set(I32)
+carried_between = |body_statements| {
+	var $loaded_first = Set.empty()
+	var $stored = Set.empty()
+	for statement in body_statements {
+		match statement {
+			Instruction(instruction) =>
+				match plain_place(instruction) {
+					Ok(displacement) =>
+						match instruction {
+							MovMemReg(_) | MovsdStore(_) => {
+								$stored = $stored.insert(displacement)
+							}
+							_ =>
+								if !$stored.contains(displacement) {
+									$loaded_first = $loaded_first.insert(displacement)
+								}
+						}
+					Err(NotPlain) => {}
+				}
+			_ => {}
+		}
+	}
+	$loaded_first.intersection($stored)
 }
 
 ## The registers a function's places may be kept in.
