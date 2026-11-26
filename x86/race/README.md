@@ -15,6 +15,11 @@ The race is between the program compiled by js-x86 and the same program under no
 
 **How the defaults were picked (2026-11-26).** Only from compiled runs, one at a time, never beside node. One run of F(650000) at load 0.41 took 46.2 s, and five runs of F(100000) at load 1.1 took 1.11 to 1.21 s (median 1.12 s), which scale as N squared to 47.5 s at 650,000: the two agree. Scaled from the quiet run, F(740000) is about 60 s. The box didn't go below load 0.5 again for the run of F(740000) itself (other lanes were building), so that number is scaled, not measured. F(100000), about 1.1 s, is the small size.
 
+The first paired run at the default N, master 2026-11-26, load 0.79, both outputs held to the stored sha256:
+
+    compiled: 62.85 s, matched (sha256)
+    node: 76.46 s, matched (sha256); compiled/node 0.82
+
 ## History: fixes 1 to 17, measured under the old self-paced form
 
 Everything below was measured when the race was self-paced: the program read its own clock (`Date.now()`) between batches of steps, sized each batch from what the last one cost, and stopped when the time left in `BUDGET_MS` was too small to plan one (20 seconds, or 1 or 4 with `budget=`). An F(n) below is how far a contestant got in that time, and the work grows as n squared; `PASS` meant its last clock reading was within the budget and its F(100) was right, and "after the verdict" was the run's wall time less the program's own elapsed time.

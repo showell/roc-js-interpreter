@@ -2,7 +2,7 @@
 
 The code here was written by AI coding agents (Claude), with human supervision.
 
-`bank_race.js` makes a fixed number of transfers on a bank ledger, `TRANSFERS` (18,000,000 as written), chosen so that the compiled program takes about a minute on our box, as the fib race's N is. It is a second race beside the fib race (`x86/race/`), as plain as fib but reaching more of the language: a class with methods, a plain object used as a dictionary, string keys, `Object.keys`, `for ... of`, `%` and whole-number arithmetic. It uses no recursion.
+`bank_race.js` makes a fixed number of transfers on a bank ledger, `TRANSFERS` (110,000,000 as written), chosen so that the compiled program takes about a minute on our box, as the fib race's N is. It is a second race beside the fib race (`x86/race/`), as plain as fib but reaching more of the language: a class with methods, a plain object used as a dictionary, string keys, `Object.keys`, `for ... of`, `%` and whole-number arithmetic. It uses no recursion.
 
 - **The accounts:** 500 of them, each an `Account` (its name, a balance in whole cents, and counts of deposits, withdrawals and declines, with `deposit(amount)` and `withdraw(amount)`), kept in a plain object keyed by name (`"acct-217"`). The names are made once, at the start, and kept in an array too, so the transfers make no new strings or objects. The compiled program has no garbage collector, so a transfer that allocated would fill its 1 GiB heap.
 - **A transfer** draws three numbers from a seeded Park-Miller generator, a `Random` (seed times 48271, mod 2^31 - 1; every product is below 2^47, so exact in a double): the payer, the payee and the amount, 1 to 50,000 cents. It looks both accounts up by name, and when the payer has the funds, `withdraw` and `deposit` move the money; otherwise `withdraw` counts a decline.
@@ -20,14 +20,21 @@ The code here was written by AI coding agents (Claude), with human supervision.
 
 From the repository's root:
 
-    shale x86/bank.shale                     # 18,000,000 transfers, about a minute compiled
-    shale x86/bank.shale size=small          # 300,000 transfers, about a second compiled, for tuning
+    shale x86/bank.shale                     # 110,000,000 transfers, about a minute compiled
+    shale x86/bank.shale size=small          # 2,000,000 transfers, about a second compiled, for tuning
     shale x86/bank.shale transfers=2000000   # any count of at least 100,000
     shale x86/bank.shale size=small runs=5   # five runs of each in turn, and the medians
 
 `transfers=` (or `size=small`) writes a copy of `bank_race.js` with its `const TRANSFERS` line changed, under the build mount, and both contestants run that copy. The script builds js-x86 on the dev backend, writes the executable, then runs it and then node, niced and never at the same time, each timed from outside by its wall clock, start to exit. Each contestant's output is held to verify.js's for that count. Each contestant gets one line, its wall time and whether its output matched; node's line adds the ratio of the compiled time to node's. With `runs=k`, a last line gives the medians and their ratio. `check.shale` doesn't run it, since its numbers are timings.
 
-**How the defaults were picked (2026-11-26).** Only from compiled runs, never beside node. The box didn't go below load 0.5 (other lanes were building), so the count is scaled, not measured. One run each of 100,000 to 1,600,000 transfers, at load 0.7 to 0.8, cost 3.1 to 3.6 µs a transfer, with no trend: the work grows linearly. 1,600,000 took 5.12 s, which scales to 18,000,000 in about 58 s; 300,000 took 0.97 s, the small size. Sets of runs at one count moved by half between minutes (seven runs of 300,000 a minute earlier took 1.21 to 1.52 s), so a single run of either size is noisy on a busy box.
+**How the defaults were picked (2026-11-26).** After the hash index (ObjectTable.roc) and the hashes of literal keys, a quiet paired run of 18,000,000 transfers (load 0.83) took 9.71 s compiled, 0.54 µs a transfer, so the defaults were raised to 110,000,000 (about a minute) and 2,000,000 (about a second). The first calibration, below, was made before those two fixes.
+
+The first paired run at that size, master 2026-11-26, load 0.68:
+
+    compiled: 66.03 s, matched (verify.js)
+    node: 13.19 s, matched (verify.js); compiled/node 5.01
+
+**The first calibration.** Only from compiled runs, never beside node. The box didn't go below load 0.5 (other lanes were building), so the count is scaled, not measured. One run each of 100,000 to 1,600,000 transfers, at load 0.7 to 0.8, cost 3.1 to 3.6 µs a transfer, with no trend: the work grows linearly. 1,600,000 took 5.12 s, which scales to 18,000,000 in about 58 s; 300,000 took 0.97 s, the small size. Sets of runs at one count moved by half between minutes (seven runs of 300,000 a minute earlier took 1.21 to 1.52 s), so a single run of either size is noisy on a busy box.
 
 **One reshape for js-x86.** The generator keeps its seed in itself, a `Random` object, rather than in a function `nextSeed(seed)` whose result the caller passes back to it. js-x86 refuses any program in which a function's result reaches its own parameter: `function t(s) { return s + 1; }` called as `t(t(1))` stops with "the kinds of the functions' parameters and results never settle". A guess at why, not checked: each pass computes the parameters' kinds from the last pass's results, and the results from the last pass's parameters, so the two swap between `Number` and `Value` every pass and never meet. The fix is in `x86/roc/Lowering.roc` (`items_with_numbers`), widening each pass's kinds with the last pass's.
 

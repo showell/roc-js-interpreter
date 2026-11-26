@@ -29,7 +29,7 @@ const WHO = "x86/bank.shale"
 const RACE = "x86/bank/bank_race.js"
 const VERIFY = "x86/bank/verify.js"
 const WANT_VERIFY = "node: verify.js, the second ledger's answer for the race"
-const SMALL_TRANSFERS = 300000
+const SMALL_TRANSFERS = 2000000
 const CHECK_AT = 100000
 const TIMEOUT_MS = 600000
 
