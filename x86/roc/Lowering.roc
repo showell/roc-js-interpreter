@@ -545,7 +545,14 @@ code_walk = |context, heads| {
 	# What the straight run so far has proved of its index checks
 	# (IndexLowering's header).
 	var $checked = IndexLowering.nothing_proved(0)
+	# How many jumps go to each place ahead, and what the first one's way
+	# proved (IndexLowering's header).
+	var $arrivals = Dict.empty()
 	for at in 0..<code.ops.len() {
+		fell = match $flowing {
+			Stopped => False
+			Flowing(_) => True
+		}
 		meets =
 			looped_to.contains(at)
 				or $pending.contains(at)
@@ -581,11 +588,19 @@ code_walk = |context, heads| {
 				$seen = $seen.insert(at, state)
 				instruction = code.ops.get(at) ?? crash "Lowering.code_walk: an instruction"
 				site = { context, code, at, skipped }
+				depth_here = state.stack_kinds.len()
 				checked =
-					if meets {
-						IndexLowering.nothing_proved(state.stack_kinds.len())
-					} else {
+					if !meets {
 						$checked
+					} else if fell or looped_to.contains(at) {
+						IndexLowering.nothing_proved(depth_here)
+					} else {
+						match $arrivals.get(at) {
+							Ok(
+								{ count: 1, proved },
+							) => IndexLowering.proofs_at_target(proved, depth_here)
+							_ => IndexLowering.nothing_proved(depth_here)
+						}
 					}
 				valued =
 					if skipped.contains(at) or $fused.contains(at) {
@@ -647,6 +662,17 @@ code_walk = |context, heads| {
 					NoBranch => {}
 					Branch({ target, state: sent }) =>
 						if target > at {
+							proved = match lowered.falls {
+								Falls(_) => $checked
+								Ends => checked
+							}
+							$arrivals = $arrivals.insert(
+								target,
+								match $arrivals.get(target) {
+									Ok(before) => { count: before.count + 1, proved: before.proved }
+									Err(_) => { count: 1, proved }
+								},
+							)
 							$deepest = U64.max($deepest, sent.stack_kinds.len())
 							$pending = match $pending.get(target) {
 								Ok(waiting) => $pending.insert(

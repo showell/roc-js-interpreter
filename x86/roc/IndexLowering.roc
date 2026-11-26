@@ -22,7 +22,11 @@
 ## slot. A later read or write of an array of numbers whose receiver and
 ## index came from those same slots (`checks_for`) skips the tests already
 ## proved. The rule is kept conservative: what was proved is forgotten
-## wholly at any place another way reaches (a jump's target, a loop's head),
+## wholly at any place two ways reach (a jump's target that another jump or
+## the instruction before also reaches, a loop's head); at a place one jump
+## alone reaches, nothing falling to it, what that jump's way proved of the
+## slots holds (`proofs_at_target`), as the `else` of an `if` keeps what was
+## proved before the test,
 ## at every instruction but a few that change no variable but the one they
 ## name and no array's length but by growing it (a push of a number, text, a
 ## boxed variable's value or a copy; a load of a slot; a store or set of a
@@ -61,6 +65,15 @@ IndexLowering :: [].{
 		origins: List.repeat(Other, depth),
 		whole_slots: [],
 		slots_in_range: [],
+	}
+
+	## What one jump's way proved, at its target with the stack `depth`
+	## places deep: the slots' proofs, not the stack places' origins.
+	proofs_at_target : IndexLowering.Checked, U64 -> IndexLowering.Checked
+	proofs_at_target = |proved, depth| {
+		..IndexLowering.nothing_proved(depth),
+		whole_slots: proved.whole_slots,
+		slots_in_range: proved.slots_in_range,
 	}
 
 	## Nothing skipped.
