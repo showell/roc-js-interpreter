@@ -27,6 +27,8 @@
 ## always the object's own property, which JavaScript reads before any
 ## class's method.
 import js.Bytecode
+import js.Compile
+import js.Parser
 import Assembly
 import Boxing
 import Emit
@@ -331,3 +333,50 @@ class_fields = |program, { constructors, constructor_name, depth }| {
 	}
 	$fields
 }
+
+## Whether `field_slots` gives a program's classes these keys, each with
+## these places in any order, and no other key, for the expects.
+has_program_slots : List(Str), List((Str, List(U64))) -> Bool
+has_program_slots = |source_lines, expected| {
+	src = Str.join_with(source_lines, "\n")
+	tree = Parser.program_of(src, Core) ?? crash "FieldSlots.has_program_slots: a program"
+	program = match Compile.program(tree) {
+		Ok(compiled) => compiled
+		Err(_) => crash "FieldSlots.has_program_slots: a program that compiles"
+	}
+	makers = KnownFunctions.makers_of(program) ?? crash "FieldSlots.has_program_slots: its makers"
+	slots = FieldSlots.field_slots(program, makers)
+	slots.len() == expected.len()
+		and expected.all(
+			|(key, places)| {
+				found = slots.get(key) ?? []
+				found.len() == places.len() and places.all(|place| found.contains(place))
+			},
+		)
+}
+
+# A class's fields take the places after its mark and its class's key, in
+# the order its constructor sets them, a key set twice at its first.
+expect has_program_slots(
+	["class A { constructor(v) { this.x = v; this.y = 2; this.x = 3; } }", "new A(1);"],
+	[("x", [2]), ("y", [3])],
+)
+
+# A subclass's instances hold a key for each class, then its parent's
+# fields, set by `super(...)`, before its own: a key two classes set has
+# two places.
+expect has_program_slots(
+	[
+		"class A { constructor() { this.x = 1; this.y = 2; } }",
+		"class B extends A { constructor() { super(); this.z = 3; } }",
+		"new B();",
+	],
+	[
+		("x", [2, 3]),
+		("y", [3, 4]),
+		("z", [5]),
+	],
+)
+
+# A near miss of the rule above: a place it doesn't give fails the test.
+expect !has_program_slots(["class A { constructor() { this.x = 1; } }", "new A();"], [("x", [3])])
