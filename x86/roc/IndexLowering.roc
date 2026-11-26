@@ -201,8 +201,10 @@ IndexLowering :: [].{
 		depth : U64,
 	} -> IndexLowering.Checked
 	checked_after = |checked, { instruction, before, depth }| {
-		is_numbers = |down|
-			before.stack_kinds.len() > down and LoweringBasics.kind_below(before, down) == Numbers
+		is_numbers = |down| {
+			deep = before.stack_kinds.len() > down
+			deep and LoweringBasics.holds_numbers(LoweringBasics.kind_below(before, down))
+		}
 		# The places below the `count` the instruction pushed keep their
 		# origins. An ordering lowered with its `JumpIfFalse` leaves nothing
 		# it pushed, so a count past the depth is the depth.

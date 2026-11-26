@@ -40,6 +40,10 @@ LoweringBasics :: [].{
 		# An array that holds only numbers for good (`Lowering`'s
 		# `NUMBER-ONLY ARRAYS`): its items read as numbers.
 		Numbers,
+		# An array of numbers whose items are whole numbers between `low` and
+		# `high` for good, kept as doubles (`Lowering`'s `INTEGER ARRAYS`): its
+		# items read as `Integer`s.
+		Integers({ low : I64, high : I64 }),
 		Object,
 		Value,
 		Closure(U64),
@@ -95,13 +99,27 @@ LoweringBasics :: [].{
 		# Whether the program has a `try` anywhere, which keeps every value of
 		# every frame in the frame (`Registers.roc`).
 		trying : Bool,
-		# Whether an array literal of numbers is made `Numbers`.
-		numbers_arrays : Bool,
+		# Which array literals are made `Numbers` or `Integers`.
+		arrays : LoweringBasics.ArrayRule,
 		returns : Dict(U64, LoweringBasics.Kind),
 		parameters : Dict(U64, List(LoweringBasics.Kind)),
 		literals : Dict(Str, U64),
 		index : U64,
 	}
+
+	## Which array literals a lowering keeps as arrays of numbers: none
+	## (`AnyItems`), those of known numbers (`NumberItems`, `Numbers`), and
+	## those too whose items are `Integer`s (`IntegerItems`, `Integers`).
+	ArrayRule : [AnyItems, NumberItems, IntegerItems]
+
+	## Whether a kind is an array that holds only numbers for good, its items
+	## doubles or whole numbers: `Numbers` or `Integers`.
+	holds_numbers : LoweringBasics.Kind -> Bool
+	holds_numbers = |kind|
+		match kind {
+			Numbers | Integers(_) => True
+			_ => False
+		}
 
 	## A call of a function by its code, with its arguments' kinds.
 	CallKinds : { code : U64, kinds : List(LoweringBasics.Kind) }
@@ -113,7 +131,7 @@ LoweringBasics :: [].{
 		match kind {
 			Integer(_) => False
 			Number | Boolean | Undefined | Null => True
-			String | Array | Numbers | Object | Value | Closure(_) => True
+			String | Array | Numbers | Integers(_) | Object | Value | Closure(_) => True
 			Function(_) | Console | Log | Method(_) => False
 			ErrorClass(_) | CollectionClass(_) | TimerFunction(_) => False
 			Static(_) | StaticMethod(_) => False
@@ -669,11 +687,13 @@ LoweringBasics :: [].{
 
 	## A kind's words with their article: `a number`, `an array`.
 	kind_phrase : LoweringBasics.Kind -> Str
-	kind_phrase = |kind|
+	kind_phrase = |kind| {
+		noun = LoweringBasics.kind_noun(kind)
 		match kind {
-			Array | Numbers | Object | Undefined => "an ${LoweringBasics.kind_noun(kind)}"
-			_ => "a ${LoweringBasics.kind_noun(kind)}"
+			Array | Numbers | Integers(_) | Object | Undefined => "an ${noun}"
+			_ => "a ${noun}"
 		}
+	}
 
 	## A kind's words with no article: `number`, `array`.
 	kind_noun : LoweringBasics.Kind -> Str
@@ -687,6 +707,7 @@ LoweringBasics :: [].{
 			String => "string"
 			Array => "array"
 			Numbers => "array of numbers"
+			Integers(_) => "array of whole numbers"
 			Object => "object"
 			Value => "value of a kind not known before it runs"
 			Method(name) => "method `${name}`"

@@ -88,6 +88,21 @@
 ## would be `undefined` in node, which is no number: the executable stops
 ## there with a line saying so, as for the other things only the value
 ## decides.
+##
+## **INTEGER ARRAYS.** An array literal whose items are all whole number
+## literals, each pushed as an `Integer` (`integer_item`), is made
+## `Integers` of their hull: an array of numbers whose items are, for good,
+## whole numbers in that range, kept as doubles as `Numbers`' are, so the
+## runtime and console.log read them as ever. An item read or walked is
+## that `Integer`, made one from its double by one `cvttsd2si`. It is held
+## to `Numbers`' rule and more: an item written or pushed must have been an
+## `Integer` within the range before the walk made it a double
+## (`integer_items_widened`), a parameter must settle at the same range,
+## and two ways meeting with two ranges are a refusal. Any refusal lowers
+## the program again with `Numbers` alone, then with neither
+## (`program_items`), and a program with no such literal starts at
+## `Numbers` (`has_integer_items`), so the rule only takes code to the fast
+## way.
 import js.Ast
 import js.Bytecode
 import js.Compile
@@ -110,6 +125,7 @@ import Registers
 import Runtime
 import RuntimeBuilders
 import RuntimeCode
+import X86
 
 Lowering :: [].{
 
@@ -118,13 +134,24 @@ Lowering :: [].{
 	program_items : Bytecode.Program -> Try(List(Assembly.Statement), [Refused(Str)])
 	program_items = |compiled| {
 		program = { ..compiled, codes: compiled.codes.map(threaded_skips) }
-		match items_with_numbers(program, True) {
-			Ok(items) => Ok(items)
-			# Any refusal with arrays of numbers on may be one of an array of
-			# numbers escaping, so the program is lowered again without them,
-			# and that answer, a refusal or the code, is the program's.
-			Err(_) => items_with_numbers(program, False)
+		# Any refusal with arrays of numbers on may be one of an array of
+		# numbers escaping, or of whole numbers taking another, so the program
+		# is lowered again with fewer of them, and the last answer, a refusal
+		# or the code, is the program's.
+		rules =
+			if has_integer_items(program) {
+				[IntegerItems, NumberItems, AnyItems]
+			} else {
+				[NumberItems, AnyItems]
+			}
+		var $answer = Err(Refused("Lowering.program_items: no rule"))
+		for rule in rules {
+			$answer = items_with_numbers(program, rule)
+			if $answer.is_ok() {
+				return $answer
+			}
 		}
+		$answer
 	}
 }
 
@@ -169,9 +196,13 @@ threaded_skips = |code| {
 }
 
 ## The program's machine code, with array literals of numbers made
-## `Numbers` (`numbers_arrays`) or not.
-items_with_numbers : Bytecode.Program, Bool -> Try(List(Assembly.Statement), [Refused(Str)])
-items_with_numbers = |program, numbers_arrays| {
+## `Numbers` or `Integers` as `arrays` says.
+items_with_numbers : Bytecode.Program,
+LoweringBasics.ArrayRule -> Try(
+	List(Assembly.Statement),
+	[Refused(Str)],
+)
+items_with_numbers = |program, arrays| {
 	makers = KnownFunctions.makers_of(program)?
 	literals = literals_of(program)?
 	statics = KnownFunctions.statics_of(program, makers)
@@ -230,7 +261,7 @@ items_with_numbers = |program, numbers_arrays| {
 				cells: KnownFunctions.celled_slots(known, index),
 				numbers: KnownFunctions.constant_numbers(known, index),
 				trying,
-				numbers_arrays,
+				arrays,
 				returns: $returns,
 				parameters: $parameters,
 				literals,
@@ -405,10 +436,10 @@ numbers_escape = |{ calls, parameters, escaped }|
 	calls.any(
 		|{ code, kinds }| {
 			settled = parameters.get(code) ?? []
-			kept = |at| !escaped.contains(code) and settled.get(at) == Ok(Numbers)
+			kept = |kind, at| !escaped.contains(code) and settled.get(at) == Ok(kind)
 			kinds
 				.map_with_index(|kind, at| (kind, at))
-				.any(|(kind, at)| kind == Numbers and !kept(at))
+				.any(|(kind, at)| LoweringBasics.holds_numbers(kind) and !kept(kind, at))
 		},
 	)
 
@@ -1021,7 +1052,12 @@ code_walk = |context, { heads, doubted, demoted }| {
 							(Unfused, Err(NotInteger)) =>
 								match instruction_items(
 									site,
-									{ instruction, state: valued.state, checked },
+									{
+										instruction,
+										state: valued.state,
+										unconverted: integers_before,
+										checked,
+									},
 								) {
 									Ok(done) => done
 									Err(refused) => return Ok(Halted({ refused, calls: $calls }))
@@ -1685,7 +1721,13 @@ integer_literal = |site, { instruction, state, demoted, jump_joined }| {
 				},
 			).is_ok()
 		Ok(GetIndex(_)) => takes_integer_index(beneath)
-		Ok(Call(_)) | Ok(PushNumber(_)) | Ok(LoadLocal(_)) => integer_argument(site, state)
+		Ok(Call(_)) | Ok(LoadLocal(_)) => integer_argument(site, state)
+		Ok(PushNumber(_)) | Ok(MakeArray(_)) => integer_argument(site, state) or integer_item(site)
+		Ok(SetIndex(_)) =>
+			match kind_under(state, 1) {
+				Integers(_) => True
+				_ => False
+			}
 		_ => False
 	}
 	if taken {
@@ -1726,6 +1768,30 @@ integer_argument = |site, state| {
 					}
 				_ => False
 			}
+		_ => False
+	}
+}
+
+## Whether a literal pushed at the site is an item of an array literal, as
+## `IntegerItems` makes them (`INTEGER ARRAYS` in the header): each
+## instruction after it up to the `MakeArray` pushes one more number literal.
+## The `MakeArray` makes the array's kind from what the items were.
+integer_item : LoweringBasics.Site -> Bool
+integer_item = |site| {
+	if site.context.arrays != IntegerItems {
+		return False
+	}
+	var $step = 1
+	while (
+		match site.code.ops.get(site.at + $step) {
+			Ok(PushNumber(_)) => True
+			_ => False
+		}
+	) {
+		$step = $step + 1
+	}
+	match site.code.ops.get(site.at + $step) {
+		Ok(MakeArray(count)) => $step <= count
 		_ => False
 	}
 }
@@ -1795,7 +1861,7 @@ integer_storable = |site, { slot, demoted }|
 takes_integer_index : LoweringBasics.Kind -> Bool
 takes_integer_index = |receiver|
 	match receiver {
-		Array | Numbers | Value => True
+		Array | Numbers | Integers(_) | Value => True
 		_ => False
 	}
 
@@ -2041,8 +2107,13 @@ numbers_escaping : LoweringBasics.Site,
 numbers_escaping = |site, { instruction, state }| {
 	kinds = state.stack_kinds
 	below = |down| LoweringBasics.kind_below(state, down)
-	within = |reach| kinds.drop_first(kinds.len() - U64.min(reach, kinds.len())).contains(Numbers)
-	held = |slot| state.slots.get(slot) == Ok(Ready(Numbers))
+	numbers = LoweringBasics.holds_numbers
+	within = |reach| kinds.drop_first(kinds.len() - U64.min(reach, kinds.len())).any(numbers)
+	held = |slot|
+		match state.slots.get(slot) {
+			Ok(Ready(kind)) => numbers(kind)
+			_ => False
+		}
 	all_numbers = |count| kinds.drop_first(kinds.len() - count).all(|kind| kind == Number)
 	takes_each = |made, count|
 		match site.context.program.codes.get(made) {
@@ -2054,14 +2125,14 @@ numbers_escaping = |site, { instruction, state }| {
 		PushNull | PushUndefined | LoadBoxed(_) | PeekBoxed(_) | LoadBuiltin(_) => False
 		Jump(_) | Loop(_) => False
 		StoreLocal(slot) | SetLocal(slot) =>
-			below(0) == Numbers and site.context.cells.contains(slot)
+			numbers(below(0)) and site.context.cells.contains(slot)
 		Binary(_, _) => within(2)
 		Unary(_, _) | JumpIfFalse(_) => within(1)
-		GetProperty(key, _) => below(0) == Numbers and key != "length"
-		MethodLookup(name, _) => below(0) == Numbers and name != "push"
-		GetIndex(_) => below(0) == Numbers or (below(1) == Numbers and !is_number_index(below(0)))
+		GetProperty(key, _) => numbers(below(0)) and key != "length"
+		MethodLookup(name, _) => numbers(below(0)) and name != "push"
+		GetIndex(_) => numbers(below(0)) or (numbers(below(1)) and !is_number_index(below(0)))
 		SetIndex(_) =>
-			if below(2) == Numbers {
+			if numbers(below(2)) {
 				!is_number_index(below(1)) or below(0) != Number
 			} else {
 				within(2)
@@ -2070,7 +2141,7 @@ numbers_escaping = |site, { instruction, state }| {
 		CallMethod({ name: _, site: { count, written: _, at: _ } }) if below(count) == Log => False
 		CallIndexed({ count, written: _, at: _ }) => within(count + 2)
 		CallMethod({ name: _, site: { count, written: _, at: _ } }) =>
-			if below(count) == Method("push") and below(count + 1) == Numbers {
+			if below(count) == Method("push") and numbers(below(count + 1)) {
 				!all_numbers(count)
 			} else {
 				within(count + 2)
@@ -2089,11 +2160,120 @@ numbers_escaping = |site, { instruction, state }| {
 	}
 }
 
+## Whether the instruction may write into an array of whole numbers
+## (`Integers`) a number outside its range, which its reads would take as an
+## `Integer` within it (`INTEGER ARRAYS` in the header): an item written, or
+## the items of a `push`, that wasn't an `Integer` within the range before
+## the walk made it a double (`unconverted`).
+integer_items_widened : {
+	instruction : Bytecode.Op,
+	state : LoweringBasics.State,
+	unconverted : List(LoweringBasics.Kind),
+} -> Bool
+integer_items_widened = |{ instruction, state, unconverted }| {
+	below = |down| LoweringBasics.kind_below(state, down)
+	inside = |range, kind|
+		match kind {
+			Integer(given) => range.low <= given.low and given.high <= range.high
+			_ => False
+		}
+	# Whether the `count` places on top held `Integer`s within `range`.
+	within = |range, count| unconverted.take_last(count).all(|kind| inside(range, kind))
+	depth = state.stack_kinds.len()
+	match instruction {
+		SetIndex(_) if depth >= 3 =>
+			match below(2) {
+				Integers(range) => !within(range, 1)
+				_ => False
+			}
+		CallMethod({ name: _, site: { count, written: _, at: _ } }) if depth >= count + 2 =>
+			match (below(count), below(count + 1)) {
+				(Method("push"), Integers(range)) => !within(range, count)
+				_ => False
+			}
+		_ => False
+	}
+}
+
+## The kind an array literal makes of its items' kinds (`NUMBER-ONLY
+## ARRAYS` and `INTEGER ARRAYS` in the header): `Integers` when its items
+## were `Integer`s before they were made doubles (`unconverted`), within
+## their hull; `Numbers` when they are known numbers, or none; else `Array`.
+literal_array_kind : LoweringBasics.Site,
+{
+	item_kinds : List(LoweringBasics.Kind),
+	unconverted : List(LoweringBasics.Kind),
+} -> LoweringBasics.Kind
+literal_array_kind = |site, { item_kinds, unconverted }| {
+	rule = site.context.arrays
+	whole = !unconverted.is_empty() and unconverted.all(LoweringBasics.is_integer)
+	match unconverted.first() {
+		Ok(first) if rule == IntegerItems and whole =>
+			match unconverted.drop_first(1).fold(first, LoweringBasics.integer_hull) {
+				Integer(range) => Integers(range)
+				_ => crash "Lowering.literal_array_kind: a hull of Integers"
+			}
+		_ =>
+			if rule != AnyItems and item_kinds.all(|kind| kind == Number) {
+				Numbers
+			} else {
+				Array
+			}
+	}
+}
+
+## An item just read from an array of numbers, at `place`: from an array of
+## whole numbers, its double made the `Integer` it is (exact: every item is a
+## whole number within its range), else the known number it is.
+item_integer : LoweringBasics.Kind,
+X86.Mem -> {
+	statements : List(Assembly.Statement),
+	kind : LoweringBasics.Kind,
+}
+item_integer = |array, place|
+	match array {
+		Integers(range) => {
+			statements: [
+				Instruction(MovsdLoad({ to: Xmm0, from: place })),
+				Instruction(Cvttsd2si({ to: Rax, from: Xmm0 })),
+				Emit.store(place, Rax),
+			],
+			kind: Integer(range),
+		}
+		_ => { statements: [], kind: Number }
+	}
+
+## Whether some code of the program makes an array literal of whole number
+## literals alone, for which the lowering tries `IntegerItems` first.
+has_integer_items : Bytecode.Program -> Bool
+has_integer_items = |program|
+	program.codes.any(
+		|code|
+			code.ops.map_with_index(|instruction, at| (instruction, at)).any(
+				|(instruction, at)|
+					match instruction {
+						MakeArray(count) if count > 0 and at >= count =>
+							code.ops.sublist({ start: at - count, len: count }).all(
+								|pushed|
+									match pushed {
+										PushNumber(number) => is_whole_literal(number)
+										_ => False
+									},
+							)
+						_ => False
+					},
+			),
+	)
+
+## Whether a number literal is an `Integer`'s: whole, within ±2^53, not -0.
+is_whole_literal : F64 -> Bool
+is_whole_literal = |number| LoweringBasics.integer_of_literal(number).is_ok()
+
 ## An array's kind as the inline reads and writes take it: an array of
 ## numbers is an array there.
 array_kind : LoweringBasics.Kind -> LoweringBasics.Kind
 array_kind = |kind|
-	if kind == Numbers {
+	if LoweringBasics.holds_numbers(kind) {
 		Array
 	} else {
 		kind
@@ -2134,7 +2314,7 @@ meeting_state = |context, { at, one, other }| {
 		other.stack_kinds,
 		|a, b| (a, b),
 	) {
-		if (a == Numbers or b == Numbers) and a != b {
+		if (LoweringBasics.holds_numbers(a) or LoweringBasics.holds_numbers(b)) and a != b {
 			return Err(code_refusal(context, TwoStacks(at)))
 		}
 		match LoweringBasics.met_kind(a, b) {
@@ -2150,8 +2330,9 @@ meeting_state = |context, { at, one, other }| {
 		other.slots,
 		|a, b| (a, b),
 	) {
+		numbers = LoweringBasics.holds_numbers
 		slot = match (a, b) {
-			(Ready(left), Ready(right)) if left != right and [left, right].contains(Numbers) =>
+			(Ready(left), Ready(right)) if left != right and (numbers(left) or numbers(right)) =>
 				return Err(code_refusal(context, TwoSlotKinds(at)))
 			(Ready(left), Ready(right)) =>
 				match LoweringBasics.met_kind(left, right) {
@@ -2191,14 +2372,17 @@ index_double_items = |site, { state, down }|
 		[]
 	}
 
-## The machine code of one instruction, and the kinds after it.
+## The machine code of one instruction, and the kinds after it. The stack's
+## kinds before its `Integer`s were made doubles are `unconverted`: an
+## array of whole numbers takes only `Integer`s within its range.
 instruction_items : LoweringBasics.Site,
 {
 	instruction : Bytecode.Op,
 	state : LoweringBasics.State,
+	unconverted : List(LoweringBasics.Kind),
 	checked : IndexLowering.Checked,
 } -> Try(LoweringBasics.Lowered, [Refused(Str)])
-instruction_items = |site, { instruction, state, checked }| {
+instruction_items = |site, { instruction, state, unconverted, checked }| {
 	depth = state.stack_kinds.len()
 	top_place = |down| LoweringBasics.stack_place(site.code, depth - 1 - down)
 	next_place = LoweringBasics.stack_place(site.code, depth)
@@ -2207,6 +2391,9 @@ instruction_items = |site, { instruction, state, checked }| {
 	}
 	if numbers_escaping(site, { instruction, state }) {
 		return LoweringBasics.refusal(site, "an array of numbers may escape here")
+	}
+	if integer_items_widened({ instruction, state, unconverted }) {
+		return LoweringBasics.refusal(site, integers_widened_text)
 	}
 	match instruction {
 		PushNumber(number) => Ok(
@@ -2279,8 +2466,9 @@ instruction_items = |site, { instruction, state, checked }| {
 			kind = LoweringBasics.kind_below(state, 0)
 			# A known array's or string's length is an `Integer`: it can't pass
 			# 2^32 in a heap of 1 GiB.
-			given = match (kind, key) {
-				(String, "length") | (Array, "length") | (Numbers, "length") =>
+			known = kind == String or kind == Array or LoweringBasics.holds_numbers(kind)
+			given = match key {
+				"length" if known =>
 					if site.context.trying {
 						Number
 					} else {
@@ -2299,7 +2487,7 @@ instruction_items = |site, { instruction, state, checked }| {
 			]
 			# Of `undefined` or `null`, the runtime throws node's TypeError.
 			match kind {
-				String | Array | Numbers | Object | Value | Null | Undefined =>
+				String | Array | Numbers | Integers(_) | Object | Value | Null | Undefined =>
 					Ok(
 						LoweringBasics.falling(
 							if key == "length" {
@@ -2329,18 +2517,14 @@ instruction_items = |site, { instruction, state, checked }| {
 			base = depth - count
 			made = LoweringBasics.arguments_array_items(site, { base, count })
 				.append(Emit.store(LoweringBasics.stack_place(site.code, base), Rax))
-			items = state.stack_kinds.drop_first(base)
-			numbers = site.context.numbers_arrays and items.all(|kind| kind == Number)
+			item_kinds = state.stack_kinds.drop_first(base)
+			made_of = { item_kinds, unconverted: unconverted.drop_first(base) }
 			Ok(
 				LoweringBasics.falling(
 					made,
 					LoweringBasics.with_top(
 						LoweringBasics.without_top(state, count),
-						if numbers {
-							Numbers
-						} else {
-							Array
-						},
+						literal_array_kind(site, made_of),
 					),
 				),
 			)
@@ -2454,22 +2638,25 @@ instruction_items = |site, { instruction, state, checked }| {
 					"the property `${key}` of ${LoweringBasics.kind_phrase(kind)} written",
 				)
 			}
-		GetIndex(_) if LoweringBasics.kind_below(state, 1) == Numbers =>
+		GetIndex(_) if LoweringBasics.holds_numbers(LoweringBasics.kind_below(state, 1)) => {
+			read = IndexLowering.item_read_items(
+				site,
+				{
+					kinds: (Array, LoweringBasics.kind_below(state, 0)),
+					receiver: top_place(1),
+					index: top_place(0),
+					checks: IndexLowering.checks_for(checked, instruction),
+					slow_items: [Emit.jmp(Runtime.numbers_read_not_compiled)],
+				},
+			)
+			item = item_integer(LoweringBasics.kind_below(state, 1), top_place(1))
 			Ok(
 				LoweringBasics.falling(
-					IndexLowering.item_read_items(
-						site,
-						{
-							kinds: (Array, LoweringBasics.kind_below(state, 0)),
-							receiver: top_place(1),
-							index: top_place(0),
-							checks: IndexLowering.checks_for(checked, instruction),
-							slow_items: [Emit.jmp(Runtime.numbers_read_not_compiled)],
-						},
-					),
-					LoweringBasics.with_top(LoweringBasics.without_top(state, 2), Number),
+					read.concat(item.statements),
+					LoweringBasics.with_top(LoweringBasics.without_top(state, 2), item.kind),
 				),
 			)
+		}
 		GetIndex(_) =>
 			match LoweringBasics.kind_below(state, 1) {
 				Array | String | Object | Value | Null | Undefined => {
@@ -2505,8 +2692,9 @@ instruction_items = |site, { instruction, state, checked }| {
 			}
 		SetIndex(_) =>
 			match LoweringBasics.kind_below(state, 2) {
-				Array | Numbers | Object | Value | Null | Undefined => {
+				Array | Numbers | Integers(_) | Object | Value | Null | Undefined => {
 					value = LoweringBasics.kind_below(state, 0)
+					written = LoweringBasics.kind_below(state, 2)
 					called = index_double_items(site, { state, down: 1 }).concat([
 						Emit.load(Rdi, top_place(2)),
 						Emit.load(Rsi, top_place(1)),
@@ -2525,7 +2713,7 @@ instruction_items = |site, { instruction, state, checked }| {
 									receiver: top_place(2),
 									index: top_place(1),
 									value_place: top_place(0),
-									checks: if LoweringBasics.kind_below(state, 2) == Numbers {
+									checks: if LoweringBasics.holds_numbers(written) {
 										IndexLowering.checks_for(checked, instruction)
 									} else {
 										IndexLowering.all_checks
@@ -2548,7 +2736,7 @@ instruction_items = |site, { instruction, state, checked }| {
 		# made an array.
 		IterStart(_) =>
 			match LoweringBasics.kind_below(state, 0) {
-				Array | Numbers => Ok(LoweringBasics.falling([], state))
+				Array | Numbers | Integers(_) => Ok(LoweringBasics.falling([], state))
 				String =>
 					Ok(
 						LoweringBasics.falling(
@@ -2656,19 +2844,20 @@ instruction_items = |site, { instruction, state, checked }| {
 			exit_label = LoweringBasics.place_label(site.context, target)
 			walked = LoweringBasics.slot_kind(site, { state, slot, name: "a walk" })?
 			{ stepped, item } = match walked {
-				Array | Numbers => {
+				Array | Numbers | Integers(_) => {
+					read = item_integer(walked, next_place)
 					item_kind =
-						if walked == Numbers {
-							Number
-						} else {
+						if walked == Array {
 							Value
+						} else {
+							read.kind
 						}
 					{
 						stepped: IndexLowering.walk_step_items({
 							slot,
 							stored: next_place,
 							exit: exit_label,
-						}),
+						}).concat(read.statements),
 						item: item_kind,
 					}
 				}
@@ -3001,7 +3190,7 @@ instruction_items = |site, { instruction, state, checked }| {
 				(Console, "log") => Ok(
 					LoweringBasics.falling([], LoweringBasics.with_top(state, Log)),
 				)
-				(Numbers, "push") =>
+				(Numbers, "push") | (Integers(_), "push") =>
 					Ok(LoweringBasics.falling([], LoweringBasics.with_top(state, Method(name))))
 				(Array, _) | (Value, _) if BuiltinLowering.array_methods.contains(name) =>
 					Ok(LoweringBasics.falling([], LoweringBasics.with_top(state, Method(name))))
@@ -3205,8 +3394,8 @@ keeps_numbers = |source_lines| {
 		Ok(compiled) => compiled
 		Err(_) => crash "Lowering.keeps_numbers: a program that compiles"
 	}
-	plain = items_with_numbers(program, False) ?? crash "Lowering.keeps_numbers: it lowers"
-	match items_with_numbers(program, True) {
+	plain = items_with_numbers(program, AnyItems) ?? crash "Lowering.keeps_numbers: it lowers"
+	match items_with_numbers(program, NumberItems) {
 		Ok(items) => items.len() != plain.len()
 		Err(_) => False
 	}
@@ -3273,6 +3462,48 @@ expect !keeps_numbers([
 	"main();",
 ])
 
+## Whether lowering a program keeps an array literal of whole numbers as
+## `Integers`: it lowers with them, and its code is longer or shorter than
+## its code with arrays of doubles, for the expects.
+keeps_integers : List(Str) -> Bool
+keeps_integers = |source_lines| {
+	src = Str.join_with(source_lines, "\n")
+	tree = Parser.program_of(src, Core) ?? crash "Lowering.keeps_integers: a program that parses"
+	program = match Compile.program(tree) {
+		Ok(compiled) => compiled
+		Err(_) => crash "Lowering.keeps_integers: a program that compiles"
+	}
+	doubles = items_with_numbers(program, NumberItems) ?? crash "Lowering.keeps_integers: it lowers"
+	match items_with_numbers(program, IntegerItems) {
+		Ok(items) => items.len() != doubles.len()
+		Err(_) => False
+	}
+}
+
+# Read by index and walked, written and pushed with Integers within the
+# literal's range, printed, and passed to a function called directly: kept.
+expect keeps_integers([
+	"function written(a) { a[0] = 3; a[1] = a[2]; a.push(a[0]); return a[0] + a[1]; }",
+	"function main() {",
+	"  const a = [1, 2, 3]; let s = 0;",
+	"  for (const x of a) s = s + x % 2;",
+	"  console.log(written(a), s, a);",
+	"}",
+	"main();",
+])
+
+# A write outside the literal's range: not kept.
+expect !keeps_integers(
+	["function main() { const a = [1, 2, 3]; a[1] = 100; console.log(a[1] % 7); }", "main();"],
+)
+
+# Two literals of different ranges given to one parameter: not kept.
+expect !keeps_integers([
+	"function first(a) { return a[0] % 3; }",
+	"function main() { console.log(first([1, 2]), first([4, 5])); }",
+	"main();",
+])
+
 ## How many conversions between a double and an integer (`cvttsd2si`,
 ## `cvtsi2sd`) a program's own code holds, the runtime's routines left out,
 ## for the expects: a place's label, and every label of an instruction's
@@ -3314,9 +3545,54 @@ expect conversions_in_code([
 	"  while (i < n) { t = t + a[i]; i = i + 1; }",
 	"  return t;",
 	"}",
-	"function main() { const a = [1, 2]; console.log(sum(a)); }",
+	"function main() { const a = [1.5, 2]; console.log(sum(a)); }",
 	"main();",
 ]) == 0
+
+## How many calls of the runtime's routines a program's own code holds, as
+## `conversions_in_code` counts, for the expects: the op of `fourteen.js`
+## walked over the places given.
+places_walked : Str -> U64
+places_walked = |places| {
+	src = Str.join_with(
+		[
+			"function f(p, places) {",
+			"  let s = 0;",
+			"  for (const place of places) s = s + Math.floor(p / place) % 4;",
+			"  return s;",
+			"}",
+			"function main() { const places = [${places}]; console.log(f(4095, places)); }",
+			"main();",
+		],
+		"\n",
+	)
+	tree = Parser.program_of(src, Core) ?? crash "Lowering.places_walked: a program that parses"
+	program = match Compile.program(tree) {
+		Ok(compiled) => compiled
+		Err(_) => crash "Lowering.places_walked: a program that compiles"
+	}
+	statements = Lowering.program_items(program) ?? crash "Lowering.places_walked: it lowers"
+	var $in_code = False
+	var $count = 0
+	for statement in statements {
+		match statement {
+			Mark(label) => {
+				$in_code = label.starts_with("code_")
+			}
+			CallTo(label) if $in_code and label.starts_with("runtime_") => {
+				$count = $count + 1
+			}
+			_ => {}
+		}
+	}
+	$count
+}
+
+# An array of whole numbers reads its items as `Integer`s, so the floored
+# quotient and its remainder are integer arithmetic, with no call of
+# `Math.floor`'s routine or `%`'s: fewer calls than when one item is a
+# fraction and the array is of doubles.
+expect places_walked("64, 16, 4, 1") < places_walked("64, 16, 4, 1.5")
 
 # The same counter stepped by a half takes a fraction: it is demoted to a
 # double, so the length is made one to be compared, and the index made an
@@ -3355,6 +3631,11 @@ expect conversions_in_code([
 	"function down(n) { if (n === 0) return 0; return 1 + down(n - 1); }",
 	"console.log(down(10));",
 ]) < 10
+
+## A refusal's words when an array of whole numbers may take a number
+## outside its range (`integer_items_widened`).
+integers_widened_text : Str
+integers_widened_text = "an array of whole numbers may take another number here"
 
 ## A refusal's words when an array of numbers reaches a parameter that
 ## may hold another value.
