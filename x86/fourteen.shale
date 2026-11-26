@@ -1,6 +1,8 @@
 -- budget: steps=50000000
 -- x86/fourteen.shale: the Nibble machine's one function, x86/fourteen/
--- fourteen.js, compiled by js-x86 against node, as x86/bank.shale runs the
+-- fourteen.js, compiled by js-x86 against node and against
+-- x86/fourteen/fourteen.roc, its Roc port, built by Roc's release build
+-- (LLVM, --opt=speed, from the shared cache), as x86/bank.shale runs the
 -- bank race. Each contestant runs f over all 16,384 points ROUNDS times;
 -- the race is the wall time of each one's whole run. check.shale does not
 -- run it: its numbers are timings. From the repository's root:
@@ -10,7 +12,9 @@
 --   shale x86/fourteen.shale runs=5           # five runs of each in turn, and the medians
 --
 -- `rounds=` writes a copy of fourteen.js with its `const ROUNDS` line
--- changed, under the build mount, and both contestants run the copy. Each
+-- changed, under the build mount, and the two JS contestants run the copy;
+-- Roc's count is its argument (`fourteen-roc N`), so nothing of the race is
+-- known when Roc compiles it. The three run niced, one after the other. Each
 -- contestant's output must be the three lines the count fixes: f is 1 at
 -- 5,596 points each round (the C's cross-check), so the total is 5,596 a
 -- round, and the verdict PASS.
@@ -19,6 +23,8 @@ use("./executables.shale")
 
 const WHO = "x86/fourteen.shale"
 const RACE = "x86/fourteen/fourteen.js"
+const ROC_RACE = "x86/fourteen/fourteen.roc"
+const WANT_ROC_RACE = "x86: fourteen.roc's release executable, a contestant"
 const POINTS_WHERE_F_IS_1 = 5596
 const TIMEOUT_MS = 600000
 
@@ -78,27 +84,35 @@ function main()
   local copy = dir .. "/fourteen-fourteen.js"
   replace(copy, race.text)
   local bytes = written_executable(WHO, exe, race.text, path)
+  local roc_exe = built_roc(WHO, ROC_RACE, "fourteen-roc", "speed")
   local want = wanted(race.n)
   local node = run({"node", "--version"}, {timeout_ms = 10000, whole = 1000, want = WANT_NODE})
   local uptime = trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out)
   print(race.n .. " rounds of 16384 points; the executable: " .. bytes .. " bytes; node " .. trim(node.out) .. "; " .. uptime)
-  local times = {compiled = {}, node = {}}
+  local times = {compiled = {}, node = {}, roc = {}}
   for i = 1, runs do
     local compiled = raced("compiled", {real(path)}, WANT_BINARY)
     local js = raced("node", {"node", real(copy)}, WANT_NODE)
+    local roc = raced("roc", {roc_exe, "" .. race.n}, WANT_ROC_RACE)
     push(times.compiled, compiled.ms)
     push(times.node, js.ms)
+    push(times.roc, roc.ms)
     local c_ok = "WRONG"
     if compiled.out == want then c_ok = "matched" end
     local j_ok = "WRONG"
     if js.out == want then j_ok = "matched" end
+    local r_ok = "WRONG"
+    if roc.out == want then r_ok = "matched" end
     print("compiled: " .. secs(compiled.ms) .. ", " .. c_ok)
     print("node: " .. secs(js.ms) .. ", " .. j_ok .. "; compiled/node " .. ratio(compiled.ms, js.ms))
+    print("roc: " .. secs(roc.ms) .. ", " .. r_ok .. "; compiled/roc " .. ratio(compiled.ms, roc.ms))
   end
   if runs > 1 then
+    local after = trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out)
     local c = median(times.compiled)
     local j = median(times.node)
-    print("medians of " .. runs .. ": compiled " .. secs(c) .. ", node " .. secs(j) .. "; compiled/node " .. ratio(c, j))
+    local k = median(times.roc)
+    print("medians of " .. runs .. ": compiled " .. secs(c) .. ", node " .. secs(j) .. ", roc " .. secs(k) .. "; compiled/node " .. ratio(c, j) .. ", compiled/roc " .. ratio(c, k) .. "; " .. after)
   end
 end
 
