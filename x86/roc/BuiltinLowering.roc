@@ -8,16 +8,33 @@
 ## properties and functions (`Math`, `Object`, `String`, `Array`), the
 ## timers' calls, and `new` of an error class.
 ##
+## **`Math.floor`, `Math.ceil` AND `Math.trunc` ARE IN LINE.** Each is
+## otherwise a call of its routine (LanguageRoutines' `truncated_items`).
+## In line (`rounded_items`), the number is truncated to a 64-bit integer
+## (`cvttsd2si`); an infinity, a NaN and a number of 2^63 or more in size
+## give the integer -2^63, which `cmp` with 1 finds by its overflow, and
+## those take the routine. A double below 2^63 in size truncates exactly,
+## and one of 2^52 or more is whole already, so its truncation is itself.
+## `floor` takes 1 from the truncation when the number is below it, and
+## `ceil` adds 1 when the number is above it (`ucomisd` and `setb`, with no
+## jump). The answer is made a double and the number's sign bit or-ed in: a
+## negative number's floor, ceiling or truncation is negative or -0, and a
+## positive one's is not negative, so the or changes only a 0 to the -0
+## JavaScript gives (`Math.ceil(-0.5)`, `Math.trunc(-0)`).
+## x86/tests/math-rounding.js holds the three to node.
+##
 ## It stands apart from Lowering because each builtin is a family read
 ## whole beside the runtime routines it calls, and none of them needs the
 ## walk: Lowering's dispatch hands each its site and state, and takes back
 ## what it lowered.
 import js.Ast
 import js.ValueRules
+import Assembly
 import Boxing
 import Emit
 import LoweringBasics
 import Runtime
+import X86
 
 BuiltinLowering :: [].{
 
@@ -623,6 +640,12 @@ BuiltinLowering :: [].{
 				called = [Emit.call(Runtime.power), Emit.store(receiver, Rax)]
 				Ok(LoweringBasics.falling(loaded.concat(called), after(Number)))
 			}
+			("Math", "floor") | ("Math", "ceil") | ("Math", "trunc") if count >= 1 => {
+				loaded = number_in({ at: 0, reg: Rdi })?
+				called = [Emit.call(Runtime.math_routine(name)), Emit.store(receiver, Rax)]
+				rounded = rounded_items(site, { name, receiver, slow_items: called })
+				Ok(LoweringBasics.falling(loaded.concat(rounded), after(Number)))
+			}
 			("Math", _) if Runtime.math_functions.contains(name) =>
 				if count == 0 {
 					not_a_number = LoweringBasics.constant_items({
@@ -840,4 +863,69 @@ BuiltinLowering :: [].{
 			),
 		)
 	}
+}
+
+## `Math.floor`, `Math.ceil` or `Math.trunc` (`name`) of the number in `rdi`,
+## its answer stored at `receiver`: in line when the number truncates to a
+## 64-bit integer, else `slow_items`, the routine's call (the header's
+## rule).
+rounded_items : LoweringBasics.Site,
+{
+	name : Str,
+	receiver : X86.Mem,
+	slow_items : List(Assembly.Statement),
+} -> List(Assembly.Statement)
+rounded_items = |site, { name, receiver, slow_items }| {
+	slow_label = LoweringBasics.inner_label(site, "slow")
+	done_label = LoweringBasics.inner_label(site, "done")
+	truncated = [
+		Emit.to_xmm(Xmm0, Rdi),
+		Instruction(Cvttsd2si({ to: Rcx, from: Xmm0 })),
+		Emit.cmp_imm(Rcx, 1),
+		Emit.jcc(O, slow_label),
+	]
+	# 1 in `rax` when the number is below its truncation (floor) or above it
+	# (ceil), taken from or added to it.
+	stepped = |{ left, right, operation }| [
+		Instruction(Cvtsi2sd({ to: Xmm1, from: Rcx })),
+		Instruction(Ucomisd({ left, right })),
+		Instruction(Setcc({ condition: B, to: Al })),
+		Instruction(MovzxByte({ to: Rax, from: Al })),
+		Instruction(Alu({ operation, to: Rcx, from: Rax })),
+	]
+	moved = match name {
+		"floor" => stepped({
+			left: Xmm0,
+			right: Xmm1,
+			operation: Sub,
+		})
+		"ceil" => stepped({
+			left: Xmm1,
+			right: Xmm0,
+			operation: Add,
+		})
+		_ => []
+	}
+	signed = [
+		Instruction(Cvtsi2sd({ to: Xmm1, from: Rcx })),
+		Instruction(MovqFromXmm({ to: Rax, from: Xmm1 })),
+		Emit.mov(Rdx, Rdi),
+		Emit.shr(Rdx, 63),
+		Emit.shl(Rdx, 63),
+		Instruction(
+			Alu({
+				operation: Or,
+				to: Rax,
+				from: Rdx,
+			}),
+		),
+		Emit.store(receiver, Rax),
+		Emit.jmp(done_label),
+		Emit.mark(slow_label),
+	]
+	truncated
+		.concat(moved)
+		.concat(signed)
+		.concat(slow_items)
+		.append(Emit.mark(done_label))
 }

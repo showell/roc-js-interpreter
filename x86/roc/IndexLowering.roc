@@ -53,6 +53,19 @@
 ## are widened. Nothing but those proofs passes the head. So `let i = 0`
 ## then `i = i + 1` in a loop proves `i` all through the loop, and `a[i]`
 ## skips the whole-number test, overflow included, with no guard.
+##
+## **A `for ... of` OVER AN ARRAY STEPS IN LINE.** A walk's step
+## (`IterNext`) is otherwise `runtime_next_item`'s, which tells an array from
+## a Map, a Set and an iterator as the program runs. When the walk's slot
+## holds a known array (`walk_step_items`), the step is in line: the place,
+## a whole number the walk keeps in the slot after the array's, made an
+## integer; the walk's end when it is not below the array's length, read
+## anew at each step, so items pushed during the walk are walked, as in
+## node; else the item loaded, and the place one more. The item of an array
+## of numbers is a known number, and the walk only reads it, so walking one
+## keeps it an array of numbers (Lowering's `numbers_escaping`).
+## x86/tests/array-walks.js holds walks of both kinds of array, empty ones
+## and one that grows as it is walked to node.
 import js.Ast
 import js.Bytecode
 import Assembly
@@ -88,6 +101,35 @@ IndexLowering :: [].{
 
 	## What an index's checks may skip.
 	Checks : { whole : Bool, in_range : Bool }
+
+	## A `for ... of` step over the known array in `slot` (the header's
+	## rule): the next item stored at `stored` and the place in `slot + 1`
+	## moved on, or a jump to `exit` past the last item.
+	walk_step_items : {
+		slot : U64,
+		stored : X86.Mem,
+		exit : Str,
+	} -> List(Assembly.Statement)
+	walk_step_items = |{ slot, stored, exit }| {
+		place = LoweringBasics.slot_place(slot + 1)
+		[Emit.load(Rdi, LoweringBasics.slot_place(slot))]
+			.concat(RuntimeBuilders.unboxed_items(Rdi))
+			.concat([
+				Instruction(MovsdLoad({ to: Xmm0, from: place })),
+				Instruction(Cvttsd2si({ to: Rcx, from: Xmm0 })),
+				Emit.load(Rdx, Emit.mem(Rdi, 0)),
+				Emit.cmp(Rcx, Rdx),
+				Emit.jcc(Ae, exit),
+				Emit.lea(Rsi, Emit.mem(Rcx, 1)),
+				Instruction(Cvtsi2sd({ to: Xmm0, from: Rsi })),
+				Instruction(MovsdStore({ to: place, from: Xmm0 })),
+				Emit.load(R8, Emit.mem(Rdi, 16)),
+				Emit.shl(Rcx, 3),
+				Emit.plus(R8, Rcx),
+				Emit.load(Rax, Emit.mem(R8, 0)),
+				Emit.store(stored, Rax),
+			])
+	}
 
 	## Nothing proved, the stack `depth` places deep.
 	nothing_proved : U64 -> IndexLowering.Checked

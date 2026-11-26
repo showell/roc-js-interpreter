@@ -20,9 +20,13 @@
 ## **KINDS ONLY RISE.** A function's parameters take the kinds its calls
 ## pass, and a call's result the kind its function returns, so the lowering
 ## passes over every function until those kinds settle: each pass lowers
-## with the last pass's kinds. The first pass guesses (each result a
-## number, each parameter a value), and a guess may fall as well as rise
-## (a parameter guessed a value, then found a number), so the passes take
+## with the last pass's kinds. The first pass guesses each result and each
+## parameter a number, so a function whose result comes back to it as its
+## own argument (`run = step(run, op)`, the result of numbers) starts where
+## it settles; a parameter guessed a value would make the result a value,
+## which the call passes back while the parameter is found a number, and
+## the two would swap for good. A guess may fall as well as rise (a
+## parameter guessed a number, then found a string), so the passes take
 ## each pass's kinds as they come. A result that flows back into its own
 ## function's parameter (`x = t(x)`) can go round that way for good: the
 ## parameter a number gives a number, which the call takes as a value, which
@@ -68,7 +72,7 @@
 ## to test where it is used. The rule that keeps that true is conservative,
 ## and every instruction is held to it as it is lowered
 ## (`numbers_escaping`): a `Numbers` value may be read for its `length`,
-## read by a number index, written at a number index with a known number,
+## walked by `for ... of`, read by a number index, written at a number index with a known number,
 ## given `push` of known numbers, printed by console.log, moved between the
 ## frame's own slots (never a cell, which a closure may write through) and
 ## the stack, dropped, and passed to a function called directly, by its
@@ -139,6 +143,9 @@ items_with_numbers = |program, numbers_arrays| {
 		$returns = $returns.insert(index, Number)
 	}
 	var $parameters = Dict.empty()
+	for (code, index) in program.codes.map_with_index(|code, index| (code, index)) {
+		$parameters = $parameters.insert(index, List.repeat(Number, parameter_count(code)))
+	}
 	known = { program, makers, statics }
 	trying = program.codes.any(
 		|code|
@@ -171,6 +178,7 @@ items_with_numbers = |program, numbers_arrays| {
 		var $escaped = $escaped_codes
 		var $first_refusal = Ok({})
 		var $calls = []
+		var $refused = []
 		for index in 0..<program.codes.len() {
 			context = {
 				program,
@@ -217,10 +225,18 @@ items_with_numbers = |program, numbers_arrays| {
 					# function's result is widened for the next pass to see
 					# what follows it.
 					$found = $found.insert(index, Value)
+					$refused = $refused.append(index)
 					if $first_refusal == Ok({}) {
 						$first_refusal = Err(refused)
 					}
 				}
+			}
+		}
+		# A function no call reached this pass (its caller refused, say)
+		# keeps the kinds its parameters had, unless it refused with them.
+		for (index, kinds) in $parameters.to_list() {
+			if !$called.contains(index) and !$refused.contains(index) {
+				$called = $called.insert(index, kinds)
 			}
 		}
 		settled = $found == $returns and $called == $parameters
@@ -346,8 +362,9 @@ with_call_kinds = |called, { code, kinds }|
 	}
 
 ## The kind of a parameter of the function being lowered: what its calls
-## pass, or `Value` for a function a value may hold, or that no lowered
-## call reaches.
+## pass (a function no call reaches keeps the first pass's guess, a number,
+## until it refuses with it), or `Value` for a function a value may hold, or
+## one that refused with the kinds it had.
 parameter_kind : LoweringBasics.Context, U64 -> LoweringBasics.Kind
 parameter_kind = |context, slot|
 	if context.escaped_codes.contains(context.index) {
@@ -897,6 +914,14 @@ loop_targets = |code| {
 ## a `cmov` that keeps the first arm's bits when the ordering holds. The
 ## walk passes the four instructions after the ordering by, and the
 ## conditional's value is a known number. `c ? 1 : 0` is such a select.
+##
+## **AN EQUALITY OF TWO KNOWN NUMBERS AND ITS `JumpIfFalse` ARE ONE.** A
+## `===` or `!==` of two known numbers that a `JumpIfFalse` follows, with no
+## other way reaching the `JumpIfFalse`, is lowered as one
+## (`OperatorLowering.equal_jump_items`): a `ucomisd` and the jumps on its
+## flags, with no boolean made and tested. x86/tests/equal-jumps.js holds
+## both operators, NaNs, -0 and a near miss (a `JumpIfFalse` that another
+## way reaches) to node.
 fused_jump : LoweringBasics.Site,
 {
 	instruction : Bytecode.Op,
@@ -945,6 +970,16 @@ fused_jump = |site, { instruction, joined, ahead, state }| {
 					}
 			}
 		}
+		(Binary(operator, _), Ok(JumpIfFalse(skip))) if !joined and is_equality(operator) =>
+			if (
+				LoweringBasics.kind_below(state, 1),
+				LoweringBasics.kind_below(state, 0),
+			) == (Number, Number) {
+				done = OperatorLowering.equal_jump_items(site, { state, operator, skip })
+				Fused({ done, through: 1 })
+			} else {
+				Unfused
+			}
 		_ => Unfused
 	}
 }
@@ -967,6 +1002,14 @@ number_arm = |site, { arm, state }|
 				Err(NoArm)
 			}
 		_ => Err(NoArm)
+	}
+
+## Whether an operator is `===` or `!==`.
+is_equality : Ast.BinaryOperator -> Bool
+is_equality = |operator|
+	match operator {
+		StrictEqual | StrictNotEqual => True
+		_ => False
 	}
 
 ## Whether an operator is one of the four orderings.
@@ -1284,7 +1327,8 @@ numbers_escaping = |site, { instruction, state }| {
 				_ => within(count + 1)
 			}
 		UpdateLocal({ slot, step: _ }) | AppendLocal({ slot, at: _ }) => held(slot)
-		IterNext({ slot, exit: _ }) => held(slot)
+		# A walk only reads the items.
+		IterStart(_) | IterNext(_) => False
 		_ => within(kinds.len())
 	}
 }
@@ -1715,7 +1759,7 @@ instruction_items = |site, { instruction, state, checked }| {
 		# made an array.
 		IterStart(_) =>
 			match LoweringBasics.kind_below(state, 0) {
-				Array => Ok(LoweringBasics.falling([], state))
+				Array | Numbers => Ok(LoweringBasics.falling([], state))
 				String =>
 					Ok(
 						LoweringBasics.falling(
@@ -1820,18 +1864,41 @@ instruction_items = |site, { instruction, state, checked }| {
 		ShortIfNullish(skip) => OperatorLowering.nullish_jump_items(site, { state, skip })
 		IterNext({ slot, exit }) => {
 			target = LoweringBasics.forward(site, exit)
-			stepped = [
-				Emit.load(Rdi, LoweringBasics.slot_place(slot)),
-				Emit.load(Rsi, LoweringBasics.slot_place(slot + 1)),
-				Emit.call(Runtime.next_item),
-				Emit.test(Rdx, Rdx),
-				Emit.jcc(E, LoweringBasics.place_label(site.context, target)),
-				Emit.store(next_place, Rax),
-				Emit.store(LoweringBasics.slot_place(slot + 1), Rcx),
-			]
+			exit_label = LoweringBasics.place_label(site.context, target)
+			walked = LoweringBasics.slot_kind(site, { state, slot, name: "a walk" })?
+			{ stepped, item } = match walked {
+				Array | Numbers => {
+					item_kind =
+						if walked == Numbers {
+							Number
+						} else {
+							Value
+						}
+					{
+						stepped: IndexLowering.walk_step_items({
+							slot,
+							stored: next_place,
+							exit: exit_label,
+						}),
+						item: item_kind,
+					}
+				}
+				_ => {
+					called = [
+						Emit.load(Rdi, LoweringBasics.slot_place(slot)),
+						Emit.load(Rsi, LoweringBasics.slot_place(slot + 1)),
+						Emit.call(Runtime.next_item),
+						Emit.test(Rdx, Rdx),
+						Emit.jcc(E, exit_label),
+						Emit.store(next_place, Rax),
+						Emit.store(LoweringBasics.slot_place(slot + 1), Rcx),
+					]
+					{ stepped: called, item: Value }
+				}
+			}
 			Ok({
 				statements: stepped,
-				falls: Falls(LoweringBasics.with_top(state, Value)),
+				falls: Falls(LoweringBasics.with_top(state, item)),
 				branch: Branch({ target, state }),
 				result: GivesNothing,
 			})

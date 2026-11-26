@@ -463,6 +463,48 @@ OperatorLowering :: [].{
 		}
 	}
 
+	## A `===` or `!==` of the two known numbers on top, followed by a
+	## `JumpIfFalse`, as one (Lowering's `fused_jump` has the rule): both
+	## dropped, and the jump taken to the `JumpIfFalse`'s target when the
+	## operator's answer is false. Two doubles are equal when `ucomisd` sets
+	## ZF and not PF, NaN's flag, so `===` is false on either `jne` or `jp`,
+	## and `!==` is false when `je` holds and `jp` doesn't.
+	equal_jump_items : LoweringBasics.Site,
+	{
+		state : LoweringBasics.State,
+		operator : Ast.BinaryOperator,
+		skip : U64,
+	} -> LoweringBasics.Lowered
+	equal_jump_items = |site, { state, operator, skip }| {
+		left = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 2)
+		right = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 1)
+		target = site.at + 2 + skip
+		label = LoweringBasics.place_label(site.context, target)
+		compared = [
+			Instruction(MovsdLoad({ to: Xmm0, from: left })),
+			Instruction(MovsdLoad({ to: Xmm1, from: right })),
+			Instruction(Ucomisd({ left: Xmm0, right: Xmm1 })),
+		]
+		jumped = match operator {
+			StrictEqual => [Emit.jcc(Ne, label), Emit.jcc(P, label)]
+			_ => {
+				unordered = LoweringBasics.inner_label(site, "unordered")
+				[
+					Emit.jcc(P, unordered),
+					Emit.jcc(E, label),
+					Emit.mark(unordered),
+				]
+			}
+		}
+		after = LoweringBasics.without_top(state, 2)
+		{
+			statements: compared.concat(jumped),
+			falls: Falls(after),
+			branch: Branch({ target, state: after }),
+			result: GivesNothing,
+		}
+	}
+
 	## Where a select's arm finds its known number: a literal's bits, or a
 	## place of the frame.
 	Arm : [Bits(I64), Place(X86.Mem)]
