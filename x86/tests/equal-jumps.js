@@ -46,6 +46,17 @@ for (let run = 0; run < 6; run++) {
 }
 console.log(total);
 
+// `&&`s of three tests, and one whose value is kept, not tested.
+function all3(a, b, c) {
+  if (a === 1 && b === 2 && c !== 3) return "yes";
+  return "no";
+}
+function kept(a, b) {
+  const both = a === 1 && b;
+  return both;
+}
+console.log(all3(1, 2, 4), all3(1, 2, 3), all3(0, 2, 4), all3(1, 0, 4), kept(1, 7), kept(2, 7), kept(1, 0));
+
 // A `||` before the test: the second test's jump is reached two ways.
 function either(a, b) {
   if (a === 1 || b === 1) return "one";

@@ -116,7 +116,8 @@ Lowering :: [].{
 	## The program's machine code, its entry first, or what in it can't be
 	## lowered yet.
 	program_items : Bytecode.Program -> Try(List(Assembly.Statement), [Refused(Str)])
-	program_items = |program|
+	program_items = |compiled| {
+		program = { ..compiled, codes: compiled.codes.map(threaded_skips) }
 		match items_with_numbers(program, True) {
 			Ok(items) => Ok(items)
 			# Any refusal with arrays of numbers on may be one of an array of
@@ -124,6 +125,47 @@ Lowering :: [].{
 			# and that answer, a refusal or the code, is the program's.
 			Err(_) => items_with_numbers(program, False)
 		}
+	}
+}
+
+## A code with each `SkipIfFalsy` that comes to a `JumpIfFalse` made that
+## jump (the header's `A && THAT AN if TESTS JUMPS ONCE`).
+threaded_skips : Bytecode.Code -> Bytecode.Code
+threaded_skips = |code| {
+	# Where a falsy value skipped from `at` past `skip` instructions ends
+	# up: the `JumpIfFalse`'s target, through any `SkipIfFalsy` between.
+	falsy_target = |at, skip| {
+		var $place = at + 1 + skip
+		var $found = Err(NoJump)
+		var $looking = True
+		while $looking {
+			match code.ops.get($place) {
+				Ok(SkipIfFalsy(next)) => {
+					$place = $place + 1 + next
+				}
+				Ok(JumpIfFalse(next)) => {
+					$found = Ok($place + 1 + next)
+					$looking = False
+				}
+				_ => {
+					$looking = False
+				}
+			}
+		}
+		$found
+	}
+	threaded = code.ops.map_with_index(
+		|instruction, at|
+			match instruction {
+				SkipIfFalsy(skip) =>
+					match falsy_target(at, skip) {
+						Ok(target) => JumpIfFalse(target - at - 1)
+						Err(NoJump) => instruction
+					}
+				_ => instruction
+			},
+	)
+	{ ..code, ops: threaded }
 }
 
 ## The program's machine code, with array literals of numbers made
@@ -914,6 +956,16 @@ loop_targets = |code| {
 ## a `cmov` that keeps the first arm's bits when the ordering holds. The
 ## walk passes the four instructions after the ordering by, and the
 ## conditional's value is a known number. `c ? 1 : 0` is such a select.
+##
+## **A `&&` THAT AN `if` TESTS JUMPS ONCE.** `if (a && b)` compiles to
+## `a`, a `SkipIfFalsy` that keeps a falsy `a` as the `&&`'s value and
+## skips to the `JumpIfFalse` after `b`, which then drops it and jumps. Each
+## code is lowered with every `SkipIfFalsy` whose skip comes to a
+## `JumpIfFalse` (through any other `SkipIfFalsy`, as `a && b && c` does)
+## made a `JumpIfFalse` to that one's target (`threaded_skips`): the same
+## value dropped, the same place reached. The `JumpIfFalse` after `b` is
+## then reached by `b` alone, so a test before each jump is fused with it.
+## x86/tests/equal-jumps.js holds `&&`s of one, two and three tests to node.
 ##
 ## **AN EQUALITY OF TWO KNOWN NUMBERS AND ITS `JumpIfFalse` ARE ONE.** A
 ## `===` or `!==` of two known numbers that a `JumpIfFalse` follows, with no
