@@ -649,12 +649,34 @@ code_items = |context| {
 	# The slots each loop's head may not take to hold no fraction
 	# (IndexLowering's header).
 	var $doubted = Dict.empty()
+	# The slots that may never hold an `Integer` (x86/README.md, "An integer
+	# kind"): each met an `Integer` on one way and another kind on another.
+	var $demoted = []
 	# Every walk that doesn't return widens a loop's head, so after the last
 	# one this is the head of the loop whose kinds never settle.
 	var $widened_head = 0
-	for _ in 0..<most_widenings {
-		match code_walk(context, { heads: $heads, doubted: $doubted }) {
+	# A demotion is no widening: each slot is demoted at most once, so those
+	# walks end too.
+	var $walks = 0
+	while $walks < most_widenings {
+		$walks = $walks + 1
+		walk = code_walk(
+			context,
+			{
+				heads: $heads,
+				doubted: $doubted,
+				demoted: $demoted,
+			},
+		)
+		match walk {
 			Ok(Walked(done)) => return Ok(done)
+			Ok(Demoted(slots)) => {
+				if slots.all(|slot| $demoted.contains(slot)) {
+					crash "Lowering.code_items: a demoted slot holds no Integer"
+				}
+				$demoted = $demoted.concat(slots)
+				$walks = $walks - 1
+			}
 			Ok(Widened({ at, state })) => {
 				$heads = $heads.insert(at, state)
 				$widened_head = at
@@ -678,16 +700,18 @@ code_walk : LoweringBasics.Context,
 {
 	heads : Dict(U64, LoweringBasics.State),
 	doubted : Dict(U64, List(U64)),
+	demoted : List(U64),
 } -> Try(
 	[
 		Walked(CodeItems),
 		Widened({ at : U64, state : LoweringBasics.State }),
 		Doubted({ at : U64, slots : List(U64) }),
+		Demoted(List(U64)),
 		Halted({ refused : [Refused(Str)], calls : List(LoweringBasics.CallKinds) }),
 	],
 	[Refused(Str)],
 )
-code_walk = |context, { heads, doubted }| {
+code_walk = |context, { heads, doubted, demoted }| {
 	code = context.program.codes.get(context.index) ?? crash "Lowering.code_walk: a code's index"
 	start = start_state(context, code)?
 	skipped = skipped_places(context, code)
@@ -724,6 +748,16 @@ code_walk = |context, { heads, doubted }| {
 						Flowing(_) => False
 					}
 				)
+		# No `Integer` on the stack crosses a meeting: the way that falls to one
+		# converts its own, and every jump converts before it goes.
+		$flowing = match $flowing {
+			Flowing(state) if meets => {
+				converted = integers_met(code, state)
+				$body = $body.concat(converted.statements)
+				Flowing(converted.state)
+			}
+			_ => $flowing
+		}
 		arriving = match ($flowing, $pending.get(at)) {
 			(Flowing(state), Ok(waiting)) => {
 				# A function known by its code that falls to where a jump
@@ -731,6 +765,10 @@ code_walk = |context, { heads, doubted }| {
 				made = values_met(context, { state, waiting })
 				$body = $body.concat(made.statements)
 				$escaped = $escaped.concat(made.escaped)
+				clashing = integer_clashes(made.state, waiting)
+				if !clashing.is_empty() {
+					return Ok(Demoted(clashing))
+				}
 				Arrives(meeting_state(context, { at, one: made.state, other: waiting })?)
 			}
 			(Flowing(state), Err(_)) => Arrives(state)
@@ -744,7 +782,13 @@ code_walk = |context, { heads, doubted }| {
 			}
 			Arrives(reached) => {
 				state = match heads.get(at) {
-					Ok(head) => meeting_state(context, { at, one: reached, other: head })?
+					Ok(head) => {
+						clashing = integer_clashes(reached, head)
+						if !clashing.is_empty() {
+							return Ok(Demoted(clashing))
+						}
+						meeting_state(context, { at, one: reached, other: head })?
+					}
 					Err(_) => reached
 				}
 				$seen = $seen.insert(at, state)
@@ -780,7 +824,9 @@ code_walk = |context, { heads, doubted }| {
 					if skipped.contains(at) or $fused.contains(at) {
 						{ statements: [], state, escaped: [] }
 					} else {
-						values_made(site, { instruction, state })
+						converted = integers_made(site, { instruction, state, demoted })
+						made = values_made(site, { instruction, state: converted.state })
+						{ ..made, statements: converted.statements.concat(made.statements) }
 					}
 				$escaped = $escaped.concat(valued.escaped)
 				$calls = match call_kinds(context, { instruction, state: valued.state }) {
@@ -852,18 +898,27 @@ code_walk = |context, { heads, doubted }| {
 								},
 							)
 							$deepest = U64.max($deepest, sent.stack_kinds.len())
+							if sent.stack_kinds.any(LoweringBasics.is_integer) {
+								crash "Lowering.code_walk: a jump's stack holds no Integer"
+							}
 							$pending = match $pending.get(target) {
-								Ok(waiting) => $pending.insert(
-									target,
-									meeting_state(
-										context,
-										{
-											at: target,
-											one: waiting,
-											other: sent,
-										},
-									)?,
-								)
+								Ok(waiting) => {
+									clashing = integer_clashes(waiting, sent)
+									if !clashing.is_empty() {
+										return Ok(Demoted(clashing))
+									}
+									$pending.insert(
+										target,
+										meeting_state(
+											context,
+											{
+												at: target,
+												one: waiting,
+												other: sent,
+											},
+										)?,
+									)
+								}
 								Err(_) => $pending.insert(target, sent)
 							}
 						} else {
@@ -876,7 +931,14 @@ code_walk = |context, { heads, doubted }| {
 								return Ok(Doubted({ at: target, slots: unkept }))
 							}
 							head = $seen.get(target) ?? crash "Lowering.code_walk: a loop's head"
-							again = meeting_state(
+							if sent.stack_kinds.any(LoweringBasics.is_integer) {
+								crash "Lowering.code_walk: a jump's stack holds no Integer"
+							}
+							clashing = integer_clashes(head, sent)
+							if !clashing.is_empty() {
+								return Ok(Demoted(clashing))
+							}
+							met = meeting_state(
 								context,
 								{
 									at: target,
@@ -884,6 +946,7 @@ code_walk = |context, { heads, doubted }| {
 									other: sent,
 								},
 							)?
+							again = integers_widened(head, met)
 							if again != head {
 								return Ok(Widened({ at: target, state: again }))
 							}
@@ -1324,6 +1387,118 @@ values_met = |context, { state, waiting }| {
 		state: { ..state, stack_kinds: $kinds },
 		escaped: $escaped,
 	}
+}
+
+## Each `Integer` an instruction can't take made a double first (x86/README.md,
+## "An integer kind"): every `Integer` on the stack, unless the instruction
+## takes them (`takes_integers`), and the slot it reads or steps in place
+## (`UpdateLocal`, `AppendLocal`) when that slot holds one.
+integers_made : LoweringBasics.Site,
+{
+	instruction : Bytecode.Op,
+	state : LoweringBasics.State,
+	demoted : List(U64),
+} -> { statements : List(Assembly.Statement), state : LoweringBasics.State }
+integers_made = |site, { instruction, state, demoted }| {
+	stacked =
+		if takes_integers(instruction, demoted) {
+			{ statements: [], state }
+		} else {
+			integers_met(site.code, state)
+		}
+	stepped = match instruction {
+		UpdateLocal({ slot, step: _ }) => Ok(slot)
+		AppendLocal({ slot, at: _ }) => Ok(slot)
+		_ => Err(NoSlot)
+	}
+	match stepped {
+		Ok(slot) =>
+			match stacked.state.slots.get(slot) {
+				Ok(Ready(Integer(_))) => {
+					slots = stacked.state.slots.set(slot, Ready(Number))
+						?? crash "Lowering.integers_made: a slot"
+					{
+						statements: stacked.statements.concat(
+							LoweringBasics.integer_converted_items(LoweringBasics.slot_place(slot)),
+						),
+						state: { ..stacked.state, slots },
+					}
+				}
+				_ => stacked
+			}
+		Err(NoSlot) => stacked
+	}
+}
+
+## Whether an instruction takes the `Integer`s on the stack as they are: it
+## copies or drops them, or (`StoreLocal`, `SetLocal`) stores one to a slot
+## that may hold one.
+takes_integers : Bytecode.Op, List(U64) -> Bool
+takes_integers = |instruction, demoted|
+	match instruction {
+		LoadLocal(_) | Pop => True
+		StoreLocal(slot) | SetLocal(slot) => !demoted.contains(slot)
+		_ => False
+	}
+
+## Each `Integer` on the stack made a double, in its place.
+integers_met : Bytecode.Code,
+LoweringBasics.State -> {
+	statements : List(Assembly.Statement),
+	state : LoweringBasics.State,
+}
+integers_met = |code, state| {
+	var $items = []
+	var $kinds = state.stack_kinds
+	for (kind, place) in state.stack_kinds.map_with_index(|kind, place| (kind, place)) {
+		if LoweringBasics.is_integer(kind) {
+			at = LoweringBasics.stack_place(code, place)
+			$items = $items.concat(LoweringBasics.integer_converted_items(at))
+			$kinds = $kinds.set(place, Number) ?? crash "Lowering.integers_met: a place"
+		}
+	}
+	{ statements: $items, state: { ..state, stack_kinds: $kinds } }
+}
+
+## The slots that hold an `Integer` on one of two ways that meet and anything
+## else on the other, which the function is lowered again without
+## (`Demoted`).
+integer_clashes : LoweringBasics.State, LoweringBasics.State -> List(U64)
+integer_clashes = |one, other| {
+	var $out = []
+	pairs = List.map2(
+		one.slots,
+		other.slots,
+		|one_slot, other_slot| (one_slot, other_slot),
+	)
+	for (pair, slot) in pairs.map_with_index(|pair, slot| (pair, slot)) {
+		clash = match pair {
+			(Ready(Integer(_)), Ready(Integer(_))) => False
+			(Ready(Integer(_)), Ready(_)) | (Ready(_), Ready(Integer(_))) => True
+			_ => False
+		}
+		if clash {
+			$out = $out.append(slot)
+		}
+	}
+	$out
+}
+
+## A loop's head met with a way back (`met`), each `Integer` slot whose range
+## grew widened to the whole range, so a counter's head settles at once.
+integers_widened : LoweringBasics.State, LoweringBasics.State -> LoweringBasics.State
+integers_widened = |head, met| {
+	slots = List.map2(
+		head.slots,
+		met.slots,
+		|before, after|
+			match (before, after) {
+				(Ready(Integer(_)), Ready(Integer(_))) if before != after =>
+					Ready(LoweringBasics.any_integer)
+				_ => after
+			},
+	)
+	{ ..met, slots }
 }
 
 ## An instruction's values made: the code that makes them, the state

@@ -28,6 +28,10 @@ LoweringBasics :: [].{
 	## code, `console`, its `log`, and a method looked up by name on a value.
 	Kind : [
 		Number,
+		# A whole number kept as an integer, not a double, between `low` and
+		# `high`, both within ±2^53 (x86/README.md, "An integer kind"): never
+		# -0, NaN or an infinity, and exactly a double when converted.
+		Integer({ low : I64, high : I64 }),
 		Boolean,
 		Undefined,
 		Null,
@@ -102,10 +106,12 @@ LoweringBasics :: [].{
 	## A call of a function by its code, with its arguments' kinds.
 	CallKinds : { code : U64, kinds : List(LoweringBasics.Kind) }
 
-	## Whether a kind is a value's, with boxed bits.
+	## Whether a kind is a value's, with boxed bits: an `Integer`'s bits are an
+	## integer's, so it isn't one until it is converted.
 	is_value_kind : LoweringBasics.Kind -> Bool
 	is_value_kind = |kind|
 		match kind {
+			Integer(_) => False
 			Number | Boolean | Undefined | Null => True
 			String | Array | Numbers | Object | Value | Closure(_) => True
 			Function(_) | Console | Log | Method(_) => False
@@ -119,11 +125,55 @@ LoweringBasics :: [].{
 	met_kind = |one, other|
 		if one == other {
 			Ok(one)
+		} else if LoweringBasics.is_integer(one) and LoweringBasics.is_integer(other) {
+			Ok(LoweringBasics.integer_hull(one, other))
 		} else if LoweringBasics.is_value_kind(one) and LoweringBasics.is_value_kind(other) {
 			Ok(Value)
 		} else {
 			Err(Apart)
 		}
+
+	## Whether a kind is an `Integer`.
+	is_integer : LoweringBasics.Kind -> Bool
+	is_integer = |kind|
+		match kind {
+			Integer(_) => True
+			_ => False
+		}
+
+	## The `Integer` of both of two `Integer`s' ranges, where two ways meet.
+	integer_hull : LoweringBasics.Kind, LoweringBasics.Kind -> LoweringBasics.Kind
+	integer_hull = |one, other|
+		match (one, other) {
+			(Integer(one_range), Integer(other_range)) =>
+				Integer({
+					low: I64.min(one_range.low, other_range.low),
+					high: I64.max(one_range.high, other_range.high),
+				})
+			_ => crash "LoweringBasics.integer_hull: two Integers"
+		}
+
+	## The most an `Integer` may hold either side of 0, 2^53: every whole number
+	## up to it is exactly a double.
+	integer_limit : I64
+	integer_limit = 9007199254740992
+
+	## An `Integer` of the whole range, as a loop's head widens one whose range
+	## grows on the way back.
+	any_integer : LoweringBasics.Kind
+	any_integer = Integer({
+		low: 0 - LoweringBasics.integer_limit,
+		high: LoweringBasics.integer_limit,
+	})
+
+	## The `Integer` at `place` made the double it is, in place: exact, since an
+	## `Integer` is within ±2^53.
+	integer_converted_items : X86.Mem -> List(Assembly.Statement)
+	integer_converted_items = |place| [
+		Emit.load(Rax, place),
+		Instruction(Cvtsi2sd({ to: Xmm0, from: Rax })),
+		Instruction(MovsdStore({ to: place, from: Xmm0 })),
+	]
 
 	literal_label : U64 -> Str
 	literal_label = |number| "literal_${number.to_str()}"
@@ -528,6 +578,7 @@ LoweringBasics :: [].{
 	kind_noun = |kind|
 		match kind {
 			Number => "number"
+			Integer(_) => "number kept as an integer"
 			Boolean => "boolean"
 			Undefined => "undefined"
 			Null => "null"

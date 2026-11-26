@@ -716,7 +716,7 @@ OperatorLowering :: [].{
 			}
 			(TypeOf, kind) => {
 				named = match kind {
-					Number => Named("runtime_text_type_number")
+					Number | Integer(_) => Named("runtime_text_type_number")
 					String => Named("runtime_text_type_string")
 					Boolean => Named("runtime_text_type_boolean")
 					Undefined => Named("runtime_text_undefined")
