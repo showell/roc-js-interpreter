@@ -1133,6 +1133,9 @@ loop_targets = |code| {
 ## then reached by `b` alone, so a test before each jump is fused with it.
 ## x86/tests/equal-jumps.js holds `&&`s of one, two and three tests to node.
 ##
+## An ordering, a `===` or a `!==` of two `Integer`s and its `JumpIfFalse`
+## are a `cmp` and a jump (`OperatorLowering.integer_jump_items`).
+##
 ## **AN EQUALITY OF TWO KNOWN NUMBERS AND ITS `JumpIfFalse` ARE ONE.** A
 ## `===` or `!==` of two known numbers that a `JumpIfFalse` follows, with no
 ## other way reaching the `JumpIfFalse`, is lowered as one
@@ -1161,7 +1164,7 @@ fused_jump = |site, { instruction, joined, ahead, state, origins }| {
 		(
 			Binary(operator, _),
 			Ok(JumpIfFalse(skip)),
-		) if !joined and is_ordering(operator) and integers_on_top(state) => {
+		) if !joined and is_integer_test(operator) and integers_on_top(state) => {
 			done = OperatorLowering.integer_jump_items(site, { state, operator, skip, origins })
 			Fused({ done, through: 1 })
 		}
@@ -1264,6 +1267,12 @@ is_equality = |operator|
 		StrictEqual | StrictNotEqual => True
 		_ => False
 	}
+
+## Whether an operator of two `Integer`s fuses with the `JumpIfFalse` after
+## it as a `cmp` and a jump (`OperatorLowering.integer_jump_items`): an
+## ordering, `===` or `!==`.
+is_integer_test : Ast.BinaryOperator -> Bool
+is_integer_test = |operator| is_ordering(operator) or is_equality(operator)
 
 ## Whether an operator is one of the four orderings.
 is_ordering : Ast.BinaryOperator -> Bool
@@ -1527,11 +1536,11 @@ integers_on_top = |state|
 
 ## The `Integer` a whole number literal pushes, and its integer, when the
 ## instruction after it takes one as it is (x86/README.md, "Where an
-## `Integer` comes from"): a store or set of a slot that may hold one, `+`,
-## `-` or `*` with an `Integer` below that stays one, an ordering with an
-## `Integer` below that its `JumpIfFalse` follows, no other way reaching
-## that jump (`jump_joined` says whether one does), or an index of an
-## array. A literal is `PushNumber`, or a captured number held for good
+## `Integer` comes from"): a store or set of a slot that may hold one,
+## `+ - * %` or a floored `/` with an `Integer` below that stays one
+## (`integer_binary`), an ordering, `===` or `!==` with an `Integer` below
+## that its `JumpIfFalse` follows, no other way reaching that jump or that
+## call (`jump_joined` says whether one does), or an index of an array. A literal is `PushNumber`, or a captured number held for good
 ## (`KnownFunctions.constant_numbers`). Lowering asks only where no other
 ## way reaches the place after it, and a program with a `try` makes none (a
 ## throw lands with every variable a value).
@@ -1563,7 +1572,7 @@ integer_literal = |site, { instruction, state, demoted, jump_joined }| {
 	following = |step| site.code.ops.get(site.at + step)
 	taken = match following(1) {
 		Ok(StoreLocal(slot)) | Ok(SetLocal(slot)) => integer_storable(site, { slot, demoted })
-		Ok(Binary(operator, _)) if is_ordering(operator) =>
+		Ok(Binary(operator, _)) if is_integer_test(operator) =>
 			LoweringBasics.is_integer(beneath)
 				and !jump_joined
 				and (
@@ -1708,9 +1717,10 @@ integers_stepped = |state, { slot, step }|
 ## a store or set of a slot that may hold one, `+ - * %` of two whose result
 ## stays one and the `/` of `Math.floor(a / b)` (`integer_binary`), the
 ## argument of `Math.floor`, `ceil`, `round` or `trunc`, an item read's or
-## write's index (its value written is made a double). An ordering of two `Integer`s fused with its `JumpIfFalse`
-## (`joined` says whether another way reaches the jump, which fuses none)
-## keeps those two, and any ordering or equality a `JumpIfFalse` follows
+## write's index (its value written is made a double). An ordering, `===`
+## or `!==` of two `Integer`s fused with its `JumpIfFalse` (`joined` says
+## whether another way reaches the jump, which fuses none) keeps those two,
+## and any ordering or equality a `JumpIfFalse` follows
 ## keeps nothing below them, since a jump carries no `Integer`. Any other
 ## instruction keeps none.
 integers_kept : LoweringBasics.Site,
@@ -1741,7 +1751,7 @@ integers_kept = |site, { instruction, state, demoted, joined }| {
 		Pop | Duplicate => keeping(0, [])
 		StoreLocal(slot) | SetLocal(slot) => keeping(1, [integer_storable(site, { slot, demoted })])
 		Binary(operator, _) if jumps_next and !joined =>
-			if is_ordering(operator) and integers_on_top(state) {
+			if is_integer_test(operator) and integers_on_top(state) {
 				List.repeat(False, depth - 2).concat([True, True])
 			} else {
 				List.repeat(False, depth)

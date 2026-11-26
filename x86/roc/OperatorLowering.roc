@@ -605,13 +605,14 @@ OperatorLowering :: [].{
 		)
 	}
 
-	## An ordering of the two `Integer`s on top and the `JumpIfFalse` after
-	## it, as one: a `cmp` and a signed jump to the target when the ordering
-	## is false. On the way that falls through the ordering holds, so a slot
-	## either side was loaded from (`origins`, IndexLowering's) has its range
-	## narrowed by the other side's (x86/README.md, "A loop's head"): `i < n`
-	## leaves `i` at most `n`'s most less 1, and `n` at least `i`'s least
-	## and 1.
+	## An ordering, a `===` or a `!==` of the two `Integer`s on top and the
+	## `JumpIfFalse` after it, as one: a `cmp` and a signed jump to the target
+	## when the operator's answer is false. On the way that falls through the
+	## answer is true, so a slot either side was loaded from (`origins`,
+	## IndexLowering's) has its range narrowed by the other side's
+	## (x86/README.md, "A loop's head"): `i < n` leaves `i` at most `n`'s most
+	## less 1, and `n` at least `i`'s least and 1; `i === n` leaves each in
+	## both ranges; `!==` narrows nothing.
 	integer_jump_items : LoweringBasics.Site,
 	{
 		state : LoweringBasics.State,
@@ -629,6 +630,8 @@ OperatorLowering :: [].{
 			Less => Ge
 			LessOrEqual => G
 			Greater => Le
+			StrictEqual => Ne
+			StrictNotEqual => E
 			_ => L
 		}
 		after = LoweringBasics.without_top(state, 2)
@@ -662,6 +665,25 @@ OperatorLowering :: [].{
 					gap: 1,
 				},
 			)
+			StrictEqual => {
+				capped = narrowed_below(
+					after,
+					{
+						lower: side(1),
+						upper: side(0),
+						gap: 0,
+					},
+				)
+				narrowed_below(
+					capped,
+					{
+						lower: side(0),
+						upper: side(1),
+						gap: 0,
+					},
+				)
+			}
+			StrictNotEqual => after
 			_ => narrowed_below(
 				after,
 				{
