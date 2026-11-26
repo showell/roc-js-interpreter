@@ -56,7 +56,6 @@
 ## operation on doubles is scalar), so a `movq` into one counts as a copy
 ## of the whole.
 import Assembly
-import Forwarding
 import X86
 
 Moves :: [].{
@@ -65,10 +64,19 @@ Moves :: [].{
 	## or joined.
 	trim_moves : List(Assembly.Statement) -> List(Assembly.Statement)
 	trim_moves = |statements| {
-		named = Forwarding.named_labels(statements)
+		named = Assembly.named_labels(statements)
 		once = dead_dropped(copies_dropped(statements, named), named)
 		dead_dropped(copies_dropped(once, named), named)
 	}
+
+	## The registers an instruction reads and writes, as bits (`Access`), or
+	## `Opaque` for one that may read or write any: `register_accesses`.
+	accesses : X86.Instruction -> Try(Access, [Opaque])
+	accesses = |instruction| register_accesses(instruction)
+
+	## A general register's bit in an `Access`.
+	register_bit : X86.Register -> U32
+	register_bit = |register| general_unit(register)
 }
 
 ## The registers an instruction reads and writes, as bits: a general
@@ -141,8 +149,8 @@ written_unless_compare = |operation, to|
 ## every register is named; `Opaque` for the rest (a call, a `ret`, a
 ## `syscall`, a 64-bit divide, `rep movsb`, a jump), which may read any
 ## register.
-accesses : X86.Instruction -> Try(Access, [Opaque])
-accesses = |instruction|
+register_accesses : X86.Instruction -> Try(Access, [Opaque])
+register_accesses = |instruction|
 	match instruction {
 		MovRegReg({ to, from }) => Ok({ reads: general_unit(from), writes: general_unit(to) })
 		MovRegImm({ to, value: _ }) => Ok({ reads: 0, writes: general_unit(to) })
@@ -236,7 +244,7 @@ is_plain_move = |instruction|
 ## The registers read before an instruction, given those read after it.
 read_before : X86.Instruction, U32 -> U32
 read_before = |instruction, after|
-	match accesses(instruction) {
+	match register_accesses(instruction) {
 		Ok({ reads, writes }) => {
 			kept = U32.bitwise_and(after, U32.bitwise_xor(writes, every_unit))
 			both(both(kept, reads), frame_units)
@@ -356,7 +364,7 @@ dead_dropped = |statements, named| {
 						$read = read_before(made, after)
 					}
 					_ => {
-						unread = match accesses(instruction) {
+						unread = match register_accesses(instruction) {
 							Ok(
 								{ reads: _, writes },
 							) => is_plain_move(instruction) and U32.bitwise_and(writes, $read) == 0
@@ -643,7 +651,7 @@ copies_dropped = |statements, named| {
 				$kept = $kept.append(statement)
 			}
 			Instruction(instruction) =>
-				match (copy_of(instruction), accesses(instruction)) {
+				match (copy_of(instruction), register_accesses(instruction)) {
 					(Ok({ to, from }), _) =>
 						if to == from or is_known_same($sames, { one: to, other: from }) {
 							{}

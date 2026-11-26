@@ -22,7 +22,6 @@
 ## (`JmpTo`), never into a cycle of them, and nothing else changes: no
 ## instruction other than a jump is taken out or moved.
 import Assembly
-import Forwarding
 
 Jumps :: [].{
 
@@ -105,7 +104,7 @@ thread_each_jump = |statements| {
 ## a statement names, taken out, data kept.
 unreached_dropped : List(Assembly.Statement) -> List(Assembly.Statement)
 unreached_dropped = |statements| {
-	named = Forwarding.named_labels(statements)
+	named = Assembly.named_labels(statements)
 	var $kept = List.with_capacity(statements.len())
 	var $reached = True
 	for statement in statements {

@@ -29,6 +29,24 @@ Assembly :: [].{
 		Distance(Str),
 	]
 
+	## Every label a statement names: a place another way may reach.
+	named_labels : List(Assembly.Statement) -> Set(Str)
+	named_labels = |statements| {
+		var $named = Set.empty()
+		for statement in statements {
+			match statement {
+				JmpTo(label) | CallTo(label) | Distance(label) => {
+					$named = $named.insert(label)
+				}
+				JccTo({ condition: _, label }) | LeaTo({ to: _, label }) => {
+					$named = $named.insert(label)
+				}
+				_ => {}
+			}
+		}
+		$named
+	}
+
 	## The code for `items`, or the first label one names that none marks,
 	## or the first label marked twice.
 	assemble : List(Assembly.Statement) -> Try(List(U8), [UnknownLabel(Str), DuplicateLabel(Str)])
