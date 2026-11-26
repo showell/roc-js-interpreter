@@ -5,7 +5,7 @@
 -- one's whole run. check.shale does not run it: its numbers are timings.
 -- From the repository's root:
 --
---   shale x86/bigdaddy.shale                  # the file's own ROUNDS, about 18 s under node
+--   shale x86/bigdaddy.shale                  # the file's own ROUNDS, 300, about 1.1 s under node (the heap holds about 600 until the collector lands)
 --   shale x86/bigdaddy.shale size=small       # 30 rounds, about 0.3 s under node, for tuning
 --   shale x86/bigdaddy.shale rounds=500       # any count of at least 1
 --   shale x86/bigdaddy.shale runs=5           # five runs of each in turn, and the medians
@@ -28,6 +28,7 @@ const TIMEOUT_MS = 600000
 -- node's last two lines for a round count, computed once with node.
 const LEDGERS = {
   ["10000"] = "ledgers: census 505960, clerk 448521, sort 365457, streets 935522, sieve 312944, words 789686, evening 46800\nmidnight: { rounds: 10000, size: 10, done: true, combined: 695533 }\n",
+  ["300"] = "ledgers: census 117396, clerk 893323, sort 316308, streets 416717, sieve 139383, words 248644, evening 735174\nmidnight: { rounds: 300, size: 10, done: true, combined: 606997 }\n",
   ["30"] = "ledgers: census 399094, clerk 620346, sort 800951, streets 942957, sieve 783853, words 921042, evening 553857\nmidnight: { rounds: 30, size: 10, done: true, combined: 358237 }\n",
 }
 

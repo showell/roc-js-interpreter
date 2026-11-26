@@ -14,12 +14,14 @@ The code here was written by AI coding agents (Claude), with human supervision.
 
 From the repository's root:
 
-    shale x86/bigdaddy.shale                  # 10,000 rounds, about 18 to 20 s under node
+    shale x86/bigdaddy.shale                  # 300 rounds, about 1.1 s under node
     shale x86/bigdaddy.shale size=small       # 30 rounds, about 0.3 s under node, for tuning
     shale x86/bigdaddy.shale rounds=500       # any count of at least 1
     shale x86/bigdaddy.shale size=small runs=5   # five runs of each in turn, and the medians
 
-The contestants are the program compiled by js-x86 and the same program under node. Until js-x86 compiles it, the script prints `compiled: not compiled yet:` and js-x86's refusal, and times node alone. node's last two lines are held to the ledgers stored in the script for 10,000 and 30 rounds; the compiled program's whole output will be held to node's.
+The contestants are the program compiled by js-x86 and the same program under node. Should js-x86 refuse it, the script prints `compiled: not compiled yet:` and the refusal, and times node alone. node's last two lines are held to the ledgers stored in the script for 10,000, 300 and 30 rounds, and the compiled program's whole output is held to node's.
+
+**The full size is 300 rounds for now** (Steve, 2026-11-26: race at 300 now, design the collector next). 10,000 rounds stays the goal once a collector runs; its ledgers stay in the script.
 
 ## Sizes (2026-11-26)
 
