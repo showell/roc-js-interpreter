@@ -154,7 +154,7 @@ with_references_of : Waiting, Heap.Cell -> Waiting
 with_references_of = |waiting, cell|
 	match cell {
 		Object(properties) => with_properties(waiting, properties)
-		Instance(_, properties) => with_properties(waiting, properties)
+		Instance(class, properties) => with_values(with_properties(waiting, properties), [Reference(class.methods)])
 		Builtin(_, properties) => with_properties(waiting, properties)
 		Namespace(_, properties) => with_properties(waiting, properties)
 		Array(items) => with_values(waiting, items)

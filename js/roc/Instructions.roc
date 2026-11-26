@@ -40,7 +40,7 @@ Instructions :: [].{
 	instance_tested = |machine, name| {
 		is_instance = match Machine.value_at(machine, 2) {
 			Reference(id) => match Heap.cell_at(machine.cells, id) {
-				Instance(classes, _) => classes.contains(name)
+				Instance(class, _) => class.names.contains(name)
 				_ => False
 			}
 			_ => False
@@ -559,7 +559,10 @@ Instructions :: [].{
 					properties,
 					key,
 				)
-				Instance(_, properties) => Instructions.own_property(properties, key)
+				Instance(class, properties) => match Heap.instance_property(machine.cells, class, properties, key) {
+					Ok(value) => Found(value)
+					Err(Missing) => Elsewhere
+				}
 				Array(items) if key == "length" => Found(Number(items.len().to_f64()))
 				_ => Elsewhere
 			}
@@ -661,7 +664,26 @@ Instructions :: [].{
 	# value.
 	Naming : [Written(Str), Shown]
 
-	Calling : { count : U64, result_at : U64, naming : Instructions.Naming, at : Ast.Where }
+	# Whether a call's first argument is the receiver of a method call
+	# (`Given`), or a method it enters takes `undefined` there (`NotGiven`).
+	Receiving : [Given, NotGiven]
+
+	Calling : { count : U64, result_at : U64, naming : Instructions.Naming, at : Ast.Where, receiving : Instructions.Receiving }
+
+	# Whether the value `callee` is a closure of a class's method, whose
+	# first parameter is the receiver.
+	takes_receiver : Bytecode.Program, Machine.Machine, Heap.Value -> Bool
+	takes_receiver = |program, machine, callee|
+		match callee {
+			Reference(id) => match Heap.cell_at(machine.cells, id) {
+				Fun(closure) => match Heap.cell_at(machine.cells, closure.scope) {
+					Environment({ code, boxes: _ }) => Machine.code_of(program, code).receiver == TakesReceiver
+					_ => False
+				}
+				_ => False
+			}
+			_ => False
+		}
 
 	# The machine after a call too deep, as node throws it: a RangeError.
 	stack_exceeded : Machine.Machine, Ast.Where -> Machine.Machine
@@ -674,13 +696,27 @@ Instructions :: [].{
 			Environment(held) => held
 			_ => crash "Instructions.closure_entered: a VM closure's scope names its environment"
 		}
-		if machine.depth >= ValueRules.max_depth {
-			Instructions.stack_exceeded(machine, calling.at)
+		entered_code = Machine.code_of(program, code)
+		# A method called by anything but a method call takes `undefined`
+		# as its receiver, before the arguments.
+		{ machine: given, count } =
+			if entered_code.receiver == TakesReceiver and calling.receiving == NotGiven {
+				arguments = Machine.arguments_of(machine, calling.count)
+				var $shifted = Machine.pushed(Machine.dropped(machine, calling.count), Undefined)
+				for argument in arguments {
+					$shifted = Machine.pushed($shifted, argument)
+				}
+				{ machine: $shifted, count: calling.count + 1 }
+			} else {
+				{ machine: machine, count: calling.count }
+			}
+		if given.depth >= ValueRules.max_depth {
+			Instructions.stack_exceeded(given, calling.at)
 		} else {
-			counted = Machine.stepped(machine)
+			counted = Machine.stepped(given)
 			caller = { code: counted.code, pc: counted.pc, base: counted.base, result_at: calling.result_at }
 			depth = counted.depth
-			base = counted.top - calling.count
+			base = counted.top - count
 			inside = {
 				..counted,
 				frames: Instructions.frames_with(counted.frames, depth, caller),
@@ -689,7 +725,7 @@ Instructions :: [].{
 				pc: 0,
 				base: base,
 			}
-			Instructions.frame_filled(inside, { code: Machine.code_of(program, code), given: calling.count, boxes: boxes })
+			Instructions.frame_filled(inside, { code: entered_code, given: count, boxes: boxes })
 		}
 	}
 

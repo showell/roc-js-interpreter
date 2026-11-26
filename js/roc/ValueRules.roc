@@ -703,21 +703,33 @@ ValueRules :: [].{
 
 	# ---- properties ------------------------------------------------------------
 
+	# An object's property `key`, its `value` when `found`; else undefined,
+	# or a fault for one of Object.prototype's names, which the subset has
+	# not.
+	own_or_missing : ValueRules.Machine, { found : Bool, value : Heap.Value, key : Str, site : Ast.Where } -> ValueRules.Got
+	own_or_missing = |machine, { found, value, key, site }|
+		if found {
+			{ machine: machine, value: value }
+		} else if ValueRules.is_prototype_name(key) {
+			ValueRules.fault_got(
+				machine,
+				"unsupported: Object.prototype's `${key}`${ValueRules.line_note(site)}",
+			)
+		} else {
+			{ machine: machine, value: Undefined }
+		}
+
 	property : ValueRules.Machine, Heap.Value, Str, Ast.Where -> ValueRules.Got
 	property = |machine, object, key, site|
 		match object {
 			Reference(id) => match Heap.cell_at(machine.cells, id) {
-				Object(properties) | Instance(_, properties) => {
-					if Heap.has_property(properties, key) {
-						{ machine: machine, value: Heap.property_value(properties, key) }
-					} else if ValueRules.is_prototype_name(key) {
-						ValueRules.fault_got(
-							machine,
-							"unsupported: Object.prototype's `${key}`${ValueRules.line_note(site)}",
-						)
-					} else {
-						{ machine: machine, value: Undefined }
-					}
+				Object(properties) => ValueRules.own_or_missing(
+					machine,
+					{ found: Heap.has_property(properties, key), value: Heap.property_value(properties, key), key, site },
+				)
+				Instance(class, properties) => match Heap.instance_property(machine.cells, class, properties, key) {
+					Ok(value) => { machine: machine, value: value }
+					Err(Missing) => ValueRules.own_or_missing(machine, { found: False, value: Undefined, key, site })
 				}
 				Array(items) => {
 					if key == "length" {

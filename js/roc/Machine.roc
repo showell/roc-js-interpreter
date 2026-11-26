@@ -186,6 +186,14 @@ Machine :: [].{
 		Machine.pushed(cleared, value)
 	}
 
+	# The value `depth` places down from the top (1 is the top) set to
+	# `value`, the rest kept.
+	with_value_at : Machine.Machine, U64, Heap.Value -> Machine.Machine
+	with_value_at = |machine, depth, value| {
+		..machine,
+		stack: machine.stack.set(machine.top - depth, value) ?? crash "Machine.with_value_at: a place on the stack",
+	}
+
 	# The top `count` values replaced by `value`.
 	replaced : Machine.Machine, U64, Heap.Value -> Machine.Machine
 	replaced = |machine, count, value| Machine.with_result(machine, machine.top - count, value)

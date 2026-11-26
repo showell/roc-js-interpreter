@@ -120,13 +120,18 @@ Heap :: [].{
 
 	Closure : { fun : Box(Ast.FunctionDefinition), scope : U64 }
 
+	# An instance's class: the names it is marked with, its class's and each
+	# class that class extends, nearest first, which `instanceof` reads; and
+	# the object holding its class's methods, where a property the instance
+	# doesn't hold is read (ClassDesugaring's doc).
+	Class : { names : List(Str), methods : U64 }
+
 	Cell : [
 		Object(List(Heap.Property)),
-		# A class's instance: an object marked with the names of its class and
-		# of each class that class extends, nearest first, which `instanceof`
-		# reads. Its properties are its fields and its methods' closures
-		# (`Parser`'s "classes"), so it is never printed or listed.
-		Instance(List(Str), List(Heap.Property)),
+		# A class's instance: its class (`Class`), and its own properties, its
+		# fields. It is never printed or listed, since node writes its class's
+		# name.
+		Instance(Heap.Class, List(Heap.Property)),
 		Array(List(Heap.Value)),
 		Fun(Heap.Closure),
 		# A builtin function, and the properties it carries (`String.fromCharCode`).
@@ -523,6 +528,21 @@ Heap :: [].{
 	has_property : List(Heap.Property), Str -> Bool
 	has_property = |properties, key| properties.any(|found| found.key == key)
 
+	# The property `key` of an instance of `class` holding `properties`: its
+	# own, or else its class's method of that name; `Missing` for neither.
+	instance_property : List(Heap.Cell), Heap.Class, List(Heap.Property), Str -> Try(Heap.Value, [Missing])
+	instance_property = |cells, class, properties, key|
+		match properties.find_first(|found| found.key == key) {
+			Ok(found) => Ok(found.value)
+			Err(NotFound) => match Heap.cell_at(cells, class.methods) {
+				Object(methods) => match methods.find_first(|found| found.key == key) {
+					Ok(found) => Ok(found.value)
+					Err(NotFound) => Err(Missing)
+				}
+				_ => crash "Heap.instance_property: a class's table is an object"
+			}
+		}
+
 	# Props with `key` set: in its place when it is there, else at the end.
 	properties_with : List(Heap.Property), Str, Heap.Value -> List(Heap.Property)
 	properties_with = |properties, key, value|
@@ -540,9 +560,9 @@ Heap :: [].{
 			id,
 			|cell| match cell {
 				Object(properties) => Object(Heap.properties_with(properties, key, value))
-				Instance(classes, properties) => {
+				Instance(class, properties) => {
 					written = Heap.properties_with(properties, key, value)
-					Instance(classes, written)
+					Instance(class, written)
 				}
 				_ => crash "Heap.with_property: the interpreter writes properties only to objects"
 			},

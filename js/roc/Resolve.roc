@@ -329,7 +329,7 @@ Resolve :: [].{
 				arguments.map(|argument| Resolve.element(scopes, argument)),
 				site,
 			)
-			Instance(classes) => Instance(classes)
+			Instance(classes, methods) => Instance(classes, Resolve.expression(scopes, methods))
 			InstanceOf(value, class, name, site) => InstanceOf(
 				Resolve.expression(scopes, value),
 				Resolve.expression(scopes, class),

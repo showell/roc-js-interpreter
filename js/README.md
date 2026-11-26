@@ -124,9 +124,10 @@ what node prints for it is what the interpreter must print.
 
 The parser writes each class declaration as plain functions before
 `Resolve` runs (`ClassDesugaring.roc`), so `Resolve`, `Compile` and the
-VM never meet a class, a `new` of one, `this` or `super`. There are no
-prototypes: each instance holds its methods as closures over it. This
-class and its subclass
+VM never meet a class, a `new` of one, `this` or `super`. A class's methods
+are one function each for the whole class, made once, in a table of the
+class's own (a plain object); each takes the receiver as its first
+parameter. This class and its subclass
 
 ```js
 class Point {
@@ -144,44 +145,55 @@ are written as one `let` each, of names no program can write (`this` is a
 reserved word, and the others hold a space or a `.`):
 
 ```js
-let #install Point = function (this) { this.get = function get() { return this.x; }; },
+let #methods Point = { get: function get(this) { return this.x; } },
     #construct Point = function (this, x) { this.x = x; },
     Point = function Point(x) {
-      const this = <a new instance, marked ["Point"]>;
-      #install Point(this);
+      const this = <a new instance, marked ["Point"], of the table #methods Point>;
       #construct Point(this, x);
       return this;
     },
     Point.origin = function origin() { return Point(0); };
 let #extends Pixel = Point,
-    #install Pixel = function (this) {
-      #install Point(this);
-      const super.get = this.get;
-      this.get = function get() { return super.get() * 2; };
+    #methods Pixel = {
+      ...#methods Point,
+      get: function get(this) { return this["þsuper get"]() * 2; },
+      "þsuper get": #methods Point.get,
     },
     #construct Pixel = function (this, x, color) { #construct Point(this, x); this.color = color; },
-    Pixel = function Pixel(x, color) { /* as Point, marked ["Pixel", "Point"] */ },
+    Pixel = function Pixel(x, color) { /* as Point, marked ["Pixel", "Point"], of #methods Pixel */ },
     Pixel.origin = Point.origin;
 ```
 
 `new C(...)` is the call `C(...)`, `C.s` written after the class is the
 variable `C.s`, and an arrow inside a method sees `this` by ordinary
-capture. Every class's methods are set before any constructor runs, so a
-parent's constructor calls a subclass's override, as in node.
+capture. An instance has its class's table from the start, so a parent's
+constructor calls a subclass's override, as in node.
 
-**The VM's one part in it is the mark.** A class's instance is a heap cell
-of its own (`Heap.Cell`'s `Instance`), an object marked with the names of
-its class and of each class it extends; `x instanceof C` reads the mark, so
-it holds up the chain. node prints an instance as `Pixel { x: 1, color:
-'red' }`, and ours holds its methods' closures beside its fields, so
-console.log of an instance (or one inside an array or an object),
+**The VM's part in it is three rules.** A class's instance is a heap cell of
+its own (`Heap.Cell`'s `Instance`): an object marked with the names of its
+class and of each class it extends, which `x instanceof C` reads, so it holds
+up the chain, and holding its class's table.
+
+- **A property an instance doesn't hold is read from its table**, so `o.m`
+  is the class's method, the same function for every instance (`a.m ===
+  b.m`, as in node), unless the instance was given a property `m` of its own,
+  which then wins.
+- **A method call passes its receiver first**: `o.m(...)` of a method (a
+  function whose form is `Method`, `Bytecode.Code`'s `receiver`) puts `o` in
+  the method's first parameter, `this`.
+- **Any other call of a method passes `undefined` there**: a method read off
+  an instance and called alone, or passed as a callback, has `this`
+  undefined and throws node's TypeError when it reads a property of it.
+
+node prints an instance as `Pixel { x: 1, color: 'red' }`, its class's name
+first, so console.log of an instance (or one inside an array or an object),
 `Object.keys`, `values` and `entries`, `{ ...x }` and an object pattern's
 rest end the run, `js: unsupported: printing or listing a class instance`.
 console.log of a class is refused too (node prints `[class Point]`).
 `JSON.stringify` and `for ... in` are outside the subset already.
 
 **What the parser refuses, and why:** a class's name declared again or
-assigned (so `C`, `C.s` and `#install C` always name the one class, and two
+assigned (so `C`, `C.s` and `#methods C` always name the one class, and two
 classes of one name); `extends` of anything but a class declared above it;
 a derived class's constructor that doesn't call `super(...)` once, as a
 statement of its own, before any `this`; a constructor that returns a value;
@@ -191,10 +203,9 @@ setters, `#private` names, class fields, static blocks, computed method
 names and class expressions. A class's property other than a static method
 (`C.name`) is a function's property, which the VM refuses as it refuses any.
 
-**Where it differs from node, knowingly:** each instance has methods of its
-own, so `a.m === b.m` is false where node's is true, and a method read off
-an instance and called alone keeps its instance, where node's loses `this`
-and throws.
+**Where it differs from node, knowingly:** a program that reads an
+instance's property `"þsuper m"` gets its class's parent's method `m` where
+node gets `undefined`; no ASCII text is that key.
 
 **A program outside the subset gets an error that names what it used,
 never a wrong answer.** The parser refuses the forms it can see (`js:

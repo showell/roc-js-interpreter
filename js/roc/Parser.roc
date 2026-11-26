@@ -811,10 +811,10 @@ Parser :: [].{
 	# as plain functions, is ClassDesugaring.
 
 	# The function literals a class's desugaring writes, past the methods
-	# parsed in its body: `#install C`, `#construct C` and `C` itself
-	# (ClassDesugaring's doc), each a literal a block's capture counts.
+	# parsed in its body: `#construct C` and `C` itself (ClassDesugaring's
+	# doc), each a literal a block's capture counts.
 	desugared_functions : U64
-	desugared_functions = 3
+	desugared_functions = 2
 
 	class_declaration : ParserBasics.State -> Try(ParserBasics.Parsed(Ast.Statement), Lexer.Fault)
 	class_declaration = |parser| {

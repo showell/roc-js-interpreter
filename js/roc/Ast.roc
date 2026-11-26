@@ -55,10 +55,11 @@ Ast :: [].{
 		# `new` and what it calls: a builtin constructor and its arguments.
 		New(Ast.Expression, List(Ast.Element), Ast.Where),
 		# A class's fresh instance, marked with the names of its class and of
-		# each class that class extends, nearest first. The parser writes it
-		# inside the function a class declaration becomes (`Parser`'s
-		# "classes"); no program writes one.
-		Instance(List(Str)),
+		# each class that class extends, nearest first, and holding its class's
+		# methods, the object the expression gives (ClassDesugaring's
+		# `#methods C`). The parser writes it inside the function a class
+		# declaration becomes; no program writes one.
+		Instance(List(Str), Ast.Expression),
 		# `x instanceof C`, `C` a class's name: the value, then `C` read (so a
 		# class not yet declared throws as in node), then whether the value is
 		# an instance marked with that name.
@@ -255,7 +256,10 @@ Ast :: [].{
 		capture : Ast.Capture,
 		# A class is a function that makes its instances (`MakesInstances`),
 		# which console.log refuses to print, since node prints `[class C]`.
-		form : [Ordinary, MakesInstances],
+		# A class's method (`Method`) takes the receiver as its first
+		# parameter, `this`: a method call passes the receiver there, and any
+		# other call `undefined`, before the arguments (ClassDesugaring's doc).
+		form : [Ordinary, MakesInstances, Method],
 		at : Ast.Where,
 	}
 

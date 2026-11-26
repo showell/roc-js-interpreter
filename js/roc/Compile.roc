@@ -74,7 +74,7 @@ Compile :: [].{
 			Err(NotFound) => Undeclared
 		}
 		body = block_body(entered.state, tree.statements)?
-		code = finished_code(body.state, { ops: body.ops.append(Do(Finish)), arguments: Each(0) })
+		code = finished_code(body.state, { ops: body.ops.append(Do(Finish)), arguments: Each(0), receiver: NoReceiver })
 		Ok({ codes: body.state.codes.append(code), main: body.state.codes.len(), frame: frame })
 	}
 
@@ -188,14 +188,15 @@ finished_ops = |emitted|
 		},
 	)
 
-finished_code : Compile.State, { ops : List(Compile.Emitted), arguments : Bytecode.Arguments } -> Bytecode.Code
-finished_code = |state, { ops, arguments }| {
+finished_code : Compile.State, { ops : List(Compile.Emitted), arguments : Bytecode.Arguments, receiver : Bytecode.Receiver } -> Bytecode.Code
+finished_code = |state, { ops, arguments, receiver }| {
 	function = state.functions.last() ?? crash "Compile.finished_code: a function is being compiled"
 	{
 		ops: finished_ops(ops),
 		frame_size: function.slots,
 		arguments: arguments,
 		entry: function.entry,
+		receiver: receiver,
 	}
 }
 
@@ -1104,6 +1105,11 @@ function_made = |state, boxed| {
 		{
 			ops: List.concat(taken.ops, body.ops).append(Do(PushUndefined)).append(Do(Return)),
 			arguments: taken.arguments,
+			receiver: if definition.form == Method {
+				TakesReceiver
+			} else {
+				NoReceiver
+			},
 		},
 	)
 	function = done.functions.last() ?? crash "Compile.function_made: the function is being compiled"
@@ -1264,7 +1270,10 @@ expression_compiled = |state, tree|
 				)
 			}
 		}
-		Instance(classes) => compiled(state, [Do(NewInstance(classes))])
+		Instance(classes, methods) => {
+			table = expression_compiled(state, methods)?
+			compiled(table.state, table.ops.append(Do(NewInstance(classes))))
+		}
 		InstanceOf(value, class, name, _) => {
 			first = expression_compiled(state, value)?
 			second = expression_compiled(first.state, class)?
@@ -1494,7 +1503,7 @@ is_pure = |expression| match expression {
 	Function(_) => False
 	Destructure(_, _, _) => False
 	New(_, _, _) => False
-	Instance(_) => False
+	Instance(_, _) => False
 	InstanceOf(_, _, _, _) => False
 	OptionalMember(left, _, _) => is_pure(left)
 	OptionalIndex(left, right, _) => is_pure(left) and is_pure(right)

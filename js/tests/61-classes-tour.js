@@ -78,7 +78,7 @@ for (const who of [ada, bob]) {
   console.log(who.owner, who instanceof Account, who instanceof Savings);
 }
 
-// Many accounts, each with its own closures over its own `this`.
+// Many accounts, sharing their classes' methods.
 const town = Array.from({ length: 5 }, (_, i) => new Savings(`saver${i}`, 100 * (i + 1), 0.1));
 town.forEach((s) => s.addInterest());
 console.log(town.map((s) => s.balance).join(" "), opened.length);

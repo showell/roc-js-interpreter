@@ -11,22 +11,42 @@
 ## in one `let`:
 ##
 ## - `#extends C`, P read, so P not yet declared throws as node throws;
-## - `#install C`, a function of an instance, its parameter `this`: it
-##   runs `#install P` on it, keeps each method of P's that C's methods
-##   call through `super` (`super.m`), and sets each of C's methods on it,
-##   a closure over `this`;
+## - `#methods C`, the class's table: a plain object holding P's table's
+##   methods (a spread of `#methods P`), then each of C's own, which
+##   replace P's of the same name, then, under `super_key(m)`, each method
+##   of P's that C's methods call through `super`;
 ## - `#construct C`, the constructor as a function of the instance and
 ##   the constructor's parameters, its `super(...)` a call of `#construct
 ##   P(this, ...)`;
 ## - `C`, the function `new C(...)` calls: it makes the instance, marked
-##   with the names of C and of the classes C extends (`Ast`'s
-##   `Instance`), installs every method, constructs it and answers it;
+##   with the names of C and of the classes C extends and holding C's table
+##   (`Ast`'s `Instance`), constructs it and answers it;
 ## - `C.s` for each static method, C's own and those it inherits, which
 ##   `C.s` written after the class reads.
 ##
+## **A method is one function for the whole class**, made once, when the
+## class's declaration runs, never once an instance: its first parameter is
+## the receiver, `this`, and its form `Method`. An instance holds only its
+## fields; a property it doesn't hold is read from its class's table, so
+## `o.m` is the class's method unless the instance was given a property `m`
+## of its own (`o.m = ...`), which then wins, as in JavaScript. A method
+## call, `o.m(...)`, passes `o` before the arguments when what it calls is a
+## `Method`; any other call of a method (`const f = o.m; f()`, a callback)
+## passes `undefined` there, as node's `this` is then. `super.m` reads
+## `this`'s property `super_key(m)`, the parent's method, from the table,
+## and a call of it is a method call on `this`.
+##
+## This was chosen over closures made per instance (each over its own
+## `this`, the form before 2026-11-26) so that a compiler can call a
+## class's method directly when it knows the receiver's class, and so that
+## an instance costs its fields alone. The VM and the compiler each keep the
+## same three rules: an instance's table, read when its own properties lack
+## a key; a method call's receiver passed first to a `Method`; `undefined`
+## passed first by any other call of one.
+##
 ## No program can write those names, nor `this` as a name, so no program
 ## meets them. A class's name is declared once in a program and never
-## assigned, so `C`, `C.s` and `#install C` name one class wherever they
+## assigned, so `C`, `C.s` and `#methods C` name one class wherever they
 ## are written.
 ##
 ## The rest of the class knowledge lives in two places. Parser keeps the
@@ -257,7 +277,14 @@ ClassDesugaring :: [].{
 	# A method's class so far, and the class it extends.
 	SuperMethod : { code : ParserBasics.ClassCode, parent : ParserBasics.ParsedClass }
 
-	# `super.m` at `super`, the parent's method kept as `super.m`.
+	# The key under which a class's table holds its parent's method `method`,
+	# for `super.method`: `þ` (bytes 0xC3 0xBE, as the compiler's class keys
+	# start) and `super `, which no ASCII text is.
+	super_key : Str -> Str
+	super_key = |method| "þsuper ${method}"
+
+	# `super.m` at `super`: the receiver's property under `super_key`, which
+	# its class's table holds, the parent's method.
 	super_method : ParserBasics.State, ClassDesugaring.SuperMethod -> ParserBasics.ParsedExpression
 	super_method = |parser, { code, parent }| {
 		site = ParserBasics.here(parser)
@@ -266,7 +293,7 @@ ClassDesugaring :: [].{
 			named = { ..code, supers: code.supers.append(method.value) }
 			Ok({
 				parser: { ..method.parser, receiver: InMethod(named) },
-				value: Name("super.${method.value}", Unresolved, site),
+				value: Member(Name("this", Unresolved, site), ClassDesugaring.super_key(method.value), site),
 			})
 		} else {
 			ClassDesugaring.class_refused(parser, NoSuchSuper(method.value))
@@ -320,49 +347,11 @@ ClassDesugaring :: [].{
 			Extends(parent_class) => parent_class
 			Base => { name: "", class_names: [], methods: [], statics: [] }
 		}
-		installs_parent = match parent {
-			Extends(parent_class) => {
-				installer = named("#install ${parent_class.name}")
-				[Expression(Call(installer, [Single(this)], at))]
-			}
-			Base => []
-		}
 		var $supers = []
 		for each in body.supers {
 			if !$supers.contains(each) {
 				$supers = $supers.append(each)
 			}
-		}
-		keeps_supers = $supers.map(
-			|method| Declare(Const, [declared("super.${method}", Member(this, method, at))]),
-		)
-		sets_methods = body.methods.map(
-			|method| {
-				value = Function(Box.box(method))
-				Expression(
-					Assign(
-						ToMember(this, method.name),
-						Set,
-						value,
-						at,
-					),
-				)
-			},
-		)
-		install_statements = List.concat(List.concat(installs_parent, keeps_supers), sets_methods)
-		install = {
-			name: "",
-			parameters: ["this"],
-			binding: Plain,
-			names: ScopeLayout.scope_names(["this"], install_statements)?,
-			statements: install_statements,
-			capture: if body.methods.is_empty() {
-				CapturesNothing
-			} else {
-				Captures
-			},
-			form: Ordinary,
-			at: at,
 		}
 		passed_on = Patterned({ items: [], rest: RestOf(bound("#arguments")) })
 		constructor = match body.constructor {
@@ -399,6 +388,38 @@ ClassDesugaring :: [].{
 			}
 		}
 		instance_parameter = { pattern: bound("this"), default: NoDefault }
+		# A method of the class's table: the receiver its first parameter.
+		as_method = |method| {
+			..method,
+			parameters: List.concat(["this"], method.parameters),
+			binding: match method.binding {
+				Plain => Plain
+				Patterned({ items, rest }) => {
+					with_instance = List.concat([instance_parameter], items)
+					Patterned({ items: with_instance, rest: rest })
+				}
+			},
+			names: List.concat(["this"], method.names),
+			form: Method,
+		}
+		# The parent's methods first, so the class's own replace them, then
+		# each parent method the class's methods call through `super`.
+		{ inherited_parts, super_parts } = match parent {
+			Extends(parent_class) => {
+				parents = named("#methods ${parent_class.name}")
+				{
+					inherited_parts: [Spread(parents, at)],
+					super_parts: $supers.map(
+						|method| Field({ key: ClassDesugaring.super_key(method), value: Member(parents, method, at) }),
+					),
+				}
+			}
+			Base => { inherited_parts: [], super_parts: [] }
+		}
+		own_parts = body.methods.map(
+			|method| Field({ key: method.name, value: Function(Box.box(as_method(method))) }),
+		)
+		methods_table = ObjectLit(List.concat(List.concat(inherited_parts, own_parts), super_parts))
 		construct = {
 			..constructor,
 			name: "",
@@ -436,8 +457,7 @@ ClassDesugaring :: [].{
 			binding: binding,
 			names: parameters.append("this"),
 			statements: [
-				Declare(Const, [declared("this", Instance(class_names))]),
-				Expression(Call(named("#install ${name}"), [Single(this)], at)),
+				Declare(Const, [declared("this", Instance(class_names, named("#methods ${name}")))]),
 				Expression(constructs),
 				Return(this),
 			],
@@ -464,7 +484,7 @@ ClassDesugaring :: [].{
 			}
 		}
 		functions = [
-			declared("#install ${name}", Function(Box.box(install))),
+			declared("#methods ${name}", methods_table),
 			declared("#construct ${name}", Function(Box.box(construct))),
 			declared(name, Function(Box.box(maker))),
 		]
