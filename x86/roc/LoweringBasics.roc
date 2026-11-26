@@ -104,6 +104,9 @@ LoweringBasics :: [].{
 		returns : Dict(U64, LoweringBasics.Kind),
 		parameters : Dict(U64, List(LoweringBasics.Kind)),
 		literals : Dict(Str, U64),
+		# The places an instance's entries are expected to hold each field at
+		# (`FieldSlots.field_slots`).
+		field_slots : Dict(Str, List(U64)),
 		index : U64,
 	}
 

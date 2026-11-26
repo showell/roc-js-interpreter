@@ -117,6 +117,7 @@ import KnownFunctions
 import Jumps
 import LoweringBasics
 import Moves
+import FieldSlots
 import ObjectTable
 import CallLowering
 import IndexLowering
@@ -205,6 +206,7 @@ LoweringBasics.ArrayRule -> Try(
 items_with_numbers = |program, arrays| {
 	makers = KnownFunctions.makers_of(program)?
 	literals = literals_of(program)?
+	field_slots = FieldSlots.field_slots(program, makers)
 	statics = KnownFunctions.statics_of(program, makers)
 	var $escaped_codes =
 		makers
@@ -265,6 +267,7 @@ items_with_numbers = |program, arrays| {
 				returns: $returns,
 				parameters: $parameters,
 				literals,
+				field_slots,
 				index,
 			}
 			match code_items(context) {
@@ -559,6 +562,59 @@ property_reader = |site, key|
 		ObjectTable.get_method_hashed
 	} else {
 		ObjectTable.get_property_hashed
+	}
+
+## A property's read, `o.key`, on top: the field read in line at a place
+## an instance is expected to hold it at (FieldSlots' header), the
+## runtime's call `slow_items` when the test misses or no place is known.
+field_read_items : LoweringBasics.Site,
+{
+	kind : LoweringBasics.Kind,
+	key : Str,
+	receiver : X86.Mem,
+	slow_items : List(Assembly.Statement),
+} -> List(Assembly.Statement)
+field_read_items = |site, { kind, key, receiver, slow_items }|
+	match (kind, site.context.field_slots.get(key)) {
+		(Object, Ok(slots)) | (Value, Ok(slots)) =>
+			FieldSlots.slot_read_items(
+				site,
+				{
+					slots,
+					receiver,
+					receiver_kind: kind,
+					key,
+					slow_items,
+				},
+			)
+		_ => slow_items
+	}
+
+## A property's write, `o.key = v`, the value on top and the object under
+## it: the field written in line as `field_read_items` reads one.
+field_write_items : LoweringBasics.Site,
+{
+	kind : LoweringBasics.Kind,
+	key : Str,
+	receiver : X86.Mem,
+	value_place : X86.Mem,
+	slow_items : List(Assembly.Statement),
+} -> List(Assembly.Statement)
+field_write_items = |site, { kind, key, receiver, value_place, slow_items }|
+	match (kind, site.context.field_slots.get(key)) {
+		(Object, Ok(slots)) | (Value, Ok(slots)) =>
+			FieldSlots.slot_write_items(
+				site,
+				{
+					slots,
+					receiver,
+					receiver_kind: kind,
+					key,
+					value_place,
+					slow_items,
+				},
+			)
+		_ => slow_items
 	}
 
 ## The key that marks an instance of the class `name`: `þ` (bytes 0xC3
@@ -2501,7 +2557,15 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 									},
 								)
 							} else {
-								called
+								field_read_items(
+									site,
+									{
+										kind,
+										key,
+										receiver: top_place(0),
+										slow_items: called,
+									},
+								)
 							},
 							LoweringBasics.with_top(LoweringBasics.without_top(state, 1), given),
 						),
@@ -2618,15 +2682,26 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 			match LoweringBasics.kind_below(state, 1) {
 				Object | Value | Null | Undefined => {
 					value = LoweringBasics.kind_below(state, 0)
+					called = [
+						Emit.load(Rdi, top_place(1)),
+						Emit.address_of(Rsi, LoweringBasics.text_label(site, key)),
+						Emit.load(Rdx, top_place(0)),
+						Emit.imm(R8, ObjectTable.key_hash(key)),
+						Emit.call(ObjectTable.set_property_hashed),
+					]
+					written = field_write_items(
+						site,
+						{
+							kind: LoweringBasics.kind_below(state, 1),
+							key,
+							receiver: top_place(1),
+							value_place: top_place(0),
+							slow_items: called,
+						},
+					)
 					Ok(
 						LoweringBasics.falling(
-							[
-								Emit.load(Rdi, top_place(1)),
-								Emit.address_of(Rsi, LoweringBasics.text_label(site, key)),
-								Emit.load(Rdx, top_place(0)),
-								Emit.imm(R8, ObjectTable.key_hash(key)),
-								Emit.call(ObjectTable.set_property_hashed),
-							].concat(
+							written.concat(
 								LoweringBasics.copy_items({ from: top_place(0), to: top_place(1) }),
 							),
 							LoweringBasics.with_top(LoweringBasics.without_top(state, 2), value),
