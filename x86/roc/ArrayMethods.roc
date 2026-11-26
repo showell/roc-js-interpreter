@@ -311,10 +311,7 @@ slice_items = {
 			Emit.jcc(E, "runtime_join_piece"),
 		])
 		.concat(copied(R11))
-		.concat([
-			Emit.mark("runtime_join_piece"),
-			Emit.load(Rdx, RuntimeBuilders.listed_item(R10)),
-		])
+		.concat([Emit.mark("runtime_join_piece"), Emit.load(Rdx, RuntimeBuilders.listed_item(R10))])
 		.concat(copied(Rdx))
 		.concat([
 			Emit.plus_imm(R10, 1),
