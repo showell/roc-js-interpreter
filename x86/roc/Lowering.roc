@@ -1,7 +1,7 @@
 ## This module lowers a compiled JavaScript program (`Bytecode`) to x86-64
 ## (`Assembly` statements), one instruction's machine code after another, as
 ## the VM would run them. It holds the passes over the program's functions
-## until their kinds settle (`program_items`), the walk over one function's
+## until their kinds settle (`items_with_numbers`), the walk over one function's
 ## instructions, and the match that hands each instruction to the module
 ## that lowers its family: `OperatorLowering`, `BuiltinLowering` and
 ## `CallLowering`, beside `KnownFunctions`, which finds the functions known
@@ -16,6 +16,26 @@
 ## must agree, so no value needs a tag at run time: a number is its 8 bytes
 ## of IEEE double, a boolean 0 or 1, `undefined` 0. A function is known by
 ## which code it runs, and `console` and its `log` take no bytes at all.
+##
+## **KINDS ONLY RISE.** A function's parameters take the kinds its calls
+## pass, and a call's result the kind its function returns, so the lowering
+## passes over every function until those kinds settle: each pass lowers
+## with the last pass's kinds. The first pass guesses (each result a
+## number, each parameter a value), and a guess may fall as well as rise
+## (a parameter guessed a value, then found a number), so the passes take
+## each pass's kinds as they come. A result that flows back into its own
+## function's parameter (`x = t(x)`) can go round that way for good: the
+## parameter a number gives a number, which the call takes as a value, which
+## gives a value, which the call takes as a number. So once the kinds a pass
+## begins with are ones an earlier pass began with, or `most_passes` have
+## run, each pass's kinds are met with the last pass's (`met_kind`, as two
+## ways meet at a loop's head), and only rise: a parameter from none to a
+## kind to `Value`, a result from a kind to `Value`. Each pass that doesn't
+## settle raises one, so the passes end within `most_rises`. A program
+## that settles before then lowers as the passes found it. Every
+## value has the same bits whatever its kind (`Boxing.roc`), so a call
+## that passes a number to a parameter that holds a value, or a function
+## that returns one where its calls take a value, needs no conversion.
 ##
 ## **A FRAME IS FIXED WHEN THE FUNCTION IS LOWERED.** A function's frame,
 ## below `rbp`, holds its slots (slot s at `rbp - 8(s + 1)`), then the
@@ -129,10 +149,24 @@ items_with_numbers = |program, numbers_arrays| {
 					},
 			),
 	)
-	for _ in 0..<most_passes {
+	# Whether each pass's kinds are met with the last pass's (`KINDS ONLY
+	# RISE` above), and the kinds each pass began with before then.
+	var $rising = False
+	var $begun = []
+	for pass in 0..<(most_passes + most_rises(program)) {
 		var $items = Runtime.start_items(LoweringBasics.code_label(program.main))
 		var $found = $returns
-		var $called = Dict.empty()
+		var $called =
+			if $rising {
+				$parameters
+			} else {
+				Dict.empty()
+			}
+		$begun = $begun.append({
+			returns: $returns,
+			parameters: $parameters,
+			escaped: $escaped_codes,
+		})
 		var $escaped = $escaped_codes
 		var $first_refusal = Ok({})
 		var $calls = []
@@ -155,7 +189,12 @@ items_with_numbers = |program, numbers_arrays| {
 				Ok(lowered) => {
 					$items = $items.concat(lowered.statements)
 					$found = match lowered.result {
-						Gives(kind) => $found.insert(index, kind)
+						Gives(kind) =>
+							if $rising {
+								$found.insert(index, met_result($found.get(index), kind))
+							} else {
+								$found.insert(index, kind)
+							}
 						GivesNothing => $found
 					}
 					for call in lowered.calls {
@@ -211,11 +250,45 @@ items_with_numbers = |program, numbers_arrays| {
 				Err(refused) => Err(refused)
 			}
 		}
+		# Kinds that go round would go round for good, and so would kinds
+		# still moving after `most_passes`: from here on they only rise.
+		next = {
+			returns: $found,
+			parameters: $called,
+			escaped: $escaped,
+		}
+		$rising = $rising or $begun.contains(next) or pass + 1 >= most_passes
 		$returns = $found
 		$parameters = $called
 		$escaped_codes = $escaped
 	}
-	Err(Refused("the kinds of the functions' parameters and results never settle"))
+	crash "Lowering.items_with_numbers: kinds that only rise settle within `most_rises`"
+}
+
+## A function's result, as the passes that only rise keep it: met with what
+## the last pass found.
+met_result : Try(LoweringBasics.Kind, _), LoweringBasics.Kind -> LoweringBasics.Kind
+met_result = |before, kind|
+	match before {
+		Ok(known) =>
+			match LoweringBasics.met_kind(known, kind) {
+				Ok(met) => met
+				Err(Apart) => crash "Lowering.met_result: results are values"
+			}
+		Err(_) => kind
+	}
+
+## The most passes whose kinds only rise before they must have settled:
+## each pass that doesn't settle raises a kind or escapes a function, a
+## result rises once (a kind, then `Value`), a parameter twice (none, a
+## kind, then `Value`) and a function escapes once.
+most_rises : Bytecode.Program -> U64
+most_rises = |program| {
+	var $rises = 1
+	for code in program.codes {
+		$rises = $rises + 2 + 2 * parameter_count(code)
+	}
+	$rises
 }
 
 ## Whether a call passes an array of numbers where its function's parameter
@@ -237,9 +310,8 @@ numbers_escape = |{ calls, parameters, escaped }|
 		},
 	)
 
-## The most passes over every function before the kinds of their parameters
-## and results must have settled: a program that needs more is refused, so
-## the passes end.
+## The most passes over every function that take each pass's kinds as they
+## come, before they only rise (`KINDS ONLY RISE` above).
 most_passes : U64
 most_passes = 8
 
