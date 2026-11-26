@@ -1,0 +1,105 @@
+-- budget: steps=50000000
+-- x86/fourteen.shale: the Nibble machine's one function, x86/fourteen/
+-- fourteen.js, compiled by js-x86 against node, as x86/bank.shale runs the
+-- bank race. Each contestant runs f over all 16,384 points ROUNDS times;
+-- the race is the wall time of each one's whole run. check.shale does not
+-- run it: its numbers are timings. From the repository's root:
+--
+--   shale x86/fourteen.shale                  # the file's own ROUNDS
+--   shale x86/fourteen.shale rounds=50        # any count of at least 1
+--   shale x86/fourteen.shale runs=5           # five runs of each in turn, and the medians
+--
+-- `rounds=` writes a copy of fourteen.js with its `const ROUNDS` line
+-- changed, under the build mount, and both contestants run the copy. Each
+-- contestant's output must be the three lines the count fixes: f is 1 at
+-- 5,596 points each round (the C's cross-check), so the total is 5,596 a
+-- round, and the verdict PASS.
+
+use("./executables.shale")
+
+const WHO = "x86/fourteen.shale"
+const RACE = "x86/fourteen/fourteen.js"
+const POINTS_WHERE_F_IS_1 = 5596
+const TIMEOUT_MS = 600000
+
+-- A contestant's run: its wall time and its output.
+function raced(who, argv, want)
+  local r = run(argv, {timeout_ms = TIMEOUT_MS, whole = 100000, want = want, nice = 19})
+  if r.ended ~= "exit" or r.code ~= 0 then fail(WHO .. ": " .. who .. " ended " .. r.ended .. " " .. get(r, "code", -1) .. ": " .. sub(r.out, 1, 2000)) end
+  return {who = who, out = r.out, ms = r.ms}
+end
+
+-- The output both contestants must print for `n` rounds.
+function wanted(n)
+  return "f is 1 at " .. POINTS_WHERE_F_IS_1 .. " of 16384 points\n" .. n .. " rounds, " .. (n * POINTS_WHERE_F_IS_1) .. " points where f is 1 in all\nPASS\n"
+end
+
+-- Milliseconds as seconds, to the hundredth.
+function secs(ms)
+  local hundredths = (ms + 5) // 10
+  local frac = "" .. hundredths % 100
+  if #frac < 2 then frac = "0" .. frac end
+  return (hundredths // 100) .. "." .. frac .. " s"
+end
+
+-- a / b to the hundredth.
+function ratio(a, b)
+  local hundredths = (a * 100 + b // 2) // b
+  local frac = "" .. hundredths % 100
+  if #frac < 2 then frac = "0" .. frac end
+  return (hundredths // 100) .. "." .. frac
+end
+
+function median(list)
+  local sorted = {}
+  for x in list do push(sorted, x) end
+  sort(sorted)
+  return sorted[(#sorted + 1) // 2]
+end
+
+-- The race's text with ROUNDS set to `n`, and the count it holds.
+function race_text(n)
+  local text = read(RACE)
+  local m = re_find(text, "\nconst ROUNDS = ([0-9]+);")
+  if m == nil then fail(WHO .. ": " .. RACE .. " has no line `const ROUNDS = <digits>;` to set the count in") end
+  if n < 0 then return {text = text, n = tonumber(m.group)} end
+  return {text = re_replace(text, "\nconst ROUNDS = [0-9]+;", "\nconst ROUNDS = " .. n .. ";"), n = n}
+end
+
+function main()
+  local n = arg("rounds", -1)
+  local runs = arg("runs", 1)
+  if runs < 1 then fail(WHO .. ": runs=" .. runs .. " is under 1") end
+  local race = race_text(n)
+  if race.n < 1 then fail(WHO .. ": rounds=" .. race.n .. " is under 1") end
+  local exe = built_roc(WHO, "x86/roc/JsToX86.roc", "js-x86", "dev")
+  local dir = executables_dir()
+  local path = dir .. "/fourteen-fourteen"
+  local copy = dir .. "/fourteen-fourteen.js"
+  replace(copy, race.text)
+  local bytes = written_executable(WHO, exe, race.text, path)
+  local want = wanted(race.n)
+  local node = run({"node", "--version"}, {timeout_ms = 10000, whole = 1000, want = WANT_NODE})
+  local uptime = trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out)
+  print(race.n .. " rounds of 16384 points; the executable: " .. bytes .. " bytes; node " .. trim(node.out) .. "; " .. uptime)
+  local times = {compiled = {}, node = {}}
+  for i = 1, runs do
+    local compiled = raced("compiled", {real(path)}, WANT_BINARY)
+    local js = raced("node", {"node", real(copy)}, WANT_NODE)
+    push(times.compiled, compiled.ms)
+    push(times.node, js.ms)
+    local c_ok = "WRONG"
+    if compiled.out == want then c_ok = "matched" end
+    local j_ok = "WRONG"
+    if js.out == want then j_ok = "matched" end
+    print("compiled: " .. secs(compiled.ms) .. ", " .. c_ok)
+    print("node: " .. secs(js.ms) .. ", " .. j_ok .. "; compiled/node " .. ratio(compiled.ms, js.ms))
+  end
+  if runs > 1 then
+    local c = median(times.compiled)
+    local j = median(times.node)
+    print("medians of " .. runs .. ": compiled " .. secs(c) .. ", node " .. secs(j) .. "; compiled/node " .. ratio(c, j))
+  end
+end
+
+main()
