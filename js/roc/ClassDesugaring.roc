@@ -57,7 +57,6 @@
 import Ast
 import Lexer
 import ParserBasics
-import ScopeLayout
 
 ClassDesugaring :: [].{
 	# The members of a class's body, parsed.
