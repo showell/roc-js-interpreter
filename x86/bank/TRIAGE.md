@@ -72,7 +72,23 @@ This report does not disassemble `bank_race.roc`; its release executable was cac
 
 Every fix here is general: none reshapes `bank_race.js`, and each one helps any program with classes, methods or string-keyed dictionaries. The savings are per transfer, from the counts above. They overlap where noted.
 
-### 1. Fixed slots for class instances, with a guard (about 1,250 instructions, ~45%)
+### 1. Fixed slots for class instances, with a guard (about 1,250 instructions, ~45%): done
+
+**Done (2026-11-26, x86/roc/FieldSlots.roc).** The guess is per key, not per receiver: FieldSlots reads each class's constructor code for the keys it sets, in order, following `super(...)` into the parent's, and gives each key the places (at most three) where an instance holds it. A `GetProperty` (any key but `length`) or `SetProperty` on an `Object` or a `Value` whose key has places tests in line: the receiver's tag (for a `Value`), its entry count above the place, and the entry's key against the literal's address. The fallback is exactly the old call. The receiver's class is never inferred, since the exact test makes any guess safe.
+
+Counted the same way, by static objdump of the small race (master a6985e1 against the lane):
+
+| | before | after |
+|---|---|---|
+| one field read or write on the common path | 66 to 154 instructions, 1 call plus 1 to 6 nested `runtime_text_equal` calls | 17 instructions (the tag test, the unbox, the count, the key compare, the load or store and the jump past the slow way), no call |
+| field accesses a transfer makes (money moved: 9 in the three `next()`s, 5 in `withdraw`, 4 in `deposit`) | ~1,470 instructions | ~310 |
+| calls a transfer makes from `transfers` and the method bodies | ~37 | ~19 |
+| a transfer | ~2,700 instructions | ~1,550 |
+| `deposit`, `withdraw`, `next` (static instructions, every way included) | 120, 201, 99 | 190, 323, 153 (each slow way stays beside its fast one) |
+
+`shale x86/bank.shale size=small runs=3` (2,000,000 transfers, load about 1.5): compiled 0.43 s, node 0.30 s, Roc 0.47 s, medians; compiled/node 1.44, compiled/roc 0.90. Before, one run each beside it: 0.89 s compiled. So the compiled race now beats the Roc port at the small size, and is about 1.4 times node's.
+
+The plan as first written:
 
 A class's constructor that writes `this.k = ...` in straight-line code with no branches before the writes gives every instance the same entry order: the mark, the class keys, then the fields in order. So `balance` is always entry 3 of an `Account`. For a `this.k` in that class's methods, and for `o.k` in general, the compiler can guess the slot and emit an inline guard instead of the runtime call:
 
