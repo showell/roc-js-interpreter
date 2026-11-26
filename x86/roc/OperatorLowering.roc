@@ -1423,3 +1423,40 @@ expect {
 	}
 	divisors.all(|divisor| dividends.all(|dividend| is_truncating(divisor, dividend)))
 }
+
+# `i < n` with `i` any `Integer` and `n` a length: where it holds, `i` is at
+# most the length's most less 1, and `n` at least 1 more than `i`'s least
+# (floored by `n`'s own 0); `<=` keeps the most; a side not loaded from a
+# slot narrows nothing.
+expect {
+	length = Integer({ low: 0, high: 4294967296 })
+	state = { slots: [Ready(LoweringBasics.any_integer), Ready(length)], stack_kinds: [] }
+	below = |gap, origin| narrowed_below(
+		state,
+		{
+			lower: { kind: LoweringBasics.any_integer, origin: Local(0) },
+			upper: { kind: length, origin },
+			gap,
+		},
+	)
+	counter = Ready(Integer({ low: 0 - LoweringBasics.integer_limit, high: 4294967295 }))
+	below(1, Local(1)).slots == [counter, Ready(length)]
+		and below(0, Other).slots == [
+			Ready(Integer({ low: 0 - LoweringBasics.integer_limit, high: 4294967296 })),
+			Ready(length),
+		]
+}
+
+# `i >= 0`, as `0 <= i`: `i` is at least 0 where it holds, its most kept.
+expect {
+	state = { slots: [Ready(Integer({ low: -2, high: 99 }))], stack_kinds: [] }
+	narrowed = narrowed_below(
+		state,
+		{
+			lower: { kind: Integer({ low: 0, high: 0 }), origin: Literal(0.0) },
+			upper: { kind: Integer({ low: -2, high: 99 }), origin: Local(0) },
+			gap: 0,
+		},
+	)
+	narrowed.slots == [Ready(Integer({ low: 0, high: 99 }))]
+}

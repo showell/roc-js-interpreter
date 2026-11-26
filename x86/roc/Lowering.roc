@@ -2997,6 +2997,64 @@ expect !keeps_numbers([
 	"main();",
 ])
 
+## How many conversions between a double and an integer (`cvttsd2si`,
+## `cvtsi2sd`) a program's own code holds, the runtime's routines left out,
+## for the expects: a place's label, and every label of an instruction's
+## pieces, starts with `code_`.
+conversions_in_code : List(Str) -> U64
+conversions_in_code = |source_lines| {
+	src = Str.join_with(source_lines, "\n")
+	tree = Parser.program_of(
+		src,
+		Core,
+	) ?? crash "Lowering.conversions_in_code: a program that parses"
+	program = match Compile.program(tree) {
+		Ok(compiled) => compiled
+		Err(_) => crash "Lowering.conversions_in_code: a program that compiles"
+	}
+	statements = Lowering.program_items(program) ?? crash "Lowering.conversions_in_code: it lowers"
+	var $in_code = False
+	var $count = 0
+	for statement in statements {
+		match statement {
+			Mark(label) => {
+				$in_code = label.starts_with("code_")
+			}
+			Instruction(Cvttsd2si(_)) | Instruction(Cvtsi2sd(_)) if $in_code => {
+				$count = $count + 1
+			}
+			_ => {}
+		}
+	}
+	$count
+}
+
+# A counter that a length bounds, stepped by 1, indexes an array of numbers
+# with no conversion at all: the counter, the length and the index are
+# integers, and the sum is a double.
+expect conversions_in_code([
+	"function sum(a) {",
+	"  const n = a.length; let t = 0; let i = 0;",
+	"  while (i < n) { t = t + a[i]; i = i + 1; }",
+	"  return t;",
+	"}",
+	"function main() { const a = [1, 2]; console.log(sum(a)); }",
+	"main();",
+]) == 0
+
+# The same counter stepped by a half takes a fraction: it is demoted to a
+# double, so the length is made one to be compared, and the index made an
+# integer again.
+expect conversions_in_code([
+	"function sum(a) {",
+	"  const n = a.length; let t = 0; let i = 0;",
+	"  while (i < n) { t = t + a[i]; i = i + 0.5; }",
+	"  return t;",
+	"}",
+	"function main() { const a = [1, 2]; console.log(sum(a)); }",
+	"main();",
+]) >= 2
+
 ## A refusal's words when an array of numbers reaches a parameter that
 ## may hold another value.
 numbers_escape_text : Str

@@ -724,3 +724,62 @@ integer_product = |one, other| {
 	}
 	integer_within($low, $high)
 }
+
+## A range's least and most, for the expects.
+Bounds : (I64, I64)
+
+## An `Integer`, or none, for the expects.
+IntegerAnswer : Try(LoweringBasics.Kind, [NotInteger])
+
+## `+`, `-` or `*` of two ranges, for the expects.
+arithmetic_of_ranges : Ast.BinaryOperator -> (Bounds, Bounds -> IntegerAnswer)
+arithmetic_of_ranges = |operator| |(one_low, one_high), (other_low, other_high)| {
+	left = Integer({ low: one_low, high: one_high })
+	right = Integer({ low: other_low, high: other_high })
+	LoweringBasics.integer_arithmetic({ operator, left, right })
+}
+
+## The `Integer` between two bounds, for the expects.
+between : I64, I64 -> IntegerAnswer
+between = |low, high| Ok(Integer({ low, high }))
+
+# A sum or a difference stays an `Integer` up to ±2^53 exactly, and is none
+# one past it either way.
+expect {
+	limit = LoweringBasics.integer_limit
+	sum = arithmetic_of_ranges(Add)
+	difference = arithmetic_of_ranges(Subtract)
+	sum((0, limit - 1), (1, 1)) == between(1, limit)
+		and sum((0, limit), (1, 1)) == Err(NotInteger)
+		and difference((0 - limit + 1, 0), (1, 1)) == between(0 - limit, -1)
+		and difference((0 - limit, 0), (1, 1)) == Err(NotInteger)
+		and difference((0, 10), (0, 4)) == between(-4, 10)
+}
+
+# A product that may be -0 (a range holding 0 times one holding a negative,
+# either way round) is no `Integer`; one of factors that can't be is, with
+# its corners' bounds; one past 2^53 is none.
+expect {
+	product = arithmetic_of_ranges(Multiply)
+	product((0, 5), (-1, -1)) == Err(NotInteger)
+		and product((-3, 2), (0, 0)) == Err(NotInteger)
+		and product((1, 5), (-3, -1)) == between(-15, -1)
+		and product((-2, 3), (2, 4)) == between(-8, 12)
+		and product((0, 5), (2, 3)) == between(0, 15)
+		and product((0, 94906265), (0, 94906265)) == between(0, 9007199136250225)
+		and product((0, 94906267), (0, 94906267)) == Err(NotInteger)
+		and product((0, 4294967296), (0, 4294967296)) == Err(NotInteger)
+}
+
+# A literal is an `Integer` when it is whole, within ±2^53 and not -0; a
+# step that would pass 2^53 gives none.
+expect {
+	limit = LoweringBasics.integer_limit
+	literal = LoweringBasics.integer_of_literal
+	literal(7.0) == between(7, 7)
+		and literal(-9007199254740992.0) == between(0 - limit, 0 - limit)
+		and literal(9007199254740994.0) == Err(NotInteger)
+		and literal(-0.0) == Err(NotInteger)
+		and literal(2.5) == Err(NotInteger)
+		and LoweringBasics.integer_stepped(Integer({ low: 0, high: limit }), 1.0) == Err(NotInteger)
+}
