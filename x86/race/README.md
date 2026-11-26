@@ -218,3 +218,11 @@ Measured as before, alternated with master's executable (2bb67ea, the state afte
 What 17 doesn't do, and why. The counter is still a double, so each access still makes it a whole number with `cvttsd2si`, and the step is still `addsd` with the constant 1.0 made with `movabs`. Keeping it as an integer in a register needs a kind of its own for a slot and a stack place whose bits are an integer, not a double. Every consumer would take it or make it a double first. A meeting of two ways where one holds an integer and the other a double would convert on one way; today a meeting only merges kinds whose bits agree. The loop head's widening would then have to go integer to double. That is a change to the walk's kinds and meetings throughout, and it is left for a round of its own.
 
 A guess at what is left, not measured: the loop now waits on the carry. Each limb's carry is stored to the frame after the `cmov` and loaded back before the next limb's `addsd`, a chain of about 15 cycles a limb through memory. Keeping `carry` in a register would shorten it. Registers chooses its four places by how often the code names them, so it chooses `i` and the stack places, not `carry`.
+
+The 20-second race after 17, on master 2e75bb5's fib_race.js (its digitsOf joins the limbs' digits once). The three executables were run directly, one after another, load 0.84 to 0.92. Each line is the program's own summary:
+
+    branch, compiled: reached F(425328): 88888 digits, elapsed 19962 ms of 20000, PASS, then out of memory printing the whole number (exit 1)
+    master, compiled: reached F(401572): 83924 digits, elapsed 19973 ms of 20000, PASS (exit 0)
+    node:             reached F(358413): 74904 digits, elapsed 19967 ms of 20000, PASS (exit 0)
+
+The branch's run reached further and then ran out of the 1 GiB heap in `join`, which is quadratic, while building the 88,888 digits. That is another lane's fix, in ArrayMethods.roc. So `x86/race.shale` couldn't check its whole number against BigInt, and this pair was run outside it. Its F(1000) and F(100) checks and its first and last digits were printed before the verdict. From master's F(401,572), about 1.12 times the work. This node run is among the slow ones (F(384,308) in the last section's pair); against it, the compiled program did about 1.4 times node's work.
