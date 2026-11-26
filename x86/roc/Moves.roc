@@ -20,7 +20,14 @@
 ## - **A move through a register nothing reads after is joined into
 ##   one** (`dead_dropped` too): `mov rax, [rbp-48]` then `mov r9, rax`
 ##   becomes `mov r9, [rbp-48]`, when `rax` is written before it is read
-##   again.
+##   again. So is a move into an operation's source (`mov rcx, rbx` then
+##   `add rax, rcx` is `add rax, rbx`; an immediate moved in is the
+##   operation's immediate) or into a compare's first, which it doesn't
+##   write.
+## - **A register stepped through another is stepped in place**
+##   (`stepped_in_place`): `mov rax, r9`, `add rax, 1`, `mov r9, rax` is
+##   `add r9, 1`, when nothing reads `rax` after, as an integer counter's
+##   step lowers.
 ##
 ## **THE RULE, KEPT CONSERVATIVE.** What a register holds is known to be
 ## unread by walking backward over the instructions `accesses` names every
