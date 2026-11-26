@@ -119,14 +119,26 @@ LoweringBasics :: [].{
 			Static(_) | StaticMethod(_) => False
 		}
 
+	## Whether a direct call may push an argument of this kind: a value's, or
+	## an `Integer`, which the walk leaves only where the callee's parameter
+	## takes one (Lowering's `integer_arguments`).
+	is_argument_kind : LoweringBasics.Kind -> Bool
+	is_argument_kind = |kind| LoweringBasics.is_value_kind(kind) or LoweringBasics.is_integer(kind)
+
 	## The kind two ways give a place: their own when they agree, `Value` when
-	## both are values, and none for anything else.
+	## both are values, and none for anything else. An `Integer` meets a value
+	## as the number it is (`Integer ⊑ Number`), as two calls' arguments meet
+	## at a parameter.
 	met_kind : LoweringBasics.Kind, LoweringBasics.Kind -> Try(LoweringBasics.Kind, [Apart])
 	met_kind = |one, other|
 		if one == other {
 			Ok(one)
 		} else if LoweringBasics.is_integer(one) and LoweringBasics.is_integer(other) {
 			Ok(LoweringBasics.integer_hull(one, other))
+		} else if LoweringBasics.is_integer(one) and LoweringBasics.is_value_kind(other) {
+			LoweringBasics.met_kind(Number, other)
+		} else if LoweringBasics.is_value_kind(one) and LoweringBasics.is_integer(other) {
+			LoweringBasics.met_kind(one, Number)
 		} else if LoweringBasics.is_value_kind(one) and LoweringBasics.is_value_kind(other) {
 			Ok(Value)
 		} else {

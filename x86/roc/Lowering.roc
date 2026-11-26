@@ -281,6 +281,7 @@ items_with_numbers = |program, numbers_arrays| {
 				$called = $called.insert(index, kinds)
 			}
 		}
+		$called = parameters_widened({ before: $parameters, called: $called })
 		settled = $found == $returns and $called == $parameters
 		if settled and $escaped.len() == $escaped_codes.len() {
 			escaping = numbers_escape({
@@ -344,15 +345,52 @@ met_result = |before, kind|
 
 ## The most passes whose kinds only rise before they must have settled:
 ## each pass that doesn't settle raises a kind or escapes a function, a
-## result rises once (a kind, then `Value`), a parameter twice (none, a
-## kind, then `Value`) and a function escapes once.
+## result rises once (a kind, then `Value`), a parameter five times (none,
+## an `Integer`, widened on one side and on the other, a number, then
+## `Value`) and a function escapes once.
 most_rises : Bytecode.Program -> U64
 most_rises = |program| {
 	var $rises = 1
 	for code in program.codes {
-		$rises = $rises + 2 + 2 * parameter_count(code)
+		$rises = $rises + 2 + 5 * parameter_count(code)
 	}
 	$rises
+}
+
+## The parameters' kinds a pass found (`called`), each `Integer` whose range
+## grew since the pass before (`before`) widened on the side it grew, to
+## ±2^53 there, as a loop's head widens a slot's: a function that passes
+## its own parameter stepped (`f(n - 1)`) settles in a pass or two.
+parameters_widened : {
+	before : Dict(U64, List(LoweringBasics.Kind)),
+	called : Dict(U64, List(LoweringBasics.Kind)),
+} -> Dict(U64, List(LoweringBasics.Kind))
+parameters_widened = |{ before, called }| {
+	limit = LoweringBasics.integer_limit
+	widened = |was, now|
+		match (was, now) {
+			(Integer(old), Integer(grown)) if was != now => {
+				low = if grown.low < old.low {
+					0 - limit
+				} else {
+					grown.low
+				}
+				high = if grown.high > old.high {
+					limit
+				} else {
+					grown.high
+				}
+				Integer({ low, high })
+			}
+			_ => now
+		}
+	called.map(
+		|index, kinds|
+			match before.get(index) {
+				Ok(earlier) if earlier.len() == kinds.len() => List.map2(earlier, kinds, widened)
+				_ => kinds
+			},
+	)
 }
 
 ## Whether a call passes an array of numbers where its function's parameter
@@ -510,18 +548,43 @@ literal_statements = |literals| {
 	$out
 }
 
+## The parameters whose calls pass an `Integer` that the entry makes a
+## double (`entry_items`): each one a closure captures, whose cell holds a
+## value, or that the walk demoted (`Demoted`).
+entry_doubles : LoweringBasics.Context, { code : Bytecode.Code, demoted : List(U64) } -> List(U64)
+entry_doubles = |context, { code, demoted }| {
+	var $out = []
+	for slot in 0..<parameter_count(code) {
+		held = demoted.contains(slot) or context.cells.contains(slot)
+		if held and LoweringBasics.is_integer(parameter_kind(context, slot)) {
+			$out = $out.append(slot)
+		}
+	}
+	$out
+}
+
 ## The kinds when a function's code starts: its parameters hold their
-## kinds, its declared functions known before the program runs and the
-## functions it captures are ready, its other captures hold values, and the
-## rest are unready.
-start_state : LoweringBasics.Context, Bytecode.Code -> Try(LoweringBasics.State, [Refused(Str)])
-start_state = |context, code| {
+## kinds (a number for those `entered` makes doubles), its declared
+## functions known before the program runs and the functions it captures
+## are ready, its other captures hold values, and the rest are unready.
+start_state : LoweringBasics.Context,
+{
+	code : Bytecode.Code,
+	entered : List(U64),
+} -> Try(LoweringBasics.State, [Refused(Str)])
+start_state = |context, { code, entered }| {
 	known = known_functions(context)
 	var $slots = List.repeat(Unready, code.frame_size)
 	for slot in 0..<parameter_count(code) {
+		kind =
+			if entered.contains(slot) {
+				Number
+			} else {
+				parameter_kind(context, slot)
+			}
 		$slots = $slots.set(
 			slot,
-			Ready(parameter_kind(context, slot)),
+			Ready(kind),
 		) ?? crash "Lowering.start_state: a parameter has a slot"
 	}
 	match code.arguments {
@@ -537,6 +600,8 @@ start_state = |context, code| {
 				kind =
 					if context.cells.contains(slot) {
 						Value
+					} else if entered.contains(slot) {
+						Number
 					} else {
 						parameter_kind(context, slot)
 					}
@@ -764,7 +829,8 @@ code_walk : LoweringBasics.Context,
 )
 code_walk = |context, { heads, doubted, demoted }| {
 	code = context.program.codes.get(context.index) ?? crash "Lowering.code_walk: a code's index"
-	start = start_state(context, code)?
+	entered = entry_doubles(context, { code, demoted })
+	start = start_state(context, { code, entered })?
 	skipped = skipped_places(context, code)
 	looped_to = loop_targets(code)
 	# The places of the `JumpIfFalse`s an ordering before took as its own.
@@ -890,7 +956,19 @@ code_walk = |context, { heads, doubted, demoted }| {
 						}
 					}
 				$escaped = $escaped.concat(valued.escaped)
-				$calls = match call_kinds(context, { instruction, state: valued.state }) {
+				# A call's kinds are its arguments' before any was made a double.
+				integers_before = List.map2(
+					state.stack_kinds,
+					valued.state.stack_kinds,
+					|before, after|
+						if LoweringBasics.is_integer(before) {
+							before
+						} else {
+							after
+						},
+				)
+				called_state = { ..valued.state, stack_kinds: integers_before }
+				$calls = match call_kinds(context, { instruction, state: called_state }) {
 					Ok(call) => $calls.append(call)
 					Err(NoCall) => $calls
 				}
@@ -1062,7 +1140,7 @@ code_walk = |context, { heads, doubted, demoted }| {
 	if frame_bytes > 1048576 {
 		return Err(code_refusal(context, FrameTooLarge))
 	}
-	made = entry_items(context, { code, frame_bytes }).concat($body)
+	made = entry_items(context, { code, frame_bytes, entered }).concat($body)
 	statements =
 		if context.trying {
 			made
@@ -1283,7 +1361,10 @@ is_ordering = |operator|
 	}
 
 ## The kinds of a call's arguments, when the instruction calls a declared
-## function with as many arguments as it has parameters, each a value.
+## function with as many arguments as it has parameters, each a value or an
+## `Integer`. An `Integer` is the kind its parameter takes once every call
+## passes one (x86/README.md, "An integer kind"), whether or not this pass
+## passed it as one (`integer_arguments`).
 call_kinds : LoweringBasics.Context,
 {
 	instruction : Bytecode.Op,
@@ -1296,7 +1377,8 @@ call_kinds = |context, { instruction, state }|
 				Function(made) | Closure(made) => {
 					callee = context.program.codes.get(made) ?? crash "Lowering.call_kinds: a code"
 					kinds = state.stack_kinds.take_last(count)
-					if callee.arguments == Each(count) and kinds.all(LoweringBasics.is_value_kind) {
+					pushed = kinds.all(LoweringBasics.is_argument_kind)
+					if callee.arguments == Each(count) and pushed {
 						Ok({ code: made, kinds })
 					} else {
 						Err(NoCall)
@@ -1324,12 +1406,16 @@ call_kinds = |context, { instruction, state }|
 ## through a value sets `rdx`, to a method call's receiver, or else to
 ## `undefined` (ClassDesugaring's doc). Its direct entry takes `this` as its
 ## first argument, as any function's first.
+##
+## A parameter `entered` lists takes an `Integer` from its calls, which the
+## direct entry makes a double in its slot before the cells are made.
 entry_items : LoweringBasics.Context,
 {
 	code : Bytecode.Code,
 	frame_bytes : U64,
+	entered : List(U64),
 } -> List(Assembly.Statement)
-entry_items = |context, { code, frame_bytes }| {
+entry_items = |context, { code, frame_bytes, entered }| {
 	index = context.index
 	parameters = parameter_count(code)
 	prologue = [
@@ -1406,6 +1492,10 @@ entry_items = |context, { code, frame_bytes }| {
 			Emit.load(Rax, argument(slot)),
 			Emit.store(LoweringBasics.slot_place(slot), Rax),
 		])
+		if entered.contains(slot) {
+			place = LoweringBasics.slot_place(slot)
+			$direct = $direct.concat(LoweringBasics.integer_converted_items(place))
+		}
 		# A method's arguments start at its second parameter.
 		pushed = if received and slot > 0 {
 			slot - 1
@@ -1595,12 +1685,48 @@ integer_literal = |site, { instruction, state, demoted, jump_joined }| {
 				},
 			).is_ok()
 		Ok(GetIndex(_)) => takes_integer_index(beneath)
+		Ok(Call(_)) | Ok(PushNumber(_)) | Ok(LoadLocal(_)) => integer_argument(site, state)
 		_ => False
 	}
 	if taken {
 		Ok({ whole: LoweringBasics.whole_of_literal(number), kind })
 	} else {
 		Err(NotInteger)
+	}
+}
+
+## Whether a literal pushed at the site, on `state`, is an argument of a
+## direct call whose parameters may take `Integer`s (`integer_arguments`):
+## each instruction after it up to the call pushes one more argument, a
+## literal or a slot's value, and below the arguments is a function known
+## by its code that no value may hold, with a parameter for each. Whether
+## the call passes it as one is the parameter's settled kind's to say; the
+## call's kinds name it an `Integer` either way, so the parameter can become
+## one.
+integer_argument : LoweringBasics.Site, LoweringBasics.State -> Bool
+integer_argument = |site, state| {
+	context = site.context
+	pushes_one = |step|
+		match site.code.ops.get(site.at + step) {
+			Ok(PushNumber(_)) | Ok(LoadLocal(_)) => True
+			_ => False
+		}
+	var $step = 1
+	while pushes_one($step) {
+		$step = $step + 1
+	}
+	after = $step - 1
+	match site.code.ops.get(site.at + $step) {
+		Ok(Call({ count, written: _, at: _ })) if after < count =>
+			match kind_under(state, count - 1 - after) {
+				Function(made) | Closure(made) if !context.escaped_codes.contains(made) =>
+					match context.program.codes.get(made) {
+						Ok(callee) => callee.arguments == Each(count)
+						Err(_) => False
+					}
+				_ => False
+			}
+		_ => False
 	}
 }
 
@@ -1785,11 +1911,39 @@ integers_kept = |site, { instruction, state, demoted, joined }| {
 			{ name: _, site: { count, written: _, at: _ } },
 		) if count == 1 and depth >= 3 and BuiltinLowering.keeps_integer(below(1)) =>
 			keeping(3, [False, False, True])
+		Call({ count, written: _, at: _ }) if depth > count =>
+			keeping(count + 1, [False].concat(integer_arguments(site, { state, count })))
 		GetIndex(_) if depth >= 2 => keeping(2, [False, takes_integer_index(below(1))])
 		SetIndex(_) if depth >= 3 => keeping(3, [False, takes_integer_index(below(2)), False])
 		GetProperty(_, _) => keeping(1, [False])
 		_ => List.repeat(False, depth)
 	}
+}
+
+## Which of a direct call's `count` arguments, the first first, it passes as
+## the `Integer`s they are: each where the callee's parameter settled at an
+## `Integer` whose range holds the argument's (x86/README.md, "An integer
+## kind"). A function a value may hold takes values, and one that packs its
+## arguments takes them as an array's items, so neither takes one.
+integer_arguments : LoweringBasics.Site, { state : LoweringBasics.State, count : U64 } -> List(Bool)
+integer_arguments = |site, { state, count }| {
+	context = site.context
+	covers = |range, given| range.low <= given.low and given.high <= range.high
+	taken = match LoweringBasics.kind_below(state, count) {
+		Function(made) | Closure(made) if !context.escaped_codes.contains(made) =>
+			match context.program.codes.get(made) {
+				Ok(callee) if callee.arguments == Each(count) => context.parameters.get(made) ?? []
+				_ => []
+			}
+		_ => []
+	}
+	state.stack_kinds.take_last(count).map_with_index(
+		|kind, at|
+			match (kind, taken.get(at)) {
+				(Integer(given), Ok(Integer(range))) => covers(range, given)
+				_ => False
+			},
+	)
 }
 
 ## Each `Integer` on the stack made a double, in its place, but those
@@ -3176,6 +3330,31 @@ expect conversions_in_code([
 	"function main() { const a = [1, 2]; console.log(sum(a)); }",
 	"main();",
 ]) >= 2
+
+## The conversions of a function that counts to its parameter `k`, called
+## with `k` from each of the `calls`.
+counted_to : Str -> U64
+counted_to = |calls|
+	conversions_in_code([
+		"function steps(k) {",
+		"  let t = 0;",
+		"  for (let j = 0; j < k; j++) t = t + j % 3;",
+		"  return t;",
+		"}",
+		"function main() { console.log(${calls}); }",
+		"main();",
+	])
+
+# A parameter every call passes an `Integer` is one, so the counter tested
+# against it stays one: fewer conversions than when a call passes a fraction,
+# which leaves `k` a double and demotes the counter.
+expect counted_to("steps(4), steps(9)") < counted_to("steps(4), steps(9.5)")
+
+# A recursion that steps its parameter settles, its range widened.
+expect conversions_in_code([
+	"function down(n) { if (n === 0) return 0; return 1 + down(n - 1); }",
+	"console.log(down(10));",
+]) < 10
 
 ## A refusal's words when an array of numbers reaches a parameter that
 ## may hold another value.

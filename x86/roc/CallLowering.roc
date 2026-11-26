@@ -146,7 +146,8 @@ CallLowering :: [].{
 		)
 	}
 
-	## The `count` arguments on top of the stack pushed, the last first.
+	## The `count` arguments on top of the stack pushed, the last first, an
+	## `Integer` as it is (`LoweringBasics.is_argument_kind`).
 	arguments_pushed : LoweringBasics.Site,
 	{
 		state : LoweringBasics.State,
@@ -157,7 +158,7 @@ CallLowering :: [].{
 		var $items = []
 		for back in 0..<count {
 			argument = count - 1 - back
-			if !LoweringBasics.is_value_kind(LoweringBasics.kind_below(state, back)) {
+			if !LoweringBasics.is_argument_kind(LoweringBasics.kind_below(state, back)) {
 				return LoweringBasics.refusal(
 					site,
 					"a call with a function, `console` or a method as an argument",
