@@ -501,15 +501,25 @@ code_items : LoweringBasics.Context -> Try(
 )
 code_items = |context| {
 	var $heads = Dict.empty()
+	# The slots each loop's head may not take to hold no fraction
+	# (IndexLowering's header).
+	var $doubted = Dict.empty()
 	# Every walk that doesn't return widens a loop's head, so after the last
 	# one this is the head of the loop whose kinds never settle.
 	var $widened_head = 0
 	for _ in 0..<most_widenings {
-		match code_walk(context, $heads) {
+		match code_walk(context, { heads: $heads, doubted: $doubted }) {
 			Ok(Walked(done)) => return Ok(done)
 			Ok(Widened({ at, state })) => {
 				$heads = $heads.insert(at, state)
 				$widened_head = at
+			}
+			Ok(Doubted({ at, slots })) => {
+				before = match $doubted.get(at) {
+					Ok(known) => known
+					Err(_) => []
+				}
+				$doubted = $doubted.insert(at, before.concat(slots))
 			}
 			Ok(Halted(halted)) => return Err(halted)
 			Err(refused) => return Err({ refused, calls: [] })
@@ -520,15 +530,19 @@ code_items = |context| {
 
 ## One pass of `code_items` with the loop heads widened so far.
 code_walk : LoweringBasics.Context,
-Dict(U64, LoweringBasics.State) -> Try(
+{
+	heads : Dict(U64, LoweringBasics.State),
+	doubted : Dict(U64, List(U64)),
+} -> Try(
 	[
 		Walked(CodeItems),
 		Widened({ at : U64, state : LoweringBasics.State }),
+		Doubted({ at : U64, slots : List(U64) }),
 		Halted({ refused : [Refused(Str)], calls : List(LoweringBasics.CallKinds) }),
 	],
 	[Refused(Str)],
 )
-code_walk = |context, heads| {
+code_walk = |context, { heads, doubted }| {
 	code = context.program.codes.get(context.index) ?? crash "Lowering.code_walk: a code's index"
 	start = start_state(context, code)?
 	skipped = skipped_places(context, code)
@@ -549,6 +563,8 @@ code_walk = |context, heads| {
 	# How many jumps go to each place ahead, and what the first one's way
 	# proved (IndexLowering's header).
 	var $arrivals = Dict.empty()
+	# The slots each loop's head took to hold no fraction.
+	var $assumed = Dict.empty()
 	for at in 0..<code.ops.len() {
 		fell = match $flowing {
 			Stopped => False
@@ -590,9 +606,21 @@ code_walk = |context, heads| {
 				instruction = code.ops.get(at) ?? crash "Lowering.code_walk: an instruction"
 				site = { context, code, at, skipped }
 				depth_here = state.stack_kinds.len()
+				head_alone = looped_to.contains(at) and fell and !$pending.contains(at)
 				checked =
 					if !meets {
 						$checked
+					} else if head_alone {
+						doubts = match doubted.get(at) {
+							Ok(slots) => slots
+							Err(_) => []
+						}
+						started = IndexLowering.at_loop_head(
+							$checked,
+							{ doubted: doubts, depth: depth_here },
+						)
+						$assumed = $assumed.insert(at, started.whole_slots)
+						started
 					} else if fell or looped_to.contains(at) {
 						IndexLowering.nothing_proved(depth_here)
 					} else {
@@ -694,6 +722,14 @@ code_walk = |context, heads| {
 								Err(_) => $pending.insert(target, sent)
 							}
 						} else {
+							assumed = match $assumed.get(target) {
+								Ok(slots) => slots
+								Err(_) => []
+							}
+							unkept = IndexLowering.unkept_at_back(assumed, checked)
+							if !unkept.is_empty() {
+								return Ok(Doubted({ at: target, slots: unkept }))
+							}
 							head = $seen.get(target) ?? crash "Lowering.code_walk: a loop's head"
 							again = meeting_state(
 								context,

@@ -36,6 +36,23 @@
 ## `pop`, `splice`) and any instruction that makes code run are among those
 ## that forget it. A length only grows between, so an index below it stays
 ## below it.
+##
+## **A LOOP'S COUNTER IS KNOWN TO HOLD NO FRACTION.** A slot's whole-number
+## proof means it holds no fraction: a whole number, or an infinity or a
+## NaN, which the range test still sends to the slow way (`cvttsd2si` makes
+## either `0x8000000000000000`, at or past any length), so the whole-number
+## test can be skipped where it holds and the range test kept. Besides an
+## item read, a store or set of a slot proves it from what is stored: a
+## whole number literal, a slot already proved, or `+`, `-` or `*` of two
+## such known numbers, which overflow to an infinity or a NaN but never to
+## a fraction. At a loop's head that only the instruction before falls to
+## (no jump comes to it from ahead), the walk takes the slots proved there
+## to hold no fraction on every way round (`at_loop_head`) and checks the
+## guess at each jump back: a slot one doesn't prove (`unkept_at_back`) is
+## doubted, and the function is lowered again without it, as a loop's kinds
+## are widened. Nothing but those proofs passes the head. So `let i = 0`
+## then `i = i + 1` in a loop proves `i` all through the loop, and `a[i]`
+## skips the whole-number test, overflow included, with no guard.
 import js.Ast
 import js.Bytecode
 import Assembly
@@ -51,7 +68,7 @@ IndexLowering :: [].{
 	## each stack place's origin, bottom first, the slots proved to hold whole
 	## numbers, and the (array, index) slots proved in range.
 	Checked : {
-		origins : List([Local(U64), Other]),
+		origins : List([Local(U64), Whole, Other]),
 		whole_slots : List(U64),
 		slots_in_range : List((U64, U64)),
 	}
@@ -75,6 +92,24 @@ IndexLowering :: [].{
 		whole_slots: proved.whole_slots,
 		slots_in_range: proved.slots_in_range,
 	}
+
+	## What a loop's head starts with, given what falls to it: the slots
+	## proved to hold no fraction, less those `doubted` (some way back to the
+	## head didn't keep them so); nothing else.
+	at_loop_head : IndexLowering.Checked,
+	{
+		doubted : List(U64),
+		depth : U64,
+	} -> IndexLowering.Checked
+	at_loop_head = |arriving, { doubted, depth }| {
+		..IndexLowering.nothing_proved(depth),
+		whole_slots: arriving.whole_slots.drop_if(|slot| doubted.contains(slot)),
+	}
+
+	## The slots a loop's head took to hold no fraction (`assumed`) that a
+	## way back to it, with `checked` proved, doesn't prove so.
+	unkept_at_back : List(U64), IndexLowering.Checked -> List(U64)
+	unkept_at_back = |assumed, checked| assumed.drop_if(|slot| checked.whole_slots.contains(slot))
 
 	## Nothing skipped.
 	all_checks : IndexLowering.Checks
@@ -125,12 +160,38 @@ IndexLowering :: [].{
 				{ ..checked, origins: kept.concat(List.repeat(origin, made)) }
 			}
 		}
+		# Whether the stack's place `down` from the top holds no fraction:
+		# made whole, or loaded from a slot proved so.
+		is_whole = |down| {
+			count = checked.origins.len()
+			if count <= down {
+				False
+			} else {
+				match checked.origins.get(count - 1 - down) {
+					Ok(Whole) => True
+					Ok(Local(slot)) => checked.whole_slots.contains(slot)
+					_ => False
+				}
+			}
+		}
+		both_whole = numbers_on_top(before) and is_whole(0) and is_whole(1)
+		# A slot set from a place that holds no fraction holds none.
+		stored = |slot, kept| {
+			forgotten = without_slot(kept, slot)
+			if is_whole(0) {
+				{ ..forgotten, whole_slots: forgotten.whole_slots.append(slot) }
+			} else {
+				forgotten
+			}
+		}
 		match instruction {
+			PushNumber(number) if is_whole_number(number) => pushed(1, Whole)
 			PushNumber(_) | PushText(_) | LoadBoxed(_) | Duplicate => pushed(1, Other)
 			LoadLocal(slot) => pushed(1, Local(slot))
-			StoreLocal(slot) => without_slot(pushed(1, Other), slot)
-			SetLocal(slot) => without_slot(pushed(0, Other), slot)
+			StoreLocal(slot) => stored(slot, pushed(1, Other))
+			SetLocal(slot) => stored(slot, pushed(0, Other))
 			Pop | JumpIfFalse(_) => pushed(0, Other)
+			Binary(operator, _) if is_whole_step(operator) and both_whole => pushed(1, Whole)
 			Binary(
 				operator,
 				_,
@@ -297,6 +358,25 @@ without_slot = |checked, slot| {
 	slots_in_range: checked.slots_in_range.drop_if(|(array, index)| array == slot or index == slot),
 }
 
+## Whether an operator keeps two numbers with no fraction free of one: `+`,
+## `-` and `*` of two whole numbers give a whole number, or an infinity or
+## a NaN when they overflow, never a fraction.
+is_whole_step : Ast.BinaryOperator -> Bool
+is_whole_step = |operator|
+	match operator {
+		Add | Subtract | Multiply => True
+		_ => False
+	}
+
+## Whether a literal is a whole number.
+is_whole_number : F64 -> Bool
+is_whole_number = |number|
+	if number.is_nan() or number.is_infinite() {
+		False
+	} else {
+		number.div_trunc_by(1.0) == number
+	}
+
 ## Whether an operator is one of `+ - * /` or the four orderings, which on
 ## two known numbers run no code but their own.
 is_arithmetic : Ast.BinaryOperator -> Bool
@@ -424,8 +504,9 @@ expect {
 }
 
 expect {
-	# The same with `i` stored between, or a call, or with another array: the
-	# write proves nothing it needs, or only that `i` is whole.
+	# The same with `i` stored between (from a fraction, or from a whole
+	# number), or a call, or with another array: the write proves nothing it
+	# needs, or only that `i` is whole.
 	at = { line: 1, column: 1 }
 	read = [
 		(LoadLocal(0), [], 1),
@@ -438,8 +519,8 @@ expect {
 		(LoadLocal(1), [Numbers], 2),
 		(PushNumber(7), [Numbers, Number], 3),
 	]
-	stored = [
-		(PushNumber(2), [], 1),
+	stored_of = |number| [
+		(PushNumber(number), [], 1),
 		(StoreLocal(1), [Number], 1),
 		(Pop, [Number], 0),
 	]
@@ -451,7 +532,11 @@ expect {
 		),
 	]
 	checks = |run| IndexLowering.checks_for(walked_checks(run), SetIndex(at))
-	checks(read.concat(stored).concat(write_of(0))) == IndexLowering.all_checks
+	checks(read.concat(stored_of(2.5)).concat(write_of(0))) == IndexLowering.all_checks
+		and checks(read.concat(stored_of(2)).concat(write_of(0))) == {
+			whole: True,
+			in_range: False,
+		}
 		and checks(read.concat(called).concat(write_of(0))) == IndexLowering.all_checks
 		and checks(read.concat(write_of(2))) == { whole: True, in_range: False }
 }
