@@ -303,7 +303,7 @@ function day(seed, talk) {
   sums.push(checksum.value());
   if (talk) {
     console.log(`streets: ${WIDTH}x${WIDTH} corners, ${closed.size} closed (first ${firstClosed}), ${distance.size} reachable`);
-    console.log(`  the far corner is ${distance.get(far) ?? "unreachable"} blocks away, ${Math.round(straight * 100) / 100} as the crow flies, ${walk.length} corners on the way`);
+    console.log(`  the far corner is ${distance.get(far) ?? "unreachable"} blocks away, ${Math.round(straight * 100)} hundredths as the crow flies, ${walk.length} corners on the way`);
     console.log(`  checksum ${checksum.value()}`);
   }
 
