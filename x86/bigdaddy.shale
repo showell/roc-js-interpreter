@@ -1,0 +1,132 @@
+-- budget: steps=200000000
+-- x86/bigdaddy.shale: the big-daddy race, x86/bigdaddy/bigdaddy_race.js,
+-- compiled by js-x86 against node. Each contestant runs ROUNDS days of the
+-- little city (x86/bigdaddy/README.md); the race is the wall time of each
+-- one's whole run. check.shale does not run it: its numbers are timings.
+-- From the repository's root:
+--
+--   shale x86/bigdaddy.shale                  # the file's own ROUNDS, about 18 s under node
+--   shale x86/bigdaddy.shale size=small       # 30 rounds, about 0.3 s under node, for tuning
+--   shale x86/bigdaddy.shale rounds=500       # any count of at least 1
+--   shale x86/bigdaddy.shale runs=5           # five runs of each in turn, and the medians
+--
+-- `rounds=` (or `size=small`) writes a copy of bigdaddy_race.js with its
+-- `const ROUNDS` line changed, under the build mount, and both contestants
+-- run the copy. It builds js-x86 on the dev backend and asks it for the
+-- executable. Until js-x86 compiles the race, the compiled contestant is the
+-- line `compiled: not compiled yet: <js-x86's refusal>`, and node runs alone.
+-- node's last two lines (the ledgers and midnight's report) are held to
+-- LEDGERS for a count it holds; the compiled program's whole output is held
+-- to node's. The contestants run niced, one after the other.
+
+use("./executables.shale")
+
+const WHO = "x86/bigdaddy.shale"
+const RACE = "x86/bigdaddy/bigdaddy_race.js"
+const SMALL_ROUNDS = 30
+const TIMEOUT_MS = 600000
+-- node's last two lines for a round count, computed once with node.
+const LEDGERS = {
+  ["10000"] = "ledgers: census 505960, clerk 448521, sort 365457, streets 935522, sieve 312944, words 789686, evening 46800\nmidnight: { rounds: 10000, size: 10, done: true, combined: 695533 }\n",
+  ["30"] = "ledgers: census 399094, clerk 620346, sort 800951, streets 942957, sieve 783853, words 921042, evening 553857\nmidnight: { rounds: 30, size: 10, done: true, combined: 358237 }\n",
+}
+
+-- A contestant's run: its wall time and its output.
+function raced(who, argv, want)
+  local r = run(argv, {timeout_ms = TIMEOUT_MS, whole = 100000, want = want, nice = 19})
+  if r.ended ~= "exit" or r.code ~= 0 then fail(WHO .. ": " .. who .. " ended " .. r.ended .. " " .. get(r, "code", -1) .. ": " .. sub(r.out, 1, 2000)) end
+  return {who = who, out = r.out, ms = r.ms}
+end
+
+-- Milliseconds as seconds, to the hundredth.
+function secs(ms)
+  local hundredths = (ms + 5) // 10
+  local frac = "" .. hundredths % 100
+  if #frac < 2 then frac = "0" .. frac end
+  return (hundredths // 100) .. "." .. frac .. " s"
+end
+
+-- a / b to the hundredth.
+function ratio(a, b)
+  local hundredths = (a * 100 + b // 2) // b
+  local frac = "" .. hundredths % 100
+  if #frac < 2 then frac = "0" .. frac end
+  return (hundredths // 100) .. "." .. frac
+end
+
+function median(list)
+  local sorted = {}
+  for x in list do push(sorted, x) end
+  sort(sorted)
+  return sorted[(#sorted + 1) // 2]
+end
+
+-- The race's text with ROUNDS set to `n`, and the count it holds.
+function race_text(n)
+  local text = read(RACE)
+  local m = re_find(text, "\nconst ROUNDS = ([0-9]+);")
+  if m == nil then fail(WHO .. ": " .. RACE .. " has no line `const ROUNDS = <digits>;` to set the count in") end
+  if n < 0 then return {text = text, n = tonumber(m.group)} end
+  return {text = re_replace(text, "\nconst ROUNDS = [0-9]+;", "\nconst ROUNDS = " .. n .. ";"), n = n}
+end
+
+-- Whether node's output ends with the ledgers held for `n` rounds: "matched",
+-- "WRONG", or "unchecked" for a count LEDGERS doesn't hold.
+function node_verdict(out, n)
+  local want = get(LEDGERS, "" .. n, "")
+  if want == "" then return "unchecked" end
+  if ends_with(out, want) then return "matched" end
+  return "WRONG"
+end
+
+function main()
+  local n = arg("rounds", -1)
+  if arg("size", "") == "small" then n = SMALL_ROUNDS end
+  local runs = arg("runs", 1)
+  if runs < 1 then fail(WHO .. ": runs=" .. runs .. " is under 1") end
+  local race = race_text(n)
+  if race.n < 1 then fail(WHO .. ": rounds=" .. race.n .. " is under 1") end
+  local exe = built_roc(WHO, "x86/roc/JsToX86.roc", "js-x86", "dev")
+  local dir = executables_dir()
+  local path = dir .. "/bigdaddy-race"
+  local copy = dir .. "/bigdaddy-race.js"
+  replace(copy, race.text)
+  local made = driver_run(exe, race.text)
+  local compiled = made.code == 0
+  local bytes = 0
+  if compiled then
+    bytes = #bytes_of_hex(WHO, made.out)
+    written_executable(WHO, exe, race.text, path)
+  end
+  local node = run({"node", "--version"}, {timeout_ms = 10000, whole = 1000, want = WANT_NODE})
+  local uptime = trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out)
+  local what = "not compiled"
+  if compiled then what = bytes .. " bytes" end
+  print(race.n .. " rounds of the city; the executable: " .. what .. "; node " .. trim(node.out) .. "; " .. uptime)
+  if not compiled then print("compiled: not compiled yet: " .. trim(made.out)) end
+  local times = {compiled = {}, node = {}}
+  for i = 1, runs do
+    local js = raced("node", {"node", real(copy)}, WANT_NODE)
+    push(times.node, js.ms)
+    local verdict = node_verdict(js.out, race.n)
+    if compiled then
+      local own = raced("compiled", {real(path)}, WANT_BINARY)
+      push(times.compiled, own.ms)
+      local c_ok = "WRONG"
+      if own.out == js.out then c_ok = "matched node" end
+      print("compiled: " .. secs(own.ms) .. ", " .. c_ok)
+      print("node: " .. secs(js.ms) .. ", " .. verdict .. "; compiled/node " .. ratio(own.ms, js.ms))
+    else
+      print("node: " .. secs(js.ms) .. ", " .. verdict)
+    end
+    if verdict == "WRONG" then fail(WHO .. ": node's ledgers are not the ones held for " .. race.n .. " rounds: " .. sub(js.out, #js.out - 400)) end
+  end
+  if runs > 1 then
+    local after = trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out)
+    local line = "medians of " .. runs .. ": node " .. secs(median(times.node))
+    if compiled then line = line .. ", compiled " .. secs(median(times.compiled)) .. "; compiled/node " .. ratio(median(times.compiled), median(times.node)) end
+    print(line .. "; " .. after)
+  end
+end
+
+main()
