@@ -15,6 +15,7 @@
 14-arrow-functions.js
 15-higher-order.js
 16-template-strings.js
+18-strings.js
 19-printing-nested.js
 20-printing-strings.js
 22-hoisting.js
@@ -45,5 +46,6 @@
 55-garbage.js
 56-call-depth.js
 57-map-set-churn.js
+59-class-extends.js
 60-many-instances.js
 61-classes-tour.js

@@ -18,6 +18,8 @@ import Boxing
 import Emit
 import LoweringBasics
 import Runtime
+import RuntimeBuilders
+import StringMethods
 
 BuiltinLowering :: [].{
 
@@ -168,17 +170,84 @@ BuiltinLowering :: [].{
 	iterator_methods : List(Str)
 	iterator_methods = ["keys", "values", "entries"]
 
-	## The methods of a string compiled here.
+	## The methods of a string compiled here: those it shares with an array,
+	## whose routines take either, `concat`, and StringMethods' table.
 	string_methods : List(Str)
-	string_methods = [
-		"charAt",
-		"charCodeAt",
-		"indexOf",
-		"includes",
-		"split",
-		"slice",
-		"lastIndexOf",
-	]
+	string_methods = ["indexOf", "includes", "slice", "lastIndexOf", "concat"]
+		.concat(StringMethods.method_names)
+
+	## A string method of StringMethods' table called (its header): on a
+	## known string, the method's routine called directly; on a `Value`,
+	## `runtime_string_method`, which calls the same routine when the value
+	## is a string and the value's own property of that name otherwise.
+	string_method_items : LoweringBasics.Site,
+	{
+		state : LoweringBasics.State,
+		name : Str,
+		count : U64,
+	} -> Try(LoweringBasics.Lowered, [Refused(Str)])
+	string_method_items = |site, { state, name, count }| {
+		receiver = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - count - 2)
+		base = state.stack_kinds.len() - count
+		after = |kind| LoweringBasics.with_top(LoweringBasics.without_top(state, count + 2), kind)
+		{ method, number } = match StringMethods.numbered_method(name) {
+			Ok(numbered) => numbered
+			Err(NotAStringMethod) => crash "BuiltinLowering.string_method_items: a table's method"
+		}
+		if LoweringBasics.kind_below(state, count + 1) == String {
+			argument = |{ at, reg }|
+				if at < count {
+					Emit.load(reg, LoweringBasics.stack_place(site.code, base + at))
+				} else {
+					Emit.imm(reg, Boxing.undefined_bits)
+				}
+			called = [
+				Emit.load(Rdi, receiver),
+				argument({ at: 0, reg: Rsi }),
+				argument({ at: 1, reg: Rdx }),
+				Emit.imm(Rcx, count.to_i64_wrap()),
+				Emit.call(method.routine),
+				Emit.store(receiver, Rax),
+			]
+			Ok(LoweringBasics.falling(called, after(string_method_kind(name))))
+		} else {
+			called = LoweringBasics.arguments_array_items(site, { base, count })
+				.concat([
+					Emit.mov(Rdx, Rax),
+					Emit.load(Rdi, receiver),
+					Emit.address_of(Rsi, LoweringBasics.text_label(site, name)),
+					Emit.imm(Rcx, number.to_i64_wrap()),
+					Emit.call(StringMethods.method_dispatch),
+					Emit.store(receiver, Rax),
+				])
+			Ok(LoweringBasics.falling(called, after(Value)))
+		}
+	}
+
+	## A known string's `concat`: each argument added to it as `+` adds, in
+	## turn.
+	string_concat_items : LoweringBasics.Site,
+	{
+		state : LoweringBasics.State,
+		count : U64,
+	} -> LoweringBasics.Lowered
+	string_concat_items = |site, { state, count }| {
+		receiver = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - count - 2)
+		base = state.stack_kinds.len() - count
+		var $added = []
+		for at in 0..<count {
+			$added = $added.concat([
+				Emit.load(Rdi, receiver),
+				Emit.load(Rsi, LoweringBasics.stack_place(site.code, base + at)),
+				Emit.call(Runtime.add),
+				Emit.store(receiver, Rax),
+			])
+		}
+		LoweringBasics.falling(
+			$added,
+			LoweringBasics.with_top(LoweringBasics.without_top(state, count + 2), String),
+		)
+	}
 
 	## An array's `push` of each argument in turn, its answer the length
 	## after the last, its `pop`, its `map`, `filter`, `forEach` and `reduce`
@@ -197,6 +266,10 @@ BuiltinLowering :: [].{
 		argument = |at| LoweringBasics.stack_place(site.code, base + at)
 		after = |kind| LoweringBasics.with_top(LoweringBasics.without_top(state, count + 2), kind)
 		match (name, count) {
+			(_, _) if StringMethods.method_names.contains(name) =>
+				BuiltinLowering.string_method_items(site, { state, name, count })
+			("concat", _) if LoweringBasics.kind_below(state, count + 1) == String =>
+				Ok(BuiltinLowering.string_concat_items(site, { state, count }))
 			("push", given) if given > 0 => {
 				var $pushed = []
 				for item in 0..<given {
@@ -312,13 +385,15 @@ BuiltinLowering :: [].{
 					])
 				Ok(LoweringBasics.falling(called, after(kind)))
 			}
+			# A `Value` may be a string, whose `concat` is not an array's.
 			("concat", _) => {
-				var $made = [
-					Emit.load(Rdi, receiver),
-					Emit.zero(Rcx),
-					Emit.call(Runtime.slice),
-					Emit.store(receiver, Rax),
-				]
+				var $made = [Emit.load(Rdi, receiver)]
+					.concat(RuntimeBuilders.array_check_items)
+					.concat([
+						Emit.zero(Rcx),
+						Emit.call(Runtime.slice),
+						Emit.store(receiver, Rax),
+					])
 				for at in 0..<count {
 					$made = $made.concat([
 						Emit.load(Rdi, receiver),
@@ -342,29 +417,6 @@ BuiltinLowering :: [].{
 				called = [Emit.load(Rdi, receiver)]
 					.concat(compared)
 					.concat([Emit.call(routine), Emit.store(receiver, Rax)])
-				Ok(LoweringBasics.falling(called, after(Array)))
-			}
-			("charCodeAt", 0) | ("charCodeAt", 1) => {
-				place = if count == 1 {
-					Emit.load(Rsi, argument(0))
-				} else {
-					Emit.zero(Rsi)
-				}
-				called = [
-					Emit.load(Rdi, receiver),
-					place,
-					Emit.call(Runtime.char_code_at),
-					Emit.store(receiver, Rax),
-				]
-				Ok(LoweringBasics.falling(called, after(Number)))
-			}
-			("split", 1) => {
-				called = [
-					Emit.load(Rdi, receiver),
-					Emit.load(Rsi, argument(0)),
-					Emit.call(Runtime.split),
-					Emit.store(receiver, Rax),
-				]
 				Ok(LoweringBasics.falling(called, after(Array)))
 			}
 			(_, _) if collection_methods.contains(name) => {
@@ -447,15 +499,6 @@ BuiltinLowering :: [].{
 					Emit.store(receiver, Rax),
 				]
 				Ok(LoweringBasics.falling(called, after(Number)))
-			}
-			("charAt", 1) => {
-				called = [
-					Emit.load(Rdi, receiver),
-					Emit.load(Rsi, argument(0)),
-					Emit.call(Runtime.char_at),
-					Emit.store(receiver, Rax),
-				]
-				Ok(LoweringBasics.falling(called, after(String)))
 			}
 			_ => {
 				given = LoweringBasics.count_text(count, "argument")
@@ -864,3 +907,13 @@ BuiltinLowering :: [].{
 		)
 	}
 }
+
+## The kind of what a string method of StringMethods' table gives.
+string_method_kind : Str -> LoweringBasics.Kind
+string_method_kind = |name|
+	match name {
+		"charCodeAt" => Number
+		"split" => Array
+		"startsWith" | "endsWith" => Boolean
+		_ => String
+	}

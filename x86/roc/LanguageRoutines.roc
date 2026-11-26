@@ -543,13 +543,17 @@ builtin_items = {
 	].join()
 }
 
-## `runtime_char_code_at` and `runtime_split`. A split's frame holds the
-## string (`[rbp - 8]`), the separator (16), the array (24), the piece's
-## start (32) and the place (40).
+## `runtime_char_code_at` and `runtime_split`, which take their receiver and
+## arguments as StringMethods' header says. A place not given is 0; a split
+## at nothing is the string in an array of its own, and a split to a limit
+## (a second argument) stops. A split's frame holds the string (`[rbp -
+## 8]`), the separator (16), the array (24), the piece's start (32) and the
+## place (40).
 string_method_items : List(Assembly.Statement)
 string_method_items = {
 	char_code =
 		[Emit.mark(Runtime.char_code_at)]
+			.concat(RuntimeBuilders.unset_place_items("runtime_char_code_at_placed"))
 			.concat(
 				RuntimeBuilders.unless_string_items({
 					reg: Rdi,
@@ -605,6 +609,22 @@ string_method_items = {
 	split =
 		[
 			Emit.mark(Runtime.split),
+			Emit.cmp_imm(Rcx, 2),
+			Emit.jcc(B, "runtime_split_unlimited"),
+			Emit.imm(R8, Boxing.undefined_bits),
+			Emit.cmp(Rdx, R8),
+			Emit.jcc(Ne, "runtime_split_limit_stop"),
+			Emit.mark("runtime_split_unlimited"),
+			Emit.imm(R8, Boxing.undefined_bits),
+			Emit.cmp(Rsi, R8),
+			Emit.jcc(Ne, "runtime_split_at"),
+			Emit.save(Rdi),
+			Emit.imm(Rdi, 1),
+			Emit.call(Runtime.new_array),
+			Emit.restore(Rcx),
+			Emit.store(Emit.mem(Rdx, 0), Rcx),
+			Emit.ret,
+			Emit.mark("runtime_split_at"),
 			Emit.save(Rbp),
 			Emit.mov(Rbp, Rsp),
 			Emit.minus_imm(Rsp, 48),
@@ -694,6 +714,8 @@ string_method_items = {
 				Emit.mark("runtime_split_stop"),
 			])
 			.concat(RuntimeBuilders.stopping_items("runtime_text_split_separator"))
+			.append(Emit.mark("runtime_split_limit_stop"))
+			.concat(RuntimeBuilders.stopping_items("runtime_text_split_limit"))
 	[char_code, piece, split].join()
 }
 

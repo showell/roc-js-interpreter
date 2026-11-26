@@ -436,6 +436,7 @@ slice_items = {
 		.concat([Emit.ret, Emit.mark("runtime_slice_not_a_number")])
 		.concat(RuntimeBuilders.stopping_items("runtime_text_slice_place"))
 	char_at = [Emit.mark(Runtime.char_at)]
+		.concat(RuntimeBuilders.unset_place_items("runtime_char_at_placed"))
 		.concat(
 			RuntimeBuilders.unless_string_items({ reg: Rdi, label: "runtime_index_not_compiled" }),
 		)

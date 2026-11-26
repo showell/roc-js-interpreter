@@ -171,6 +171,18 @@ RuntimeBuilders :: [].{
 		Emit.jcc(E, label),
 	]
 
+	## The statements that make the place in `rsi` 0 when it is `undefined`,
+	## as a string method takes a place not given; `label` names their way
+	## past. They change `rcx`.
+	unset_place_items : Str -> List(Assembly.Statement)
+	unset_place_items = |label| [
+		Emit.imm(Rcx, Boxing.undefined_bits),
+		Emit.cmp(Rsi, Rcx),
+		Emit.jcc(Ne, label),
+		Emit.zero(Rsi),
+		Emit.mark(label),
+	]
+
 	## The statements that stop the program unless the value in `rdi` is an
 	## array. They change `rcx`.
 	array_check_items : List(Assembly.Statement)

@@ -246,6 +246,37 @@ texts = [
 		"runtime_text_split_separator",
 		"x86: `split` at a value that is not a string is not compiled yet\n",
 	),
+	("runtime_text_split_limit", "x86: `split` to a limit is not compiled yet\n"),
+	(
+		"runtime_text_substring_place",
+		"x86: `substring` from a place that is not a number is not compiled yet\n",
+	),
+	(
+		"runtime_text_repeat_count",
+		"x86: `repeat` of a count that is not a whole number of at least 0 is not compiled yet\n",
+	),
+	(
+		"runtime_text_pad",
+		Str.concat(
+			"x86: `padStart` or `padEnd` other than to a whole length with a string",
+			" is not compiled yet\n",
+		),
+	),
+	("runtime_text_string_too_long", "x86: a string of more than 2^30 bytes is not compiled yet\n"),
+	(
+		"runtime_text_affix",
+		Str.concat(
+			"x86: `startsWith` or `endsWith` of a value that is not a string, or from a place,",
+			" is not compiled yet\n",
+		),
+	),
+	(
+		"runtime_text_replace",
+		Str.concat(
+			"x86: `replace` or `replaceAll` other than of a string by a string without `$`,",
+			" or `replaceAll` of the empty string, is not compiled yet\n",
+		),
+	),
 	(
 		"runtime_text_text_of_function",
 		"x86: a string made of a function, its source's text, is not compiled yet\n",
