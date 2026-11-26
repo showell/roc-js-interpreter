@@ -128,3 +128,33 @@ The 20-second race after 11 and 12, the same box and day, load average 0.57, wit
     master, node: F(328619), 68677 digits, elapsed 19966 ms, PASS, verified; after the verdict 73 ms (wall 20039 ms)
 
 From F(248,446), the compiled program did about 1.4 times its earlier work in this pair, more than the 1-second medians said (node's own run moved by as much between the two, F(328,619) to F(387,876), so a single pair is noisy). Against the node run beside it, node now does about 1.74 times the compiled program's work, down from about 2.4.
+
+## A proof kept past a jump, jumps threaded, and what the carry's branch costs (2026-11-26, 1-second copies)
+
+Measured as before, alternated with master's executable (f60c975, the state after 12), on the same box and day, load average 0.4 to 0.9 (sets taken above 1.0 were thrown away). The instruction counts are addInto's first loop, label to the jump back, by `objdump`; master's is 117 (28 at `rbp`).
+
+13. **An index proved before a jump keeps its proof where that jump alone arrives** (`IndexLowering.proofs_at_target`; IndexLowering's header has the rule). The walk forgot what it had proved at every jump's target. A place that one jump alone reaches, with nothing falling to it and no loop going back to it, now starts with what that jump's way proved of the slots, its stack places' origins unknown. So an `if`'s `else` keeps what was proved before the test, and addInto's `else` write of `a[i]` skips its tests. `x86/tests/index-checks.js` holds the kept proof and a near miss (the index changed before the jump, so the write past the end appends) to node. The loop 117 instructions to 110 (28 at `rbp`). F(62,128) master against F(62,335) with it, medians of 7 (a set spread from 53k to 66k), and F(61,445) against F(62,894) in a set of 9: within the noise.
+14. **Jumps to jumps threaded, unreached code and jumps to the next place taken out** (`x86/roc/Jumps.roc`, its header has the rule). An item read of an array of numbers was its tests' `jae slow`, the load, a `jmp done` over the slow way and `slow: jmp stop`; now the tests jump to the stop and the fast way falls through, with no taken jump. Over the whole program: a jump to a label whose first instruction is a jump goes to that jump's target, what follows a jump or a `ret` up to a label something names goes, and a jump to just after itself goes. The loop 110 instructions to 88 (20 at `rbp`), the race's executable 36 KB to 30 KB. F(64,358) master against F(63,526) with 13 and 14, medians of 15: no gain.
+
+**Where the time goes now.** `x86/race/carries.js` runs addInto's first loop over 10,000 limbs 1,500 times, once on limbs that never carry (the branch `s >= BASE` always goes one way) and once on pseudo-random limbs (each way about as often, as in the race). Medians of 5, alternated:
+
+    master (f60c975):  never 197 ms, random 325 ms
+    with 13 and 14:    never 184 ms, random 321 ms
+    node:              never 49 to 90 ms, random 114 to 126 ms
+
+With the branch predicted, a limb costs the compiled loop about 13 ns, and 13 and 14 save about 7% of that. The random limbs, which the race's limbs are, add about 9 ns a limb for the compiled loop and about 2.5 ns for node: mispredicting the carry's branch is about 40% of the compiled program's time in the race, and 13 and 14 don't touch it. A guess, not measured: the compiled loop's penalty is the larger because its branch waits on a long chain (`i` loaded from the frame, made a whole number with `cvttsd2si`, the item loaded through the array's unboxed address, two `addsd`s, the `ucomisd`), so more work is thrown away at each miss. Node keeps `i` as an integer in a register.
+
+Two more were tried and are not in the branch:
+
+- **A looping function's places kept in xmm4 to xmm15** once r9 to r11 are taken (Registers' renaming extended to xmm homes, spilled around calls and saved at entry, with a `movaps` for the copies between xmm registers): `i`, `carry`, `s`, `a` and `b` left the frame, but the lowering reads each of them through a general register (an index, an array's address, a bytecode stack place), so a frame load became a `movq` from an xmm register and the stack places' moves crossed between the two kinds of register. The race fell from F(64,276) to F(62,955), medians of 7.
+- **Forwarding's loads kept across instructions that write neither the place nor its register** (any instruction whose registers Moves knows, and which stores nothing): `BASE` built for `s - BASE` went from a store and a load through the frame to a move from `rax`. One `rbp` operand fewer a limb; F(61,356) master against F(61,693), medians of 7: no gain.
+
+The 20-second race after 13 and 14, master's run first (load 0.77), then the branch's (load 0.96), the same box and day. A first pair, taken while another job raised the load to 2.2, is not used.
+
+    compiled: F(288566), 60307 digits, elapsed 19956 ms, PASS, verified; after the verdict 174 ms (wall 20130 ms)
+    node: F(379428), 79296 digits, elapsed 19964 ms, PASS, verified; after the verdict 50 ms (wall 20014 ms)
+
+    master, compiled: F(284866), 59534 digits, elapsed 19961 ms, PASS, verified; after the verdict 182 ms (wall 20143 ms)
+    master, node: F(379592), 79330 digits, elapsed 19959 ms, PASS, verified; after the verdict 50 ms (wall 20009 ms)
+
+About 1.03 times master's work, within the noise, as the 1-second medians said. Node does about 1.73 times the compiled program's work. The lever the measurements point to is the carry's branch: a lowering that makes `carry` without a jump (a select of two known numbers, `cmov` on their bits, or a mask) would remove the misses, and keeping `i` an integer in a register would shorten the chain each miss throws away.
