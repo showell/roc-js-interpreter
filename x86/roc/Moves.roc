@@ -4,7 +4,7 @@
 ## Registers' spare registers is `mov rax, [rbp-48]` then `mov r9, rax`, and
 ## a sum stored back is `mov rax, r9`, the store, and `mov r9, rax` again.
 ## `trim_moves` walks the whole program twice, the runtime's routines too,
-## and does four things, each of which leaves what every register the code
+## and does five things, each of which leaves what every register the code
 ## reads holds as it was:
 ##
 ## - **A copy between two registers that already hold one value is
@@ -113,6 +113,14 @@ mem_units = |mem|
 ## Both sets of bits.
 both : U32, U32 -> U32
 both = |one, other| U32.bitwise_or(one, other)
+
+## Whether an operation is a compare, which writes no register.
+is_compare : X86.AluOperation -> Bool
+is_compare = |operation|
+	match operation {
+		Cmp => True
+		_ => False
+	}
 
 ## The register an operation writes: none for a compare.
 written_unless_compare : X86.AluOperation, X86.Register -> U32
@@ -288,8 +296,10 @@ dead_dropped = |statements, named| {
 	labels = settled_labels(statements, named)
 	var $kept = List.with_capacity(statements.len())
 	var $read = every_unit
-	# The instruction kept just after this one, and what is read after it.
+	# The instruction kept just after this one, and what is read after it;
+	# and the one kept after that, in a straight run.
 	var $next = NoNext
+	var $second = NoNext
 	for back in 0..<statements.len() {
 		at = statements.len() - 1 - back
 		statement = statements.get(at) ?? crash "Moves.dead_dropped: a statement"
@@ -300,21 +310,38 @@ dead_dropped = |statements, named| {
 			Mark(_) => {
 				$kept = $kept.append(statement)
 				$next = NoNext
+				$second = NoNext
 			}
 			Instruction(instruction) => {
-				joining = match $next {
-					Next(following) => one_move_of(instruction, following).map_ok(
+				stepped = match ($next, $second) {
+					(Next(following), Next(last)) => stepped_in_place(
+						instruction,
+						{ following, last },
+					)
+					_ => Err(Apart)
+				}
+				joining = match ($next, stepped) {
+					(_, Ok(_)) => Err(Apart)
+					(Next(following), _) => one_move_of(instruction, following).map_ok(
 						|made| { made, after: following.after },
 					)
-					NoNext => Err(Apart)
+					(NoNext, _) => Err(Apart)
 				}
-				match joining {
-					Ok({ made, after }) => {
+				match (stepped, joining) {
+					(Ok({ made, after }), _) => {
+						# The operation and the move back, kept already, go.
+						$kept = drop_last_instruction(drop_last_instruction($kept))
+						$kept = $kept.append(Instruction(made))
+						$next = Next({ next: made, after })
+						$second = NoNext
+						$read = read_before(made, after)
+					}
+					(_, Ok({ made, after })) => {
 						$kept = drop_last_instruction($kept).append(Instruction(made))
 						$next = Next({ next: made, after })
 						$read = read_before(made, after)
 					}
-					Err(Apart) => {
+					_ => {
 						unread = match accesses(instruction) {
 							Ok(
 								{ reads: _, writes },
@@ -323,6 +350,7 @@ dead_dropped = |statements, named| {
 						}
 						if !unread {
 							$kept = $kept.append(statement)
+							$second = $next
 							$next = Next({ next: instruction, after: $read })
 							$read = read_before(instruction, $read)
 						}
@@ -332,11 +360,48 @@ dead_dropped = |statements, named| {
 			_ => {
 				$kept = $kept.append(statement)
 				$next = NoNext
+				$second = NoNext
 				$read = read_before_flow(statement, { after: $read, labels })
 			}
 		}
 	}
 	reverse_statements($kept)
+}
+
+## A register stepped in place through another, `mov t, s`, an operation on
+## `t` and `mov s, t`, made the one operation on `s`, when nothing reads `t`
+## after the last (`last.after`) and the operation's source isn't `t`:
+## `mov rax, r9; add rax, 1; mov r9, rax` is `add r9, 1`. The flags are the
+## operation's either way.
+stepped_in_place : X86.Instruction,
+{
+	following : { next : X86.Instruction, after : U32 },
+	last : { next : X86.Instruction, after : U32 },
+} -> Try({ made : X86.Instruction, after : U32 }, [Apart])
+stepped_in_place = |first, { following, last }| {
+	(through, source) = match first {
+		MovRegReg({ to, from }) => (to, from)
+		_ => return Err(Apart)
+	}
+	same = |one, other| X86.register_index(one) == X86.register_index(other)
+	moved_back = match last.next {
+		MovRegReg({ to, from }) => same(to, source) and same(from, through)
+		_ => False
+	}
+	unread = U32.bitwise_and(last.after, general_unit(through)) == 0
+	if !moved_back or !unread or same(through, source) or same(through, Rsp) or same(through, Rbp) {
+		return Err(Apart)
+	}
+	made = match following.next {
+		Alu(
+			{ operation, to, from },
+		) if !is_compare(operation) and same(to, through) and !same(from, through) =>
+			Ok(Alu({ operation, to: source, from }))
+		AluImm({ operation, to, value }) if !is_compare(operation) and same(to, through) =>
+			Ok(AluImm({ operation, to: source, value }))
+		_ => Err(Apart)
+	}?
+	Ok({ made, after: last.after })
 }
 
 ## What a backward walk knows of the labels: those a statement names; those
