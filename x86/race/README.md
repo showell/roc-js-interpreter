@@ -158,3 +158,35 @@ The 20-second race after 13 and 14, master's run first (load 0.77), then the bra
     master, node: F(379592), 79330 digits, elapsed 19959 ms, PASS, verified; after the verdict 50 ms (wall 20009 ms)
 
 About 1.03 times master's work, within the noise, as the 1-second medians said. Node does about 1.73 times the compiled program's work. The lever the measurements point to is the carry's branch: a lowering that makes `carry` without a jump (a select of two known numbers, `cmov` on their bits, or a mask) would remove the misses, and keeping `i` an integer in a register would shorten the chain each miss throws away.
+
+## The carry chosen with no jump (2026-11-26, 1-second copies)
+
+Measured as before, alternated with master's executable (5bf3cef, the state after 14, with the race as it was), on the same box and day, load average 0.66 to 0.94.
+
+15. **A select of two known numbers has no jump** (Lowering's `fused_jump`, whose header has the rule; `OperatorLowering.selected_items`; `X86.Cmov`). An ordering of two known numbers followed by a conditional of two arms, each a number literal or a variable of the frame holding a known number, with no other way into the places it spans, is lowered as one: both arms' bits loaded into `rax` and `rcx`, the `ucomisd`, and a `cmova` or `cmovae` that keeps the first arm when the ordering holds. A NaN sets CF, so an ordering with one keeps the second arm, as JavaScript's false. `x86/tests/select.js` holds the four orderings, NaNs, `-0`, variable arms and two near misses (a string arm, an expression arm) to node.
+
+    The race was reshaped to use it, within the rules (the ordinary algorithm, node running the same source): each of addInto's loops takes `carry = s >= BASE ? 1 : 0` and writes `s - carry * BASE`, in place of an `if` whose arms each wrote the limb and set the carry. addInto's first loop now has no branch that the limbs' values decide.
+
+    - The race, medians of 7: F(64,804) on master, F(87,028) with 15. That is about 1.8 times the work.
+    - A second set, medians of 5: F(64,606) on master, F(88,545) with 15. Master's compiler on the reshaped source gave F(60,337): the reshape alone, still with a branch, is slower. The select is what gains.
+    - node lost nothing by the reshape: F(82,182) on the old source, F(82,537) on the new, medians of 5 in the same set.
+
+    `x86/race/carries.js` now times both forms of the loop, the `if` and the select. Its arrays are made in `main` and filled in place, so they stay arrays of numbers, as the race's are. Its first version, used for the last section's numbers, returned them from a function, so its loop read items of unknown kind: the last section's carries.js times measured that loop, not the race's. Medians of 5:
+
+        master:   if: never 103 ms, random 224 ms;  select: never 118 ms, random 244 ms
+        with 15:  if: never 101 ms, random 221 ms;  select: never 118 ms, random 119 ms
+        node:     if: never 47 ms, random 107 ms;   select: never 33 ms, random 113 ms
+
+    With 15 the select's loop costs the same on random limbs as on limbs that never carry: no misses are left. At 1 second the compiled program now does more work than node does (F(87,028) against node's F(82,537)).
+
+Tried and not in the branch: the xmm homes of the last section again, now that the loop has no misses to hide its chains behind. F(88,927) without them and F(88,928) with them, medians of 7: no gain.
+
+The 20-second race after 15, the branch's run first (load 0.54), then master's (load 0.78), the same box and day:
+
+    compiled: F(402871), 84195 digits, elapsed 19960 ms, PASS, verified; after the verdict 318 ms (wall 20278 ms)
+    node: F(384075), 80267 digits, elapsed 19963 ms, PASS, verified; after the verdict 49 ms (wall 20012 ms)
+
+    master, compiled: F(279315), 58374 digits, elapsed 19951 ms, PASS, verified; after the verdict 214 ms (wall 20165 ms)
+    master, node: F(368725), 77059 digits, elapsed 19958 ms, PASS, verified; after the verdict 65 ms (wall 20023 ms)
+
+From F(279,315), the compiled program did about 2.1 times its earlier work. It now does about 1.1 times the work of the node run beside it: the compiled program is ahead of node in the 20-second race. Its time after the verdict, mostly building and printing the 84,000-digit number, is 318 ms against node's 49 ms.
