@@ -69,15 +69,16 @@ function seven(limb) {
   return s;
 }
 
-// The number's decimal digits.
+// The number's decimal digits: each limb's digits, top limb first, joined
+// once at the end, so the work is linear in the number's length.
 function digitsOf(limbs) {
-  let s = "" + limbs[limbs.length - 1];
+  const parts = ["" + limbs[limbs.length - 1]];
   let i = limbs.length - 2;
   while (i >= 0) {
-    s = s + seven(limbs[i]);
+    parts.push(seven(limbs[i]));
     i = i - 1;
   }
-  return s;
+  return parts.join("");
 }
 
 function digitCount(limbs) {
