@@ -98,6 +98,7 @@ import KnownFunctions
 import Jumps
 import LoweringBasics
 import Moves
+import ObjectTable
 import CallLowering
 import IndexLowering
 import OperatorLowering
@@ -1412,10 +1413,13 @@ instruction_items = |site, { instruction, state, checked }| {
 				(String, "length") | (Array, "length") | (Numbers, "length") => Number
 				_ => Value
 			}
+			# The key's hash, worked out here, saves hashing it as it runs
+			# (ObjectTable's header); so do the write's and the method's below.
 			called = [
 				Emit.load(Rdi, top_place(0)),
 				Emit.address_of(Rsi, LoweringBasics.text_label(site, key)),
-				Emit.call(Runtime.get_property),
+				Emit.imm(R8, ObjectTable.key_hash(key)),
+				Emit.call(ObjectTable.get_property_hashed),
 				Emit.store(top_place(0), Rax),
 			]
 			# Of `undefined` or `null`, the runtime throws node's TypeError.
@@ -1551,7 +1555,8 @@ instruction_items = |site, { instruction, state, checked }| {
 								Emit.load(Rdi, top_place(1)),
 								Emit.address_of(Rsi, LoweringBasics.text_label(site, key)),
 								Emit.load(Rdx, top_place(0)),
-								Emit.call(Runtime.set_property),
+								Emit.imm(R8, ObjectTable.key_hash(key)),
+								Emit.call(ObjectTable.set_property_hashed),
 							].concat(
 								LoweringBasics.copy_items({ from: top_place(0), to: top_place(1) }),
 							),
@@ -2090,7 +2095,8 @@ instruction_items = |site, { instruction, state, checked }| {
 							[
 								Emit.load(Rdi, top_place(0)),
 								Emit.address_of(Rsi, LoweringBasics.text_label(site, name)),
-								Emit.call(Runtime.get_property),
+								Emit.imm(R8, ObjectTable.key_hash(name)),
+								Emit.call(ObjectTable.get_property_hashed),
 								Emit.store(next_place, Rax),
 							],
 							LoweringBasics.with_top(state, Value),
