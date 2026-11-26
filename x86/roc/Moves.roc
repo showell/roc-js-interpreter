@@ -17,21 +17,28 @@
 ##   becomes `mov r9, [rbp-48]`, when `rax` is written before it is read
 ##   again.
 ##
-## **THE RULE, KEPT CONSERVATIVE.** A register is known to be unread only
-## within a straight run, and only by the instructions `accesses` names
-## every register of, as read or written (an operand of memory reads its
-## base and index). Any other instruction (a call, a `ret`, a `syscall`, a
-## divide, `rep movsb`), any jump, and any label a statement names (the
+## **THE RULE, KEPT CONSERVATIVE.** What a register holds is known to be
+## unread by walking backward over the instructions `accesses` names every
+## register of, as read or written (an operand of memory reads its base and
+## index), and over jumps: a jump reads what its label reads, and a
+## conditional jump that and what the way it falls to reads.
+## `settled_labels` finds what each label reads by walking the program
+## backward again until no label's set grows. Any other instruction (a call,
+## a `ret`, a `syscall`, a divide, `rep movsb`) and any other statement (a
+## call of a label, a `lea` of one, data) reads every register, and so does
+## a label whose address is taken (by a call, a `lea` or a distance), so
+## nothing is taken out that a way the walk can't follow may read. Two moves
+## are joined only with no label a statement names between them (the
 ## lowering marks every instruction's place, and a label nothing names is
-## passed by, as Forwarding passes it) counts every register as read there,
-## so nothing is taken out that another way may read. `rsp` and `rbp` are
-## always read. Only plain moves are taken out or joined: into a general or
-## an xmm register, from a register, an immediate, an address (`lea`) or a
-## place at `rbp`; a load from anywhere else stays, so no load that could
-## fault is lost. No store to memory is taken out, so the frame holds what
-## it held before. The upper half of an xmm register is never read by the
-## lowered code (every operation on doubles is scalar), so a `movq` into one
-## counts as a copy of the whole.
+## passed by, as Forwarding passes it), and a copy is known only along a
+## straight run. `rsp` and `rbp` are always read. Only plain moves are
+## taken out or joined: into a general or an xmm register, from a
+## register, an immediate, an address (`lea`) or a place at `rbp`; a load
+## from anywhere else stays, so no load that could fault is lost. No store
+## to memory is taken out, so the frame holds what it held before. The
+## upper half of an xmm register is never read by the lowered code (every
+## operation on doubles is scalar), so a `movq` into one counts as a copy
+## of the whole.
 import Assembly
 import Forwarding
 import X86
@@ -253,6 +260,7 @@ one_move_of = |first, { next, after }| {
 ## nothing reads after taken out, and each pair `one_move_of` joins made one.
 dead_dropped : List(Assembly.Statement), Set(Str) -> List(Assembly.Statement)
 dead_dropped = |statements, named| {
+	labels = settled_labels(statements, named)
 	var $kept = List.with_capacity(statements.len())
 	var $read = every_unit
 	# The instruction kept just after this one, and what is read after it.
@@ -263,6 +271,10 @@ dead_dropped = |statements, named| {
 		match statement {
 			Mark(label) if !named.contains(label) => {
 				$kept = $kept.append(statement)
+			}
+			Mark(_) => {
+				$kept = $kept.append(statement)
+				$next = NoNext
 			}
 			Instruction(instruction) => {
 				joining = match $next {
@@ -295,11 +307,102 @@ dead_dropped = |statements, named| {
 			_ => {
 				$kept = $kept.append(statement)
 				$next = NoNext
-				$read = every_unit
+				$read = read_before_flow(statement, { after: $read, labels })
 			}
 		}
 	}
 	reverse_statements($kept)
+}
+
+## What a backward walk knows of the labels: those a statement names; those
+## among them whose address is taken, named by a call, a `lea` or a distance, where any
+## register may be read; and what is read at each of the others, which only
+## jumps reach.
+Labels : {
+	named : Set(Str),
+	addressed : Set(Str),
+	reads : Dict(Str, U32),
+}
+
+## The labels a call, a `lea` or a distance names.
+addressed_labels : List(Assembly.Statement) -> Set(Str)
+addressed_labels = |statements| {
+	var $addressed = Set.empty()
+	for statement in statements {
+		match statement {
+			CallTo(label) | Distance(label) | LeaTo({ to: _, label }) => {
+				$addressed = $addressed.insert(label)
+			}
+			_ => {}
+		}
+	}
+	$addressed
+}
+
+## The registers read at a label: every one at a label whose address is taken, else what the walk
+## has found so far (none, before it has passed the label).
+label_reads : Labels, Str -> U32
+label_reads = |labels, label|
+	if labels.addressed.contains(label) {
+		every_unit
+	} else {
+		match labels.reads.get(label) {
+			Ok(reads) => reads
+			Err(_) => 0
+		}
+	}
+
+## The registers read before a statement that is neither an instruction nor
+## a label, given those read after it: a jump's are its label's, a
+## conditional jump's both, and every one before anything else (a call, a
+## `lea` of a label, data).
+read_before_flow : Assembly.Statement, { after : U32, labels : Labels } -> U32
+read_before_flow = |statement, { after, labels }|
+	match statement {
+		JmpTo(label) => label_reads(labels, label)
+		JccTo({ condition: _, label }) => both(after, label_reads(labels, label))
+		_ => every_unit
+	}
+
+## What is read at each label only jumps reach, found by walking the
+## statements backward again until no label's set grows: each set only
+## grows, and a walk that grows none has found them all.
+settled_labels : List(Assembly.Statement), Set(Str) -> Labels
+settled_labels = |statements, named| {
+	var $labels = {
+		named,
+		addressed: addressed_labels(statements),
+		reads: Dict.empty(),
+	}
+	for _ in 0..<statements.len() {
+		var $read = every_unit
+		var $grown = False
+		for back in 0..<statements.len() {
+			at = statements.len() - 1 - back
+			statement = statements.get(at) ?? crash "Moves.settled_labels: a statement"
+			match statement {
+				Mark(label) =>
+					if named.contains(label) and !$labels.addressed.contains(label) {
+						known = label_reads($labels, label)
+						now = both(known, $read)
+						if now != known {
+							$labels = { ..$labels, reads: $labels.reads.insert(label, now) }
+							$grown = True
+						}
+					}
+				Instruction(instruction) => {
+					$read = read_before(instruction, $read)
+				}
+				_ => {
+					$read = read_before_flow(statement, { after: $read, labels: $labels })
+				}
+			}
+		}
+		if !$grown {
+			return $labels
+		}
+	}
+	crash "Moves.settled_labels: what is read at the labels never settled"
 }
 
 ## The statements in the other order.
@@ -482,16 +585,39 @@ expect {
 	)
 }
 
-# A label a jump names, a call and a `ret` read every register: nothing
-# before them goes.
+# A jump reads what its label reads: `rax`, read at the loop's top, stays
+# though the way that falls through writes it again, and `rcx`, read on
+# neither way, goes.
+expect {
+	trims_to(
+		[
+			Mark("top"),
+			Instruction(MovMemReg({ to: slot(-16), from: Rax })),
+			Instruction(MovRegImm({ to: Rax, value: 1 })),
+			Instruction(MovRegImm({ to: Rcx, value: 2 })),
+			JccTo({ condition: E, label: "top" }),
+			Instruction(MovRegImm({ to: Rax, value: 3 })),
+			JmpTo("top"),
+		],
+		[
+			Mark("top"),
+			Instruction(MovMemReg({ to: slot(-16), from: Rax })),
+			Instruction(MovRegImm({ to: Rax, value: 1 })),
+			JccTo({ condition: E, label: "top" }),
+			Instruction(MovRegImm({ to: Rax, value: 3 })),
+			JmpTo("top"),
+		],
+	)
+}
+
+# A call and a `ret` read every register: nothing before them goes.
 expect {
 	body = [
-		Assembly.Statement.Instruction(MovRegMem({ to: Rax, from: slot(-8) })),
-		Instruction(MovRegReg({ to: R9, from: Rax })),
-		Mark("there"),
-		Instruction(MovRegImm({ to: Rax, value: 1 })),
-		CallTo("there"),
-		Instruction(MovRegImm({ to: Rcx, value: 1 })),
+		Assembly.Statement.Instruction(MovRegImm({ to: Rcx, value: 1 })),
+		CallTo("routine"),
+		Instruction(MovRegImm({ to: Rdx, value: 1 })),
+		Instruction(Ret),
+		Mark("routine"),
 		Instruction(Ret),
 	]
 	trims_to(body, body)
