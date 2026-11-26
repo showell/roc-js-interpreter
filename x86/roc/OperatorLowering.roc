@@ -45,6 +45,7 @@
 ## remainder for the divisors the tests use, over dividends to 2^63 in
 ## size, and x86/tests/remainder-constant.js holds the whole of it to node.
 import js.Ast
+import js.Bytecode
 import Assembly
 import Boxing
 import Emit
@@ -461,6 +462,157 @@ OperatorLowering :: [].{
 			branch: Branch({ target, state: after }),
 			result: GivesNothing,
 		}
+	}
+
+	## `+`, `-` or `*` of the two `Integer`s on top, which give `kind`
+	## (`LoweringBasics.integer_arithmetic`), in the first's place: integer
+	## arithmetic, which the bounds keep from overflowing. A sum or a
+	## difference whose second is a literal (`checked`'s origins say where the
+	## top came from) adds or takes its integer as an immediate.
+	integer_arithmetic_items : LoweringBasics.Site,
+	{
+		state : LoweringBasics.State,
+		operator : Ast.BinaryOperator,
+		kind : LoweringBasics.Kind,
+		checked : IndexLowering.Checked,
+	} -> LoweringBasics.Lowered
+	integer_arithmetic_items = |site, { state, operator, kind, checked }| {
+		depth = state.stack_kinds.len()
+		left = LoweringBasics.stack_place(site.code, depth - 2)
+		right = LoweringBasics.stack_place(site.code, depth - 1)
+		literal =
+			if checked.origins.len() == depth {
+				match checked.origins.last() {
+					Ok(Literal(number)) if number >= -2147483648.0 and number <= 2147483647.0 =>
+						Ok(LoweringBasics.whole_of_literal(number))
+					_ => Err(Unknown)
+				}
+			} else {
+				Err(Unknown)
+			}
+		operated = match (operator, literal) {
+			(Add, Ok(whole)) => [Emit.plus_imm(Rax, whole)]
+			(Subtract, Ok(whole)) => [Emit.minus_imm(Rax, whole)]
+			(Add, _) => [Emit.load(Rcx, right), Emit.plus(Rax, Rcx)]
+			(Subtract, _) => [Emit.load(Rcx, right), Emit.minus(Rax, Rcx)]
+			_ => [Emit.load(Rcx, right), Instruction(Imul({ to: Rax, from: Rcx }))]
+		}
+		LoweringBasics.falling(
+			[Emit.load(Rax, left)].concat(operated).append(Emit.store(left, Rax)),
+			LoweringBasics.with_top(LoweringBasics.without_top(state, 2), kind),
+		)
+	}
+
+	## An ordering of the two `Integer`s on top and the `JumpIfFalse` after
+	## it, as one: a `cmp` and a signed jump to the target when the ordering
+	## is false. On the way that falls through the ordering holds, so a slot
+	## either side was loaded from (`origins`, IndexLowering's) has its range
+	## narrowed by the other side's (x86/README.md, "A loop's head"): `i < n`
+	## leaves `i` at most `n`'s most less 1, and `n` at least `i`'s least
+	## and 1.
+	integer_jump_items : LoweringBasics.Site,
+	{
+		state : LoweringBasics.State,
+		operator : Ast.BinaryOperator,
+		skip : U64,
+		origins : List(IndexLowering.Origin),
+	} -> LoweringBasics.Lowered
+	integer_jump_items = |site, { state, operator, skip, origins }| {
+		depth = state.stack_kinds.len()
+		left = LoweringBasics.stack_place(site.code, depth - 2)
+		right = LoweringBasics.stack_place(site.code, depth - 1)
+		target = site.at + 2 + skip
+		label = LoweringBasics.place_label(site.context, target)
+		falsy = match operator {
+			Less => Ge
+			LessOrEqual => G
+			Greater => Le
+			_ => L
+		}
+		after = LoweringBasics.without_top(state, 2)
+		side = |down| {
+			kind: LoweringBasics.kind_below(state, down),
+			origin: origins.get(depth - 1 - down) ?? Other,
+		}
+		# What holds where the ordering is true, as `lower <= upper - gap`.
+		narrowed = match operator {
+			Less => narrowed_below(
+				after,
+				{
+					lower: side(1),
+					upper: side(0),
+					gap: 1,
+				},
+			)
+			LessOrEqual => narrowed_below(
+				after,
+				{
+					lower: side(1),
+					upper: side(0),
+					gap: 0,
+				},
+			)
+			Greater => narrowed_below(
+				after,
+				{
+					lower: side(0),
+					upper: side(1),
+					gap: 1,
+				},
+			)
+			_ => narrowed_below(
+				after,
+				{
+					lower: side(0),
+					upper: side(1),
+					gap: 0,
+				},
+			)
+		}
+		{
+			statements: [
+				Emit.load(Rax, left),
+				Emit.load(Rcx, right),
+				Emit.cmp(Rax, Rcx),
+				Emit.jcc(falsy, label),
+			],
+			falls: Falls(narrowed),
+			branch: Branch({ target, state: after }),
+			result: GivesNothing,
+		}
+	}
+
+	## `++` or `--` of a slot that holds an `Integer` and then holds
+	## `stepped` (`LoweringBasics.integer_stepped`): the slot stepped by an
+	## integer add, and its old value (postfix) or its new (prefix) pushed.
+	integer_update_items : LoweringBasics.Site,
+	{
+		state : LoweringBasics.State,
+		slot : U64,
+		step : Bytecode.Update,
+		stepped : LoweringBasics.Kind,
+	} -> LoweringBasics.Lowered
+	integer_update_items = |site, { state, slot, step, stepped }| {
+		top = LoweringBasics.stack_place(site.code, state.stack_kinds.len())
+		place = LoweringBasics.slot_place(slot)
+		held = match state.slots.get(slot) {
+			Ok(Ready(kind)) => kind
+			_ => crash "OperatorLowering.integer_update_items: a slot that holds an Integer"
+		}
+		moved = [
+			Emit.load(Rax, place),
+			Emit.plus_imm(Rax, LoweringBasics.whole_of_literal(step.delta)),
+			Emit.store(place, Rax),
+		]
+		(items, pushed) = match step.fixity {
+			Postfix => (LoweringBasics.copy_items({ from: place, to: top }).concat(moved), held)
+			Prefix => (moved.append(Emit.store(top, Rax)), stepped)
+		}
+		slots = state.slots.set(
+			slot,
+			Ready(stepped),
+		) ?? crash "OperatorLowering.integer_update_items: a slot"
+		LoweringBasics.falling(items, LoweringBasics.with_top({ ..state, slots }, pushed))
 	}
 
 	## A `===` or `!==` of the two known numbers on top, followed by a
@@ -946,6 +1098,59 @@ numbers_first_items = |site, { kinds, left, right, fast_items, slow_items }| {
 		.concat([Emit.jmp(done_label), Emit.mark(slow_label)])
 		.concat(slow_items)
 		.append(Emit.mark(done_label))
+}
+
+## One side of an ordering of two `Integer`s: its kind, and where its stack
+## place came from.
+OrderedSide : { kind : LoweringBasics.Kind, origin : IndexLowering.Origin }
+
+## `state` with what `lower <= upper - gap` says, on the way an ordering of
+## two `Integer`s holds: the slot `lower` was loaded from holds at most
+## `upper`'s most less the gap, and the slot `upper` was loaded from at
+## least `lower`'s least and the gap. A range that would be empty is left as
+## it was, since that way is never taken.
+narrowed_below : LoweringBasics.State,
+{
+	lower : OrderedSide,
+	upper : OrderedSide,
+	gap : I64,
+} -> LoweringBasics.State
+narrowed_below = |state, { lower, upper, gap }| {
+	narrowed = |slots, origin, bound|
+		match origin {
+			Local(slot) =>
+				match slots.get(slot) {
+					Ok(Ready(Integer(range))) => {
+						kept = bound(range)
+						if kept.low > kept.high {
+							slots
+						} else {
+							slots.set(
+								slot,
+								Ready(Integer(kept)),
+							) ?? crash "OperatorLowering.narrowed_below: a slot"
+						}
+					}
+					_ => slots
+				}
+			_ => slots
+		}
+	match (lower.kind, upper.kind) {
+		(Integer(low_side), Integer(high_side)) => {
+			capped = narrowed(
+				state.slots,
+				lower.origin,
+				|range| { ..range, high: I64.min(range.high, high_side.high - gap) },
+			)
+			floored = narrowed(
+				capped,
+				upper.origin,
+				|range| { ..range, low: I64.max(range.low, low_side.low + gap) },
+			)
+			{ ..state, slots: floored }
+		}
+		_ => state
+	}
 }
 
 ## The load of an arm's bits into `to`.

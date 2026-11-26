@@ -175,6 +175,63 @@ LoweringBasics :: [].{
 		Instruction(MovsdStore({ to: place, from: Xmm0 })),
 	]
 
+	## The `Integer` a number literal is: a whole number within ±2^53 that
+	## isn't -0.
+	integer_of_literal : F64 -> Try(LoweringBasics.Kind, [NotInteger])
+	integer_of_literal = |number| {
+		limit = LoweringBasics.integer_limit.to_f64()
+		if number.is_nan() or number.is_infinite() or number < 0 - limit or number > limit {
+			return Err(NotInteger)
+		}
+		if number.to_bits() == negative_zero_bits or number.div_trunc_by(1.0) != number {
+			return Err(NotInteger)
+		}
+		whole = LoweringBasics.whole_of_literal(number)
+		Ok(Integer({ low: whole, high: whole }))
+	}
+
+	## A whole number literal within ±2^53, as an integer.
+	whole_of_literal : F64 -> I64
+	whole_of_literal = |number|
+		match number.floor_to_i64_try() {
+			Ok(whole) => whole
+			Err(_) => crash "LoweringBasics.whole_of_literal: a whole number within ±2^53"
+		}
+
+	## The `Integer` that `+`, `-` or `*` of two kinds gives (x86/README.md,
+	## "An integer kind"): both `Integer`s, and the result's bounds within
+	## ±2^53. A product that may be -0 (a factor that may be 0 times one that
+	## may be negative) is no `Integer`.
+	integer_arithmetic : {
+		operator : Ast.BinaryOperator,
+		left : LoweringBasics.Kind,
+		right : LoweringBasics.Kind,
+	} -> Try(LoweringBasics.Kind, [NotInteger])
+	integer_arithmetic = |{ operator, left, right }|
+		match (left, right) {
+			(Integer(one), Integer(other)) =>
+				match operator {
+					Add => integer_within(one.low + other.low, one.high + other.high)
+					Subtract => integer_within(one.low - other.high, one.high - other.low)
+					Multiply => integer_product(one, other)
+					_ => Err(NotInteger)
+				}
+			_ => Err(NotInteger)
+		}
+
+	## The `Integer` a slot holding `kind` holds after `++` or `--` steps it
+	## by `delta`.
+	integer_stepped : LoweringBasics.Kind, F64 -> Try(LoweringBasics.Kind, [NotInteger])
+	integer_stepped = |kind, delta|
+		match LoweringBasics.integer_of_literal(delta) {
+			Ok(step) => LoweringBasics.integer_arithmetic({
+				operator: Add,
+				left: kind,
+				right: step,
+			})
+			Err(NotInteger) => Err(NotInteger)
+		}
+
 	literal_label : U64 -> Str
 	literal_label = |number| "literal_${number.to_str()}"
 
@@ -334,11 +391,16 @@ LoweringBasics :: [].{
 			_ => {}
 		}
 		given = LoweringBasics.kind_below(state, 0)
-		if !LoweringBasics.is_value_kind(given) {
+		if !LoweringBasics.is_value_kind(given) and !LoweringBasics.is_integer(given) {
 			return LoweringBasics.refusal(
 				site,
 				"a variable is given a function, `console` or a method",
 			)
+		}
+		# An `Integer`'s bits are no value's, so one reaches a cell made a
+		# double (Lowering's `integers_made`).
+		if LoweringBasics.is_integer(given) and site.context.cells.contains(slot) {
+			crash "LoweringBasics.written_slot: an Integer reaches no cell"
 		}
 		# A cell is shared with the closures that capture it, whose writes no
 		# walk of this code sees.
@@ -614,4 +676,51 @@ LoweringBasics :: [].{
 		}
 		$filled
 	}
+}
+
+## The bits of -0.
+negative_zero_bits : U64
+negative_zero_bits = 0x8000000000000000
+
+## The `Integer` between two bounds, or `NotInteger` when either leaves
+## ±2^53.
+integer_within : I64, I64 -> Try(LoweringBasics.Kind, [NotInteger])
+integer_within = |low, high|
+	if low < 0 - LoweringBasics.integer_limit or high > LoweringBasics.integer_limit {
+		Err(NotInteger)
+	} else {
+		Ok(Integer({ low, high }))
+	}
+
+## The `Integer` of a product of two ranges: its bounds are the least and the
+## most of the four corners' products, each first checked as a double, so the
+## integers' products can't overflow 64 bits. A range that holds 0 times one
+## that holds a negative may give -0, and gives `NotInteger`.
+integer_product : { low : I64, high : I64 },
+{ low : I64, high : I64 } -> Try(
+	LoweringBasics.Kind,
+	[NotInteger],
+)
+integer_product = |one, other| {
+	holds_zero = |range| range.low <= 0 and range.high >= 0
+	if (holds_zero(one) and other.low < 0) or (holds_zero(other) and one.low < 0) {
+		return Err(NotInteger)
+	}
+	corners = [
+		(one.low, other.low),
+		(one.low, other.high),
+		(one.high, other.low),
+		(one.high, other.high),
+	]
+	far = 2.0 * LoweringBasics.integer_limit.to_f64()
+	if corners.any(|(a, b)| a.to_f64() * b.to_f64() > far or a.to_f64() * b.to_f64() < 0 - far) {
+		return Err(NotInteger)
+	}
+	var $low = one.low * other.low
+	var $high = $low
+	for (a, b) in corners {
+		$low = I64.min($low, a * b)
+		$high = I64.max($high, a * b)
+	}
+	integer_within($low, $high)
 }

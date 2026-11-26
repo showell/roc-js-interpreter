@@ -260,9 +260,26 @@ one_move_of = |first, { next, after }| {
 			Ok(MovMemReg({ to, from: source }))
 		(MovRegReg({ to: _, from: source }), MovqToXmm({ to, from })) if reads_through(from) =>
 			Ok(MovqToXmm({ to, from: source }))
+		# An operation's source read through the register: from the source
+		# itself, or as an immediate.
+		(MovRegReg({ to: _, from: source }), Alu({ operation, to, from }))
+		if reads_through(from) and !reads_through(to) =>
+			Ok(Alu({ operation, to, from: source }))
+		(MovRegImm({ to: _, value }), Alu({ operation, to, from }))
+		if reads_through(from) and !reads_through(to) and fits_i32(value) =>
+			Ok(AluImm({ operation, to, value: value.to_i32_wrap() }))
+		# A compare writes neither register, so its first may be read
+		# through one too.
+		(MovRegReg({ to: _, from: source }), Alu({ operation: Cmp, to, from }))
+		if reads_through(to) and !reads_through(from) =>
+			Ok(Alu({ operation: Cmp, to: source, from }))
 		_ => Err(Apart)
 	}
 }
+
+## Whether an immediate fits an instruction's sign-extended 32 bits.
+fits_i32 : I64 -> Bool
+fits_i32 = |value| value >= -2147483648 and value <= 2147483647
 
 ## The statements, walked backward, with each plain move whose register
 ## nothing reads after taken out, and each pair `one_move_of` joins made one.

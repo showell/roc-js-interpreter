@@ -221,6 +221,8 @@ IndexLowering :: [].{
 			count = checked.origins.len()
 			if count <= down {
 				False
+			} else if LoweringBasics.is_integer(LoweringBasics.kind_below(before, down)) {
+				True
 			} else {
 				match checked.origins.get(count - 1 - down) {
 					Ok(Whole) => True
@@ -275,15 +277,28 @@ IndexLowering :: [].{
 	}
 
 	## `length` of the value at `place`, in its place: an array's or a
-	## string's length (the first 8 bytes of either) made a double, or
-	## `slow_items`, the routine's call, for any other value.
+	## string's length (the first 8 bytes of either), kept as an integer
+	## (`integer`) or made a double, or `slow_items`, the routine's call, for
+	## any other value.
 	length_items : LoweringBasics.Site,
 	{
 		kind : LoweringBasics.Kind,
 		place : X86.Mem,
+		integer : Bool,
 		slow_items : List(Assembly.Statement),
 	} -> List(Assembly.Statement)
-	length_items = |site, { kind, place, slow_items }| {
+	length_items = |site, { kind, place, integer, slow_items }| {
+		# The length kept as an `Integer` (a known array's or string's,
+		# whose slow way is never taken), or made a double.
+		stored =
+			if integer {
+				[Emit.store(place, Rax)]
+			} else {
+				[
+					Instruction(Cvtsi2sd({ to: Xmm0, from: Rax })),
+					Instruction(MovsdStore({ to: place, from: Xmm0 })),
+				]
+			}
 		slow_label = LoweringBasics.inner_label(site, "slow")
 		done_label = LoweringBasics.inner_label(site, "done")
 		array_label = LoweringBasics.inner_label(site, "array")
@@ -305,13 +320,9 @@ IndexLowering :: [].{
 			Ok(statements) =>
 				statements
 					.concat(RuntimeBuilders.unboxed_items(Rdi))
-					.concat([
-						Emit.load(Rax, Emit.mem(Rdi, 0)),
-						Instruction(Cvtsi2sd({ to: Xmm0, from: Rax })),
-						Instruction(MovsdStore({ to: place, from: Xmm0 })),
-						Emit.jmp(done_label),
-						Emit.mark(slow_label),
-					])
+					.concat([Emit.load(Rax, Emit.mem(Rdi, 0))])
+					.concat(stored)
+					.concat([Emit.jmp(done_label), Emit.mark(slow_label)])
 					.concat(slow_items)
 					.append(Emit.mark(done_label))
 			Err(Untested) => slow_items
@@ -444,12 +455,21 @@ is_arithmetic = |operator|
 		_ => False
 	}
 
-## Whether the stack's two top places hold known numbers.
+## Whether the stack's two top places hold known numbers, both doubles or
+## both `Integer`s.
 numbers_on_top : LoweringBasics.State -> Bool
-numbers_on_top = |state|
-	state.stack_kinds.len() >= 2
-		and LoweringBasics.kind_below(state, 0) == Number
-		and LoweringBasics.kind_below(state, 1) == Number
+numbers_on_top = |state| {
+	kinds = state.stack_kinds
+	if kinds.len() < 2 {
+		False
+	} else {
+		top = (LoweringBasics.kind_below(state, 1), LoweringBasics.kind_below(state, 0))
+		top == (
+			Number,
+			Number,
+		) or (LoweringBasics.is_integer(top.0) and LoweringBasics.is_integer(top.1))
+	}
+}
 
 ## The item `rcx` of the items whose address is in `r8`.
 item_place : X86.Mem
@@ -484,12 +504,25 @@ item_address_items = |{ kinds, receiver, index, checks, label }| {
 		Number | Value => Ok(
 			LoweringBasics.unless_number_items({ kind: kinds.1, place: index, label }),
 		)
+		Integer(_) => Ok([])
 		_ => Err(Untested)
 	}?
+	# An `Integer` index is a whole number already, its bits the integer: a
+	# negative one is a huge unsigned, past every length, as below.
+	integer_index = LoweringBasics.is_integer(kinds.1)
+	loaded =
+		if integer_index {
+			[Emit.load(Rcx, index)]
+		} else {
+			[
+				Instruction(MovsdLoad({ to: Xmm0, from: index })),
+				Instruction(Cvttsd2si({ to: Rcx, from: Xmm0 })),
+			]
+		}
 	# A whole number survives the round trip through an integer; a negative
 	# one is a huge unsigned, past every length.
 	whole_tested =
-		if checks.whole {
+		if checks.whole or integer_index {
 			[]
 		} else {
 			[
@@ -518,10 +551,7 @@ item_address_items = |{ kinds, receiver, index, checks, label }| {
 					index_tested
 				},
 			)
-			.concat([
-				Instruction(MovsdLoad({ to: Xmm0, from: index })),
-				Instruction(Cvttsd2si({ to: Rcx, from: Xmm0 })),
-			])
+			.concat(loaded)
 			.concat(whole_tested)
 			.append(Emit.load(Rdi, receiver))
 			.concat(RuntimeBuilders.unboxed_items(Rdi))

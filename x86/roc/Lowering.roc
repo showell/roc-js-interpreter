@@ -680,9 +680,17 @@ code_items = |context| {
 					crash "Lowering.code_items: a demoted slot holds no Integer"
 				}
 				$demoted = $demoted.concat(slots)
+				# A loop's head widened before holds the slots' `Integer`s,
+				# which are doubles from now on.
+				$heads = $heads.map(|_, head| without_integers(head, slots))
 				$walks = $walks - 1
 			}
-			Ok(Widened({ at, state })) => {
+			Ok(Widened({ at, state, integers_only })) => {
+				# A head whose `Integer`s alone widened widens each at most once,
+				# to the whole range, so those walks end too, as a demotion's.
+				if integers_only {
+					$walks = $walks - 1
+				}
 				$heads = $heads.insert(at, state)
 				$widened_head = at
 			}
@@ -700,6 +708,42 @@ code_items = |context| {
 	Err({ refused: code_refusal(context, LoopChangesKinds($widened_head)), calls: [] })
 }
 
+## Whether a loop's head widened to `after` from `head` differs only in its
+## slots' `Integer` ranges, each now the whole range.
+only_integers_widened : LoweringBasics.State, LoweringBasics.State -> Bool
+only_integers_widened = |head, after| {
+	kept = |
+		one,
+		other,
+	| one == other or (other == Ready(LoweringBasics.any_integer) and is_integer_slot(one))
+	head.stack_kinds == after.stack_kinds and List.map2(
+		head.slots,
+		after.slots,
+		kept,
+	).all(|same| same)
+}
+
+## Whether a slot holds an `Integer`.
+is_integer_slot : LoweringBasics.Slot -> Bool
+is_integer_slot = |slot|
+	match slot {
+		Ready(Integer(_)) => True
+		_ => False
+	}
+
+## A state with each of `slots` that holds an `Integer` holding a number.
+without_integers : LoweringBasics.State, List(U64) -> LoweringBasics.State
+without_integers = |state, slots| {
+	..state,
+	slots: state.slots.map_with_index(
+		|held, slot|
+			match held {
+				Ready(Integer(_)) if slots.contains(slot) => Ready(Number)
+				_ => held
+			},
+	),
+}
+
 ## One pass of `code_items` with the loop heads widened so far.
 code_walk : LoweringBasics.Context,
 {
@@ -709,7 +753,13 @@ code_walk : LoweringBasics.Context,
 } -> Try(
 	[
 		Walked(CodeItems),
-		Widened({ at : U64, state : LoweringBasics.State }),
+		Widened(
+			{
+				at : U64,
+				state : LoweringBasics.State,
+				integers_only : Bool,
+			},
+		),
 		Doubted({ at : U64, slots : List(U64) }),
 		Demoted(List(U64)),
 		Halted({ refused : [Refused(Str)], calls : List(LoweringBasics.CallKinds) }),
@@ -757,7 +807,7 @@ code_walk = |context, { heads, doubted, demoted }| {
 		# converts its own, and every jump converts before it goes.
 		$flowing = match $flowing {
 			Flowing(state) if meets => {
-				converted = integers_met(code, state)
+				converted = integers_met(code, { state, kept: [] })
 				$body = $body.concat(converted.statements)
 				Flowing(converted.state)
 			}
@@ -825,35 +875,76 @@ code_walk = |context, { heads, doubted, demoted }| {
 							_ => IndexLowering.nothing_proved(depth_here)
 						}
 					}
+				joined_at = |place| $pending.contains(place) or looped_to.contains(place)
+				joined = joined_at(at + 1)
+				# What an instruction's `Integer`s are made doubles by changes no
+				# value, so what the run proved holds past it; a function made a
+				# value (`values_made`) forgets it.
 				valued =
 					if skipped.contains(at) or $fused.contains(at) {
-						{ statements: [], state, escaped: [] }
+						{ statements: [], state, escaped: [], converted: [] }
 					} else {
-						converted = integers_made(site, { instruction, state, demoted })
+						converted = integers_made(site, { instruction, state, demoted, joined })
 						made = values_made(site, { instruction, state: converted.state })
-						{ ..made, statements: converted.statements.concat(made.statements) }
+						{
+							statements: made.statements,
+							state: made.state,
+							escaped: made.escaped,
+							converted: converted.statements,
+						}
 					}
 				$escaped = $escaped.concat(valued.escaped)
 				$calls = match call_kinds(context, { instruction, state: valued.state }) {
 					Ok(call) => $calls.append(call)
 					Err(NoCall) => $calls
 				}
-				joined_at = |place| $pending.contains(place) or looped_to.contains(place)
-				joined = joined_at(at + 1)
 				ahead = [1, 2, 3, 4, 5].any(|step| joined_at(at + step))
-				fused = fused_jump(site, { instruction, joined, ahead, state: valued.state })
+				fused = fused_jump(
+					site,
+					{
+						instruction,
+						joined,
+						ahead,
+						state: valued.state,
+						origins: checked.origins,
+					},
+				)
+				literal =
+					if joined {
+						Err(NotInteger)
+					} else {
+						integer_literal(
+							site,
+							{
+								instruction,
+								state: valued.state,
+								demoted,
+								jump_joined: joined_at(at + 2),
+							},
+						)
+					}
 				lowered =
 					if $fused.contains(at) {
 						LoweringBasics.falling([], valued.state)
 					} else {
-						match fused {
-							Fused({ done, through }) => {
+						match (fused, literal) {
+							(Fused({ done, through }), _) => {
 								for step in 0..<through {
 									$fused = $fused.append(at + 1 + step)
 								}
 								done
 							}
-							Unfused =>
+							(Unfused, Ok({ whole, kind })) => {
+								place = LoweringBasics.stack_place(
+									code,
+									valued.state.stack_kinds.len(),
+								)
+								LoweringBasics.falling(
+									[Emit.imm(Rax, whole), Emit.store(place, Rax)],
+									LoweringBasics.with_top(valued.state, kind),
+								)
+							}
+							(Unfused, Err(NotInteger)) =>
 								match instruction_items(
 									site,
 									{ instruction, state: valued.state, checked },
@@ -863,6 +954,7 @@ code_walk = |context, { heads, doubted, demoted }| {
 								}
 						}
 					}
+				$body = $body.concat(valued.converted)
 				$body = $body.concat(valued.statements).concat(lowered.statements)
 				$checked = match lowered.falls {
 					Falls(next) => {
@@ -953,7 +1045,8 @@ code_walk = |context, { heads, doubted, demoted }| {
 							)?
 							again = integers_widened(head, met)
 							if again != head {
-								return Ok(Widened({ at: target, state: again }))
+								integers_only = only_integers_widened(head, again)
+								return Ok(Widened({ at: target, state: again, integers_only }))
 							}
 						}
 				}
@@ -1057,10 +1150,18 @@ fused_jump : LoweringBasics.Site,
 	joined : Bool,
 	ahead : Bool,
 	state : LoweringBasics.State,
+	origins : List(IndexLowering.Origin),
 } -> [Fused({ done : LoweringBasics.Lowered, through : U64 }), Unfused]
-fused_jump = |site, { instruction, joined, ahead, state }| {
+fused_jump = |site, { instruction, joined, ahead, state, origins }| {
 	following = |step| site.code.ops.get(site.at + step)
 	match (instruction, following(1)) {
+		(
+			Binary(operator, _),
+			Ok(JumpIfFalse(skip)),
+		) if !joined and is_ordering(operator) and integers_on_top(state) => {
+			done = OperatorLowering.integer_jump_items(site, { state, operator, skip, origins })
+			Fused({ done, through: 1 })
+		}
 		(Binary(operator, _), Ok(JumpIfFalse(skip))) if !joined and is_ordering(operator) => {
 			kinds = (LoweringBasics.kind_below(state, 1), LoweringBasics.kind_below(state, 0))
 			arms = match (
@@ -1394,32 +1495,111 @@ values_met = |context, { state, waiting }| {
 	}
 }
 
+## Whether the stack's two top places hold `Integer`s.
+integers_on_top : LoweringBasics.State -> Bool
+integers_on_top = |state|
+	state.stack_kinds.len() >= 2
+		and LoweringBasics.is_integer(LoweringBasics.kind_below(state, 1))
+		and LoweringBasics.is_integer(LoweringBasics.kind_below(state, 0))
+
+## The `Integer` a whole number literal pushes, and its integer, when the
+## instruction after it takes one as it is (x86/README.md, "Where an
+## `Integer` comes from"): a store or set of a slot that may hold one, `+`,
+## `-` or `*` with an `Integer` below that stays one, an ordering with an
+## `Integer` below that its `JumpIfFalse` follows, no other way reaching
+## that jump (`jump_joined` says whether one does), or an index of an
+## array. A literal is `PushNumber`, or a captured number held for good
+## (`KnownFunctions.constant_numbers`). Lowering asks only where no other
+## way reaches the place after it, and a program with a `try` makes none (a
+## throw lands with every variable a value).
+integer_literal : LoweringBasics.Site,
+{
+	instruction : Bytecode.Op,
+	state : LoweringBasics.State,
+	demoted : List(U64),
+	jump_joined : Bool,
+} -> Try({ whole : I64, kind : LoweringBasics.Kind }, [NotInteger])
+integer_literal = |site, { instruction, state, demoted, jump_joined }| {
+	if site.context.trying {
+		return Err(NotInteger)
+	}
+	number = match instruction {
+		PushNumber(pushed) => pushed
+		LoadBoxed(
+			{ slot, name: _, at: _ },
+		) => site.context.numbers.get(slot) ?? return Err(NotInteger)
+		_ => return Err(NotInteger)
+	}
+	kind = LoweringBasics.integer_of_literal(number)?
+	beneath =
+		if state.stack_kinds.is_empty() {
+			Undefined
+		} else {
+			LoweringBasics.kind_below(state, 0)
+		}
+	following = |step| site.code.ops.get(site.at + step)
+	taken = match following(1) {
+		Ok(StoreLocal(slot)) | Ok(SetLocal(slot)) => integer_storable(site, { slot, demoted })
+		Ok(Binary(operator, _)) if is_ordering(operator) =>
+			LoweringBasics.is_integer(beneath)
+				and !jump_joined
+				and (
+					match following(2) {
+						Ok(JumpIfFalse(_)) => True
+						_ => False
+					}
+				)
+		Ok(Binary(operator, _)) =>
+			LoweringBasics.integer_arithmetic({ operator, left: beneath, right: kind }).is_ok()
+		Ok(GetIndex(_)) => takes_integer_index(beneath)
+		_ => False
+	}
+	if taken {
+		Ok({ whole: LoweringBasics.whole_of_literal(number), kind })
+	} else {
+		Err(NotInteger)
+	}
+}
+
+## Whether a slot may hold an `Integer`: not demoted (`Demoted`), and no
+## cell, which closures share as a value.
+integer_storable : LoweringBasics.Site, { slot : U64, demoted : List(U64) } -> Bool
+integer_storable = |site, { slot, demoted }|
+	!demoted.contains(slot) and !site.context.cells.contains(slot)
+
+## Whether an item read or write of a receiver of this kind takes an
+## `Integer` index as it is: the in-line way of an array's, whose slow way
+## makes it a double first.
+takes_integer_index : LoweringBasics.Kind -> Bool
+takes_integer_index = |receiver|
+	match receiver {
+		Array | Numbers | Value => True
+		_ => False
+	}
+
 ## Each `Integer` an instruction can't take made a double first (x86/README.md,
-## "An integer kind"): every `Integer` on the stack, unless the instruction
-## takes them (`takes_integers`), and the slot it reads or steps in place
-## (`UpdateLocal`, `AppendLocal`) when that slot holds one.
+## "Where an `Integer` becomes a double"): the stack's places it doesn't
+## keep (`integers_kept`), and the slot it steps in place (`UpdateLocal`,
+## `AppendLocal`) when that slot holds one it can't step as one.
 integers_made : LoweringBasics.Site,
 {
 	instruction : Bytecode.Op,
 	state : LoweringBasics.State,
 	demoted : List(U64),
+	joined : Bool,
 } -> { statements : List(Assembly.Statement), state : LoweringBasics.State }
-integers_made = |site, { instruction, state, demoted }| {
-	stacked =
-		if takes_integers(instruction, demoted) {
-			{ statements: [], state }
-		} else {
-			integers_met(site.code, state)
-		}
+integers_made = |site, { instruction, state, demoted, joined }| {
+	kept = integers_kept(site, { instruction, state, demoted, joined })
+	stacked = integers_met(site.code, { state, kept })
 	stepped = match instruction {
-		UpdateLocal({ slot, step: _ }) => Ok(slot)
-		AppendLocal({ slot, at: _ }) => Ok(slot)
+		UpdateLocal({ slot, step }) => Ok({ slot, steps: integers_stepped(state, { slot, step }) })
+		AppendLocal({ slot, at: _ }) => Ok({ slot, steps: False })
 		_ => Err(NoSlot)
 	}
 	match stepped {
-		Ok(slot) =>
+		Ok({ slot, steps }) =>
 			match stacked.state.slots.get(slot) {
-				Ok(Ready(Integer(_))) => {
+				Ok(Ready(Integer(_))) if !steps => {
 					slots = stacked.state.slots.set(slot, Ready(Number))
 						?? crash "Lowering.integers_made: a slot"
 					{
@@ -1435,28 +1615,87 @@ integers_made = |site, { instruction, state, demoted }| {
 	}
 }
 
-## Whether an instruction takes the `Integer`s on the stack as they are: it
-## copies or drops them, or (`StoreLocal`, `SetLocal`) stores one to a slot
-## that may hold one.
-takes_integers : Bytecode.Op, List(U64) -> Bool
-takes_integers = |instruction, demoted|
-	match instruction {
-		LoadLocal(_) | Pop => True
-		StoreLocal(slot) | SetLocal(slot) => !demoted.contains(slot)
+## Whether `++` or `--` of a slot keeps its `Integer` one: its range stepped
+## stays within ±2^53.
+integers_stepped : LoweringBasics.State, { slot : U64, step : Bytecode.Update } -> Bool
+integers_stepped = |state, { slot, step }|
+	match state.slots.get(slot) {
+		Ok(Ready(kind)) => LoweringBasics.integer_stepped(kind, step.delta).is_ok()
 		_ => False
 	}
 
-## Each `Integer` on the stack made a double, in its place.
+## Which of the stack's places, bottom first, an instruction keeps as
+## `Integer`s; the rest are made doubles. An instruction that reads none of
+## the stack (a push, a load, a step of a slot) keeps them all, and `Pop`
+## drops its own. Of those that read the top, each keeps the places below
+## what it reads, and keeps what it reads only where it takes an `Integer`:
+## a store or set of a slot that may hold one, `+ - *` of two whose result
+## stays one, an item read's or write's index (its value written is made a
+## double). An ordering of two `Integer`s fused with its `JumpIfFalse`
+## (`joined` says whether another way reaches the jump, which fuses none)
+## keeps those two, and any ordering or equality a `JumpIfFalse` follows
+## keeps nothing below them, since a jump carries no `Integer`. Any other
+## instruction keeps none.
+integers_kept : LoweringBasics.Site,
+{
+	instruction : Bytecode.Op,
+	state : LoweringBasics.State,
+	demoted : List(U64),
+	joined : Bool,
+} -> List(Bool)
+integers_kept = |site, { instruction, state, demoted, joined }| {
+	depth = state.stack_kinds.len()
+	# The places below the `read` on top kept, and of those read, the ones
+	# `taken` says, bottom first.
+	keeping = |read, taken|
+		if depth < read {
+			List.repeat(False, depth)
+		} else {
+			List.repeat(True, depth - read).concat(taken)
+		}
+	below = |down| LoweringBasics.kind_below(state, down)
+	jumps_next = match site.code.ops.get(site.at + 1) {
+		Ok(JumpIfFalse(_)) => True
+		_ => False
+	}
+	match instruction {
+		LoadLocal(_) | PushNumber(_) | PushText(_) | PushBoolean(_) => keeping(0, [])
+		PushNull | PushUndefined | LoadBoxed(_) | UpdateLocal(_) => keeping(0, [])
+		Pop | Duplicate => keeping(0, [])
+		StoreLocal(slot) | SetLocal(slot) => keeping(1, [integer_storable(site, { slot, demoted })])
+		Binary(operator, _) if jumps_next and !joined =>
+			if is_ordering(operator) and integers_on_top(state) {
+				List.repeat(False, depth - 2).concat([True, True])
+			} else {
+				List.repeat(False, depth)
+			}
+		Binary(operator, _) if depth >= 2 => {
+			takes = LoweringBasics.integer_arithmetic({
+				operator,
+				left: below(1),
+				right: below(0),
+			}).is_ok()
+			keeping(2, [takes, takes])
+		}
+		GetIndex(_) if depth >= 2 => keeping(2, [False, takes_integer_index(below(1))])
+		SetIndex(_) if depth >= 3 => keeping(3, [False, takes_integer_index(below(2)), False])
+		GetProperty(_, _) => keeping(1, [False])
+		_ => List.repeat(False, depth)
+	}
+}
+
+## Each `Integer` on the stack made a double, in its place, but those
+## `kept`.
 integers_met : Bytecode.Code,
-LoweringBasics.State -> {
+{ state : LoweringBasics.State, kept : List(Bool) } -> {
 	statements : List(Assembly.Statement),
 	state : LoweringBasics.State,
 }
-integers_met = |code, state| {
+integers_met = |code, { state, kept }| {
 	var $items = []
 	var $kinds = state.stack_kinds
 	for (kind, place) in state.stack_kinds.map_with_index(|kind, place| (kind, place)) {
-		if LoweringBasics.is_integer(kind) {
+		if LoweringBasics.is_integer(kind) and kept.get(place) != Ok(True) {
 			at = LoweringBasics.stack_place(code, place)
 			$items = $items.concat(LoweringBasics.integer_converted_items(at))
 			$kinds = $kinds.set(place, Number) ?? crash "Lowering.integers_met: a place"
@@ -1544,10 +1783,10 @@ numbers_escaping = |site, { instruction, state }| {
 		Unary(_, _) | JumpIfFalse(_) => within(1)
 		GetProperty(key, _) => below(0) == Numbers and key != "length"
 		MethodLookup(name, _) => below(0) == Numbers and name != "push"
-		GetIndex(_) => below(0) == Numbers or (below(1) == Numbers and below(0) != Number)
+		GetIndex(_) => below(0) == Numbers or (below(1) == Numbers and !is_number_index(below(0)))
 		SetIndex(_) =>
 			if below(2) == Numbers {
-				below(1) != Number or below(0) != Number
+				!is_number_index(below(1)) or below(0) != Number
 			} else {
 				within(2)
 			}
@@ -1651,6 +1890,31 @@ meeting_state = |context, { at, one, other }| {
 	Ok({ slots: $slots, stack_kinds: $stack_kinds })
 }
 
+## A known array's or string's length (`GetProperty` of `length`), as an
+## `Integer`: at most 2^32, since the heap is 1 GiB.
+length_integer : LoweringBasics.Kind
+length_integer = Integer({ low: 0, high: 4294967296 })
+
+## Whether an index is a known number, a double or an `Integer`.
+is_number_index : LoweringBasics.Kind -> Bool
+is_number_index = |kind| kind == Number or LoweringBasics.is_integer(kind)
+
+## The index `down` places from the top made a double where it is an
+## `Integer`, as an item read's or write's slow way begins: the runtime's
+## routine takes values.
+index_double_items : LoweringBasics.Site,
+{
+	state : LoweringBasics.State,
+	down : U64,
+} -> List(Assembly.Statement)
+index_double_items = |site, { state, down }|
+	if LoweringBasics.is_integer(LoweringBasics.kind_below(state, down)) {
+		place = state.stack_kinds.len() - 1 - down
+		LoweringBasics.integer_converted_items(LoweringBasics.stack_place(site.code, place))
+	} else {
+		[]
+	}
+
 ## The machine code of one instruction, and the kinds after it.
 instruction_items : LoweringBasics.Site,
 {
@@ -1737,8 +2001,15 @@ instruction_items = |site, { instruction, state, checked }| {
 			)
 		GetProperty(key, _) => {
 			kind = LoweringBasics.kind_below(state, 0)
+			# A known array's or string's length is an `Integer`: it can't pass
+			# 2^32 in a heap of 1 GiB.
 			given = match (kind, key) {
-				(String, "length") | (Array, "length") | (Numbers, "length") => Number
+				(String, "length") | (Array, "length") | (Numbers, "length") =>
+					if site.context.trying {
+						Number
+					} else {
+						length_integer
+					}
 				_ => Value
 			}
 			# The key's hash, worked out here, saves hashing it as it runs
@@ -1761,6 +2032,7 @@ instruction_items = |site, { instruction, state, checked }| {
 									{
 										kind: array_kind(kind),
 										place: top_place(0),
+										integer: LoweringBasics.is_integer(given),
 										slow_items: called,
 									},
 								)
@@ -1925,12 +2197,12 @@ instruction_items = |site, { instruction, state, checked }| {
 		GetIndex(_) =>
 			match LoweringBasics.kind_below(state, 1) {
 				Array | String | Object | Value | Null | Undefined => {
-					called = [
+					called = index_double_items(site, { state, down: 0 }).concat([
 						Emit.load(Rdi, top_place(1)),
 						Emit.load(Rsi, top_place(0)),
 						Emit.call(Runtime.get_index),
 						Emit.store(top_place(1), Rax),
-					]
+					])
 					Ok(
 						LoweringBasics.falling(
 							IndexLowering.item_read_items(
@@ -1959,12 +2231,12 @@ instruction_items = |site, { instruction, state, checked }| {
 			match LoweringBasics.kind_below(state, 2) {
 				Array | Numbers | Object | Value | Null | Undefined => {
 					value = LoweringBasics.kind_below(state, 0)
-					called = [
+					called = index_double_items(site, { state, down: 1 }).concat([
 						Emit.load(Rdi, top_place(2)),
 						Emit.load(Rsi, top_place(1)),
 						Emit.load(Rdx, top_place(0)),
 						Emit.call(Runtime.set_index),
-					]
+					])
 					Ok(
 						LoweringBasics.falling(
 							IndexLowering.item_write_items(
@@ -2349,7 +2621,15 @@ instruction_items = |site, { instruction, state, checked }| {
 				Ok(LoweringBasics.falling([], state))
 			}
 		LoadBuiltin(place) => BuiltinLowering.builtin_items(site, { state, place })
-		UpdateLocal({ slot, step }) => LoweringBasics.update_items(site, { state, slot, step })
+		UpdateLocal({ slot, step }) =>
+			match state.slots.get(slot) {
+				Ok(Ready(Integer(range))) => {
+					stepped = LoweringBasics.integer_stepped(Integer(range), step.delta)
+						?? crash "Lowering.instruction_items: integers_made keeps it an Integer"
+					Ok(OperatorLowering.integer_update_items(site, { state, slot, step, stepped }))
+				}
+				_ => LoweringBasics.update_items(site, { state, slot, step })
+			}
 		UpdateBoxed({ slot, name: _, kind, step }) =>
 			match kind {
 				Fixed => Ok(BuiltinLowering.constant_assigned_items)
@@ -2381,7 +2661,20 @@ instruction_items = |site, { instruction, state, checked }| {
 			Ok(LoweringBasics.falling(items, state))
 		}
 		Unary(operator, _) => OperatorLowering.unary_items(site, { state, operator })
-		Binary(operator, _) => OperatorLowering.binary_items(site, { state, operator, checked })
+		Binary(operator, _) =>
+			match LoweringBasics.integer_arithmetic({
+				operator,
+				left: LoweringBasics.kind_below(state, 1),
+				right: LoweringBasics.kind_below(state, 0),
+			}) {
+				Ok(kind) => Ok(
+					OperatorLowering.integer_arithmetic_items(
+						site,
+						{ state, operator, kind, checked },
+					),
+				)
+				Err(NotInteger) => OperatorLowering.binary_items(site, { state, operator, checked })
+			}
 		Jump(skip) => {
 			target = LoweringBasics.forward(site, skip)
 			Ok({
