@@ -75,6 +75,7 @@ import BuiltinLowering
 import Emit
 import Forwarding
 import KnownFunctions
+import Jumps
 import LoweringBasics
 import Moves
 import CallLowering
@@ -205,7 +206,7 @@ items_with_numbers = |program, numbers_arrays| {
 							.concat(RuntimeCode.items)
 							.concat(literal_statements(literals))
 							.concat(closures)
-					Ok(Moves.trim_moves(Forwarding.forward_loads(statements)))
+					Ok(Jumps.thread_jumps(Moves.trim_moves(Forwarding.forward_loads(statements))))
 				}
 				Err(refused) => Err(refused)
 			}
