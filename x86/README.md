@@ -89,6 +89,36 @@ Of the 14 left, six stop at the string and array methods not written yet (59 a c
 
 Map and Set, the timers, the coercions and node's errors left fib's code as it was: 21 ms, 20 ms CPU, as before them (21 ms, 20 ms CPU, at a load of 3.26). `fib` captures only itself, so it is known before the program runs, takes no bytes, is called directly and keeps its `Number` parameter; its times are milestone 3's (20 ms, 19 ms CPU). The executable grew by the runtime's new routines (about 6.9 KB this round: the Maps and Sets, their walks and their printing, the timers, splice, the quoting, the index keys and the errors), which every executable carries whatever it uses; the program's code now ends by jumping to the timers' loop, which finds none and exits. Milestone 2's numbers were 1 ms and 21 ms with 1,010- and 1,089-byte executables. On fib(30), 1.6 million calls, node's optimizing tier makes its own work about 16 ms, the executable's about 20: fib's kinds are all known, so no tag is tested, but the baseline code keeps every value in memory and moves it through `rax` or `xmm0` an instruction at a time, which milestone 6's register allocation and specialization are for. The VM is about 220 times slower than the executable there.
 
+## An integer kind (the design, 2026-11-26)
+
+Today every number is a double. A number proved whole is turned into an integer at every array index, every `%` and every `Math.floor` (`cvttsd2si`), and back into a double after (`cvtsi2sd`). The fib race's loop counter and the fourteen race's `Math.floor(program / place) % 4` pay for that. This is the design of a kind whose bits are an integer; x86/race/README.md (fix 17) and x86/fourteen/README.md ("What is left") say what led to it.
+
+**The kind.** `Int({ low, high })`: a slot or a stack place whose 8 bytes are a two's-complement integer, known to lie between `low` and `high`, both within ±2^53. Every whole number in that range is exactly a double, so an `Int` is a double that happens to be kept as an integer: converting it is exact, and no value it can hold is one JavaScript would have rounded. An `Int` is never -0, NaN or an infinity. The bounds are what make the integer arithmetic safe without a check: an operation whose bounds would leave ±2^53 gives a `Number`, not an `Int`. The order is `Int ⊑ Number ⊑ Value`: two `Int`s meet as the `Int` of both ranges, an `Int` and a `Number` as a `Number`, and the `Int`'s side converts.
+
+**Why bounds and not a check.** A kind is fixed when the function is lowered, so a check that finds an overflow as the program runs has no kind to fall back to: a value past 2^53, or -0, can't be held in an `Int`, and stopping the program there would be a difference from node. So an `Int` only comes from what is proved in range, and everything else stays a double, as today.
+
+**Where an `Int` comes from:**
+- a whole number literal of at most 2^53 that an instruction able to take an `Int` uses next (a store to a slot, `+ - *`, `%`, an index), as `Int({ low: n, high: n })`; anywhere else a literal is a double, as today, so `console.log(3)` costs nothing new;
+- `+`, `-` and `*` of two `Int`s, when the result's bounds stay within ±2^53 (`0 * -1` is -0 in JavaScript: a product's bounds that may give a zero from a negative factor give a `Number`);
+- `%` of two `Int`s whose divisor is a literal above 0 and whose dividend is at least 0 (a negative dividend can give -0); its bounds are 0 to one less than the divisor;
+- `Math.floor` of `/` of two `Int`s, the dividend at least 0 and the divisor a literal above 0 (no NaN, infinity or -0 is possible): a shift or an `idiv`;
+- an array's or a string's `.length`, between 0 and 2^32;
+- a loop's counter: a slot that is an `Int` where the loop is entered and an `Int` on every way back.
+
+`Math.floor` of a division by a `Number` (the fourteen race's `program / place`, where `place` is an item of an array of numbers) stays a double: `place` may be 0 or negative, so the floor may be an infinity or -0. Making that an `Int` needs the array's items known as `Int`s, an array of integers, which is out of scope here. So the fourteen race's costliest line keeps its doubles under this design; what it gains is at most its loop counters, and `bits` reaches `f` as a parameter, a double.
+
+**Where an `Int` becomes a double.** Before any instruction that doesn't take an `Int`, each `Int` on the stack is converted in place (`cvtsi2sd`, then the double stored back): a call's arguments (so a parameter and a result are never `Int`s), a return, console.log, a store into an array or an object, a meeting with a `Value`, arithmetic with a `Number`, an ordering or an equality with a double, and every instruction not named among the `Int`'s consumers below. The rule is one place in the walk (`values_made`, beside the one that makes a function known by its code a value), so a consumer that takes an `Int` says so, and any other is safe by default.
+
+**What takes an `Int` directly:** a store or a set of a slot; a load of a slot; `Pop`; `+ - * %` and `Math.floor(a / b)` of two `Int`s (above); an ordering or an equality of two `Int`s (`cmp`, and its jumps); an array's item read or write at an `Int` index, whose range test is one unsigned `cmp` against the length, with no `cvttsd2si`.
+
+**Where two ways meet.** The stack never carries an `Int` across a meeting: before a jump, and on the way that falls to a place a jump also reaches, each `Int` on the stack is converted. A slot may: two `Int`s meet as the `Int` of both ranges. A slot that meets an `Int` on one way and anything else on another is demoted: the function is lowered again with that slot never an `Int` (a store of an `Int` to it converts first), as a loop's head is widened today.
+
+**A loop's head.** The head takes the kinds that fall to it, and each way back is met with them. An `Int` slot whose range grows on the way back (`i = i + 1`) is widened to the whole range, ±2^53, at most once, so the walks still end. An ordering of an `Int` slot with an `Int` that jumps out of the loop narrows the slot's range on the way that stays (`i < n`, with `n` a length, gives `i` at most 2^32 - 1 inside the loop), so `i + 1` stays an `Int`. A slot that comes back a `Number` is demoted.
+
+**Registers.** An `Int` is 8 bytes in the frame or the stack as any value is, so Registers' renaming of the frame's places to `r9`, `r10`, `r11` and `rbx` takes `Int` places with no change: a counter in a spare register is then `add r9, 1`, and an index used as it is.
+
+**Out of scope:** arrays of integers; an `Int` parameter or result (calls convert); `|`, `&`, `>>` and the other bitwise operators (not compiled yet); an `Int` in a cell (a captured variable is a `Value`); deoptimization, lowering a function twice and moving between the two as it runs.
+
 ## Running it
 
 From the repository's root:
