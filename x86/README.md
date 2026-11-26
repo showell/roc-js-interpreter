@@ -119,6 +119,8 @@ Today every number is a double. A number proved whole is turned into an integer 
 
 **Out of scope:** arrays of integers; an `Integer` parameter or result (calls convert); `|`, `&`, `>>` and the other bitwise operators (not compiled yet); an `Integer` in a cell (a captured variable is a `Value`); deoptimization, lowering a function twice and moving between the two as it runs.
 
+**Where it stands (2026-11-26).** The kind and its conversions are in (`LoweringBasics.Kind`'s `Integer`; Lowering's `integers_made`, `integers_met`, `integer_clashes`, `Demoted` and `integers_widened`), with nothing making an `Integer` yet, so every executable is as it was. Next: the literals, `+ - *` of `Integer`s, the ordering's narrowing and the index reads and writes, together, since a counter stays an `Integer` only once its loop's test narrows it (without the narrowing, `i + 1` at a head widened to ±2^53 could pass 2^53, and `i` is demoted); then `%` and `Math.floor` of `Integer`s; then a look at what Registers does with them.
+
 ## Running it
 
 From the repository's root:
