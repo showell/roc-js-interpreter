@@ -203,6 +203,11 @@ Runtime :: [].{
 	pack : Str
 	pack = "runtime_pack"
 
+	## The same for a class's method called through a value: the array of
+	## its receiver, in `r8`, then the `rsi` arguments at `rdi`.
+	pack_received : Str
+	pack_received = "runtime_pack_received"
+
 	## The routine that gives the array a `for ... of` or an array pattern
 	## walks of the value `rdi`: an array as it is, a string as a new array
 	## of its characters; it stops for any other.
@@ -1140,9 +1145,12 @@ property_items =
 		.concat(RuntimeBuilders.unboxed_items(Rdi))
 		.concat([
 			Emit.mark("runtime_get_entry"),
+			Emit.save(Rdi),
 			Emit.call("runtime_object_entry"),
+			Emit.restore(Rdi),
 			Emit.test(Rax, Rax),
-			Emit.jcc(E, "runtime_get_undefined"),
+			# A class's instance reads what it lacks from its class's table.
+			Emit.jcc(E, "runtime_get_inherited"),
 			Emit.load(Rax, Emit.mem(Rax, 0)),
 			Emit.ret,
 			Emit.mark("runtime_get_undefined"),

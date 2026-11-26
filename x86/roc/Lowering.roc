@@ -404,7 +404,9 @@ literals_of = |program| {
 			}
 			for text in named {
 				if !$found.contains(text) {
-					if text.to_utf8().any(|byte| byte >= 0x80) {
+					# A key the class desugaring writes (`super_key`) starts with
+					# `þ`, as the class keys do, and no program's text does.
+					if text.to_utf8().any(|byte| byte >= 0x80) and !text.starts_with("þsuper ") {
 						return Err(Refused("a string that is not ASCII is not compiled yet"))
 					}
 					$found = $found.insert(text, $found.len())
@@ -999,6 +1001,13 @@ call_kinds = |context, { instruction, state }|
 ## takes its arguments as a call through a value passes them, by either
 ## entry, and packs them into an array in its slot. Both go on to make the
 ## cells of its own variables a closure captures.
+##
+## A class's method (`Bytecode.Code`'s `receiver`) takes its first
+## parameter, `this`, from `rdx` at the entry through a value, and each
+## argument the caller pushed in the parameter after its own: every call
+## through a value sets `rdx`, to a method call's receiver, or else to
+## `undefined` (ClassDesugaring's doc). Its direct entry takes `this` as its
+## first argument, as any function's first.
 entry_items : LoweringBasics.Context,
 {
 	code : Bytecode.Code,
@@ -1062,8 +1071,18 @@ entry_items = |context, { code, frame_bytes }| {
 		]
 		Each(_) => []
 	}
+	received = code.receiver == TakesReceiver
 	var $direct = packed
-	var $counted = packed
+	var $counted = match code.arguments {
+		Packed(slot) if received => [
+			Emit.lea(Rdi, argument(0)),
+			Emit.mov(Rsi, Rcx),
+			Emit.mov(R8, Rdx),
+			Emit.call(Runtime.pack_received),
+			Emit.store(LoweringBasics.slot_place(slot), Rax),
+		]
+		_ => packed
+	}
 	for slot in 0..<parameters {
 		missing = "${LoweringBasics.value_label(index)}_missing_${slot.to_str()}"
 		got = "${LoweringBasics.value_label(index)}_got_${slot.to_str()}"
@@ -1071,16 +1090,27 @@ entry_items = |context, { code, frame_bytes }| {
 			Emit.load(Rax, argument(slot)),
 			Emit.store(LoweringBasics.slot_place(slot), Rax),
 		])
-		$counted = $counted.concat([
-			Emit.cmp_imm(Rcx, slot.to_i64_wrap()),
-			Emit.jcc(Be, missing),
-			Emit.load(Rax, argument(slot)),
-			Emit.jmp(got),
-			Emit.mark(missing),
-			Emit.imm(Rax, Boxing.undefined_bits),
-			Emit.mark(got),
-			Emit.store(LoweringBasics.slot_place(slot), Rax),
-		])
+		# A method's arguments start at its second parameter.
+		pushed = if received and slot > 0 {
+			slot - 1
+		} else {
+			slot
+		}
+		$counted =
+			if received and slot == 0 {
+				$counted.append(Emit.store(LoweringBasics.slot_place(slot), Rdx))
+			} else {
+				$counted.concat([
+					Emit.cmp_imm(Rcx, pushed.to_i64_wrap()),
+					Emit.jcc(Be, missing),
+					Emit.load(Rax, argument(pushed)),
+					Emit.jmp(got),
+					Emit.mark(missing),
+					Emit.imm(Rax, Boxing.undefined_bits),
+					Emit.mark(got),
+					Emit.store(LoweringBasics.slot_place(slot), Rax),
+				])
+			}
 	}
 	through_value =
 		if context.escaped_codes.contains(index) {
@@ -1475,24 +1505,33 @@ instruction_items = |site, { instruction, state, checked }| {
 				LoweringBasics.with_top(state, Object),
 			),
 		)
-		# A class's instance: an object whose first key is the instance's
-		# mark, then a key for its class and each class that class extends.
+		# A class's instance, made from its class's table on top: an object
+		# whose first key is the instance's mark, holding the table, where a
+		# property the instance lacks is read (ObjectTable's
+		# `runtime_get_inherited`), then a key for its class and each class
+		# that class extends.
 		NewInstance(classes) => {
-			marked = |key| [
+			marked = |{ key, value }| [
 				Emit.load(Rdi, next_place),
 				Emit.address_of(Rsi, key),
-				Emit.imm(Rdx, Boxing.true_bits),
+				value,
 				Emit.call(Runtime.set_property),
 			]
 			keys = List.concat(
-				[RuntimeBuilders.instance_mark],
-				classes.map(|name| LoweringBasics.text_label(site, class_key(name))),
+				[{ key: RuntimeBuilders.instance_mark, value: Emit.load(Rdx, top_place(0)) }],
+				classes.map(
+					|name| {
+						key: LoweringBasics.text_label(site, class_key(name)),
+						value: Emit.imm(Rdx, Boxing.true_bits),
+					},
+				),
 			)
 			Ok(
 				LoweringBasics.falling(
 					[Emit.call(Runtime.new_object), Emit.store(next_place, Rax)]
-						.concat(keys.map(marked).join()),
-					LoweringBasics.with_top(state, Object),
+						.concat(keys.map(marked).join())
+						.concat([Emit.load(Rax, next_place), Emit.store(top_place(0), Rax)]),
+					LoweringBasics.with_top(LoweringBasics.without_top(state, 1), Object),
 				),
 			)
 		}

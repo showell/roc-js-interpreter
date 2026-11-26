@@ -483,6 +483,7 @@ Collections :: [].{
 					Emit.load(Rax, Emit.mem(Rbx, 0)),
 					Emit.plus(Rax, Rbx),
 					Emit.imm(Rcx, 3),
+					Emit.imm(Rdx, Boxing.undefined_bits),
 					Instruction(CallReg(Rax)),
 					Emit.plus_imm(Rsp, 24),
 					Emit.jmp("runtime_collection_for_each_next"),
@@ -529,6 +530,8 @@ Collections :: [].{
 					Emit.call(Runtime.get_property),
 					Emit.mov(Rdi, Rax),
 					Emit.load(Rsi, RuntimeBuilders.local(24)),
+					# A method of the receiver's own takes it first.
+					Emit.load(Rdx, RuntimeBuilders.local(8)),
 					Emit.call(Runtime.call_spread),
 				])
 				.concat(leave)

@@ -146,6 +146,21 @@ language_items = {
 		Emit.shl(Rcx, 3),
 		Instruction(RepMovsb),
 		Emit.ret,
+		Emit.mark(Runtime.pack_received),
+		Emit.save(Rdi),
+		Emit.save(Rsi),
+		Emit.save(R8),
+		Emit.mov(Rdi, Rsi),
+		Emit.plus_imm(Rdi, 1),
+		Emit.call(Runtime.new_array),
+		Emit.restore(R8),
+		Emit.restore(Rcx),
+		Emit.restore(Rsi),
+		Emit.store(Emit.mem(Rdx, 0), R8),
+		Emit.lea(Rdi, Emit.mem(Rdx, 8)),
+		Emit.shl(Rcx, 3),
+		Instruction(RepMovsb),
+		Emit.ret,
 	]
 	# r10: the string; r9: its length; r11: the array; rdx: its items.
 	items_of = [Emit.mark(Runtime.items_of), Emit.mov(Rax, Rdi)]
@@ -711,7 +726,8 @@ spread_items = {
 		Emit.plus_imm(Rcx, 1),
 		Emit.store(RuntimeBuilders.local(24), Rcx),
 	]
-	# The items pushed, the last first, as a call through a value takes them.
+	# The items pushed, the last first, as a call through a value takes them,
+	# and `rdx`, the receiver or `undefined`, kept below them for the call.
 	call_spread =
 		[
 			Emit.mark(Runtime.call_spread),
@@ -720,7 +736,7 @@ spread_items = {
 		]
 			.concat(RuntimeBuilders.tag_load_items(Rsi))
 			.concat([Emit.cmp_imm(Rcx, Boxing.array_tag), Emit.jcc(Ne, "runtime_not_an_array")])
-			.concat([Emit.save(Rbp), Emit.mov(Rbp, Rsp)])
+			.concat([Emit.save(Rbp), Emit.mov(Rbp, Rsp), Emit.save(Rdx)])
 			.concat(RuntimeBuilders.unboxed_items(Rsi))
 			.concat([
 				Emit.load(Rcx, Emit.mem(Rsi, 0)),
@@ -740,6 +756,7 @@ spread_items = {
 			.concat([
 				Emit.load(Rax, Emit.mem(Rbx, 0)),
 				Emit.plus(Rax, Rbx),
+				Emit.load(Rdx, Emit.mem(Rbp, -8)),
 				Instruction(CallReg(Rax)),
 			])
 			.concat(leave)

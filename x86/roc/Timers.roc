@@ -197,6 +197,7 @@ Timers :: [].{
 					Emit.load(Rax, Emit.mem(Rbx, 0)),
 					Emit.plus(Rax, Rbx),
 					Emit.zero(Rcx),
+					Emit.imm(Rdx, Boxing.undefined_bits),
 					Instruction(CallReg(Rax)),
 					Emit.restore(R11),
 					# An interval its callback didn't clear is due again.

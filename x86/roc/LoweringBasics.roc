@@ -65,7 +65,7 @@ LoweringBasics :: [].{
 		parent : U64,
 		captures : List(U64),
 		name : Str,
-		form : [Ordinary, MakesInstances],
+		form : [Ordinary, MakesInstances, Method],
 	}
 
 	## What `held_function` reads: the program, where each code is made, and

@@ -197,6 +197,12 @@ CallLowering :: [].{
 				Emit.load(Rax, Emit.mem(Rbx, 0)),
 				Emit.plus(Rax, Rbx),
 				Emit.imm(Rcx, count.to_i64_wrap()),
+				# A method's receiver, or `undefined` (Lowering's `entry_items`).
+				if taken == count + 2 {
+					Emit.load(Rdx, LoweringBasics.stack_place(site.code, depth - count - 2))
+				} else {
+					Emit.imm(Rdx, Boxing.undefined_bits)
+				},
 				Instruction(CallReg(Rax)),
 			])
 		if count > 0 {
@@ -413,6 +419,7 @@ CallLowering :: [].{
 								[
 									Emit.load(Rdi, top_place(1)),
 									Emit.load(Rsi, top_place(0)),
+									Emit.imm(Rdx, Boxing.undefined_bits),
 									Emit.call(Runtime.call_spread),
 									Emit.store(top_place(1), Rax),
 								],
@@ -458,6 +465,7 @@ CallLowering :: [].{
 								[
 									Emit.load(Rdi, top_place(1)),
 									Emit.load(Rsi, top_place(0)),
+									Emit.load(Rdx, receiver),
 									Emit.call(Runtime.call_spread),
 									Emit.store(receiver, Rax),
 								],

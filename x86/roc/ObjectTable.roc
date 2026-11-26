@@ -323,13 +323,19 @@ hashed_property_items =
 		.concat([Emit.cmp_imm(Rcx, Boxing.object_tag), Emit.jcc(Ne, Runtime.get_property)])
 		.concat(RuntimeBuilders.unboxed_items(Rdi))
 		.concat([
+			Emit.save(Rdi),
+			Emit.save(R8),
 			Emit.call("runtime_object_entry_hashed"),
+			Emit.restore(R8),
+			Emit.restore(Rdi),
 			Emit.test(Rax, Rax),
-			Emit.jcc(E, "runtime_get_undefined"),
+			Emit.jcc(E, "runtime_get_inherited_hashed"),
 			Emit.load(Rax, Emit.mem(Rax, 0)),
 			Emit.ret,
-			Emit.mark(ObjectTable.set_property_hashed),
 		])
+		.concat(inherited_items({ label: "runtime_get_inherited", entry: "runtime_object_entry" }))
+		.concat(inherited_items({ label: "runtime_get_inherited_hashed", entry: "runtime_object_entry_hashed" }))
+		.concat([Emit.mark(ObjectTable.set_property_hashed)])
 		.concat(RuntimeBuilders.tag_load_items(Rdi))
 		.concat([Emit.cmp_imm(Rcx, Boxing.object_tag), Emit.jcc(Ne, Runtime.set_property)])
 		.concat(RuntimeBuilders.unboxed_items(Rdi))
@@ -342,5 +348,28 @@ hashed_property_items =
 			Emit.test(Rax, Rax),
 			Emit.jcc(E, "runtime_set_property_new"),
 			Emit.store(Emit.mem(Rax, 0), Rdx),
+			Emit.ret,
+		])
+
+## At `label`, the key `rsi` the object `rdi` (unboxed) lacks: `undefined`,
+## unless the object is a class's instance, whose first entry, its mark,
+## holds its class's table; then the key is looked up there by `entry`
+## (`r8` the key's hash for the hashed one), the table's own keys alone.
+inherited_items : { label : Str, entry : Str } -> List(Assembly.Statement)
+inherited_items = |{ label, entry }|
+	[Emit.mark(label)]
+		.concat(RuntimeBuilders.instance_jump_items({ reg: Rdi, label: "${label}_table" }))
+		.concat([
+			Emit.jmp("runtime_get_undefined"),
+			Emit.mark("${label}_table"),
+			Emit.load(Rdi, Emit.mem(Rdi, 16)),
+			Emit.load(Rdi, Emit.mem(Rdi, 8)),
+		])
+		.concat(RuntimeBuilders.unboxed_items(Rdi))
+		.concat([
+			Emit.call(entry),
+			Emit.test(Rax, Rax),
+			Emit.jcc(E, "runtime_get_undefined"),
+			Emit.load(Rax, Emit.mem(Rax, 0)),
 			Emit.ret,
 		])
