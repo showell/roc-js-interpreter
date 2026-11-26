@@ -20,6 +20,59 @@ The first paired run at the default N, master 2026-11-26, load 0.79, both output
     compiled: 62.85 s, matched (sha256)
     node: 76.46 s, matched (sha256); compiled/node 0.82
 
+## Against Roc: what LLVM does per limb (2026-11-26)
+
+The third contestant is `fibonacci_race.roc`, the race in Roc line for line, its limbs `U64`s, built by Roc's release build (LLVM, `--opt=speed`). The first numbers at F(740000), single runs on a busy box: Roc 59.18 s, js-x86 74.78 s, node 83.77 s. To see why, both executables' `addInto` first loops were read with `objdump` (Roc's is stripped; its loop is the one comparing with `0x989680`, 10^7) and every instruction of one limb's usual way counted: both items in range, the list unique. Roc's loop has two usual ways, as its carry decides (below), so it has two counts.
+
+| one limb of the first loop | Roc (LLVM) | js-x86, master c990f68 | js-x86, this branch |
+|---|---|---|---|
+| instructions | 46 (carry 1), 51 (carry 0) | 76 | 71 |
+| memory operands | 13, 14 | 22 | 24 |
+| of them at `rbp` | 9 | 14 | 16 |
+| moves between general and xmm registers (`movq`) | 0 | 16 | 12 |
+| conversions (`cvttsd2si`) | 0 | 3 | 2 |
+| constants made (`movabs`) | 0 | 4 | 4 |
+| a pointer unboxed (`shl` and `shr`) | 0 | 6 | 6 |
+| branches | 9, 11 | 4 | 4 |
+| kept in registers across the loop | `i`, `a`'s length, `a`'s address (stored to the frame too), 10^7 (`r8`) | `i` | `i`, `carry` |
+| carried round through memory | the carry (a byte at `[rbp-0xc0]`) | `carry` | nothing |
+
+What each does per limb:
+
+- **Roc:** `cmp`/`jae` and a `cmp` with `b`'s length in the frame/`je` (the two range tests); two loads and two `add`s, each followed by `jb` (U64's arithmetic is checked: an overflow crashes); `cmp r15, 10^7`, `setae`, a `cmovae` of 10^7 or 0 and `sub` with a third `jb`; then, before the store, a test of the list's capacity word and a load of its reference count (`[rax-8]`) compared with 1, every limb (`List.set`'s test that the list is unique, as far as the code shows); the store; and `inc`, `cmp`, `je` for the loop. The carry is kept as a byte stored to the frame and loaded back with `movzx` the next time round, and a `test`/`jne` on it chooses between two ways to the loop's end: a branch the limbs' values decide, as js-x86's `if` was before fix 15 (a guess, not measured: it mispredicts on the race's limbs as that one did, though both of its ways are short).
+- **js-x86 (master):** the loop's test (`aLength` loaded from the frame, two `movq`s, `ucomisd`); for each of `a[i]` and `b[i]`: the array's value unboxed (`shl`, `shr`), its length loaded and compared, its items' address loaded, `i` made an integer (`movq`, `cvttsd2si`); two `addsd`s; the select of fix 15 (`movabs` of 10^7 and 1.0, `ucomisd`, `cmovae`); `carry * BASE` and `s -` through the frame's stack places; the write's unboxing and items' address again; `i + 1` as `movabs` of 1.0, two `movq`s and `addsd`. `carry` is stored to the frame and loaded the next time round.
+
+**What is representation, not compiler.** Roc's limbs are integers in general registers, and js-x86's are doubles in NaN-boxed values that live in general registers too, so most of the difference is the representation: every `movq` (an `addsd` or `ucomisd` takes xmm registers), every `cvttsd2si` (an index must be an integer), the unboxing of an array's value, the counter's step as `addsd` of a 1.0 made each time, and the loop's test as `ucomisd`. That is about 25 of master's 76. Roc pays for its representation too: three overflow tests a limb, and a uniqueness test before each `set`, which JavaScript's mutable arrays never need. What is fair to compare as compiler work: what is kept in registers across the loop (LLVM keeps 10^7, the lengths, `i` and an address there; js-x86 kept only `i`), what is made again each time round (js-x86's 10^7 and 1.0), and copies and conversions made twice. js-x86 has 4 spare registers for the frame's places (Registers); LLVM's loop uses ten general registers.
+
+**Is the count the cost?** F(100000) is about 1.5 × 10^8 limbs, so js-x86 takes about 7 ns a limb for its 71 instructions and Roc about 6 ns for 46 to 51. A guess, not measured (`perf` can't sample here): js-x86's loop is now limited by its instruction count, not by a chain. Fix 18 below took the carry's last chain through memory out and gained about 3%; the trial of two more spare registers took 12 memory operands out of the loop and gained nothing; fix 19 took 4 instructions out and gained about their share.
+
+### Two fixes (2026-11-26, F(100000), medians)
+
+Each measured at `size=small` (F(100000)), runs alternated with master's executable (c990f68), the load noted; this box moves by 10% between sets, so a median within about 3% is noise.
+
+18. **An innermost loop's carried places are kept in registers first** (Registers' header, LOOP-CARRIED PLACES FIRST; `loop_carried`). Registers chose its four places by how many plain moves name them, so the bytecode's stack places, named most, took three of the four registers and `carry` stayed in the frame, its store and the next limb's load a chain through memory. Now a place an innermost loop carries round (its first move in the loop a load, and stored there too) comes first. In addInto `i` and `carry` are in `r9` and `r10`; the stack place `carry * BASE` went through is in the frame instead, so memory operands at `rbp` rose from 14 to 16, but the carry's chain is all registers. An outer loop's carried places are left to the counts: tried first with every loop, the fourteen race's `main` gave its outer loop's `r`, `total` and `wrong` the registers its inner loop needed, and its executable grew. F(100000): master 1160 ms, with 18 1128 ms (medians of 9, load 0.5 to 0.6), about 3%.
+19. **A whole number made once** (Moves' header; `is_known_truncation`, and Lowering's order of the passes). Moves drops a `cvttsd2si` into a register that already holds what it would make (the same xmm register, or one known to hold its value, neither written since), and what its forward walk knows now holds past a conditional jump, which writes no register, to the way that falls through. Lowering now runs Jumps before Forwarding and Moves (and again after), so an item read's `done:`, which no jump names once Jumps takes out its `jmp done`, no longer ends their straight runs. `b[i]` no longer makes `i` an integer again, and the copies feeding it go: 4 instructions a limb, 75 to 71 with 18. With 18, F(100000): master 1097 ms, the branch 1017 ms (medians of 9, load 0.5 to 0.6); a later set, master 1220 ms against 1164 ms (load 0.6 to 0.95). About 5% to 7%.
+
+`x86/tests/carried-registers.js` holds both to node: a loop carrying five variables, more than the spare registers, and three arrays read at one index, then one array at `i`, `i + 1` and `i - 1`, whose conversions must stay apart.
+
+The bank and fourteen races at their small sizes, against master, medians: bank 865 ms against 777 ms (5 runs, load 0.95), fourteen 801 ms against 820 ms (9 runs, load 1.4) and even against the commit before the innermost rule (841 ms and 837 ms): no slower beyond the noise.
+The full race after 18 and 19, through `x86/race.shale`, one run of each in turn, load 0.88 at the start, every output held to the stored sha256:
+
+    compiled: 55.75 s, matched (sha256)
+    node: 75.80 s, matched (sha256); compiled/node 0.74
+    roc: 56.42 s, matched (sha256); compiled/roc 0.99
+
+One run each on a box whose sets move by 10%, so the compiled program and Roc are even, not ahead or behind; both are about 1.35 times node's speed.
+
+Tried and not in the branch: **`r12` and `r14` as two more spare registers.** The stack's limit and the heap's end, which the runtime held in them, moved into its state block at `r13` (each read where it is needed: a function's entry, the allocator), and Registers took six places. In addInto every stack place left the frame (memory operands at `rbp` 16 to 4), and the race did not move: F(100000) 1172 ms master against 1131 ms, and against 18 and 19 alone 1134 ms against 1146 ms (medians of 7 and 9). Frame traffic is not what the loop waits on now; its instruction count is.
+
+### What is left, ranked by what it would save a limb
+
+1. **An integer counter** (x86/README.md, "An integer kind", step 2): `i` as an integer in its register would take out the loop's `ucomisd` test and its two `movq`s, both `cvttsd2si`s and their `movq`s, and the step's `movabs`, two `movq`s and `addsd` (`inc r9`): about 15 of 71, a fifth of the loop. It needs `aLength` an integer too (a length is), and its stalled first attempt (branch `x86-ints`) shows it must keep the counter an integer through the loop's head, not convert at each meeting. This is the representation gap, and the largest single lever.
+2. **Constants kept for the loop**: 10^7 is made twice a limb and 1.0 twice (`movabs` and a `movq` each). LLVM keeps 10^7 in `r8`. With no spare register left, a constant read from the read-only segment (`movsd xmm1, [rip+...]`) would save one instruction each, about 4.
+3. **A jump that only stops the program reads nothing**: the range tests jump to a stop, which Moves must assume reads every register, so the copies before it stay (`mov rax, r9`, `mov rbx, rax`, `movq xmm0, rbx` where one `movq` would do) and so does a dead store to a stack place. About 3 to 4.
+4. **An array's unboxed items' address reused**: `a` is unboxed and its items' address loaded twice a limb, for the read and the write (fix 10's note: it needs a register no slow way spoils). About 4.
+
 ## History: fixes 1 to 17, measured under the old self-paced form
 
 Everything below was measured when the race was self-paced: the program read its own clock (`Date.now()`) between batches of steps, sized each batch from what the last one cost, and stopped when the time left in `BUDGET_MS` was too small to plan one (20 seconds, or 1 or 4 with `budget=`). An F(n) below is how far a contestant got in that time, and the work grows as n squared; `PASS` meant its last clock reading was within the budget and its F(100) was right, and "after the verdict" was the run's wall time less the program's own elapsed time.
