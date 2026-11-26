@@ -4,13 +4,13 @@ The code here was written by AI coding agents (Claude), with human supervision.
 
 `fourteen.js` is the Nibble machine as one function, f : {0,1}^14 -> {0,1}, written line for line as cook-levin-riff's `roc/Fourteen.roc` is. The 14 bits are a number below 2^14: the top 2 bits are the input, where AX starts, and the low 12 the program, six lines of two bits (nada 00, zero 01, decr 10, mod2 11). `step(run, op)` runs one line, and `f` reads each line's op from the program with `Math.floor(program / place) % 4`, the places 4^5 down to 4^0 walked with `for ... of`. The program runs f over all 16,384 points `ROUNDS` times, 21,000 as written, chosen so that the compiled program takes about a minute on our box, as the other races' sizes are. Each round counts the points where f is 1, which is 5,596 (the C's cross-check, and Fourteen.roc's last expect); it prints that count once, the total over all the rounds, and PASS when every round counted 5,596.
 
-The race is between the program compiled by js-x86 and the same program under node, both running the same source. From the repository's root:
+The race is between the program compiled by js-x86, the same program under node, and `fourteen.roc`, its Roc port (below). From the repository's root:
 
     shale x86/fourteen.shale                  # 21,000 rounds, about a minute compiled
     shale x86/fourteen.shale rounds=300       # about a second compiled, for tuning
     shale x86/fourteen.shale rounds=300 runs=5   # five runs of each in turn, and the medians
 
-`rounds=` writes a copy of `fourteen.js` with its `const ROUNDS` line changed, under the build mount, and both contestants run the copy. The script builds js-x86 on the dev backend, writes the executable, then runs it and then node, niced and never at the same time, each timed from outside by its wall clock, start to exit. Each contestant's output must be the three lines the count fixes. `check.shale` doesn't run it, since its numbers are timings.
+`rounds=` writes a copy of `fourteen.js` with its `const ROUNDS` line changed, under the build mount, and the two JS contestants run the copy. The script builds js-x86 on the dev backend, writes the executable, builds `fourteen.roc`'s release executable, then runs the compiled executable, node and Roc, niced and never at the same time, each timed from outside by its wall clock, start to exit. Each contestant's output must be the three lines the count fixes. `check.shale` doesn't run it, since its numbers are timings.
 
 **The source is as it was.** No reshape was made for the fixes below: every one is a change to the compiler, and the program reads as the Roc does. Its one shaping, from before, is that the line places are an array made in `main` and passed down, since js-x86 keeps a top-level variable that a function reads in a cell of unknown kind.
 
@@ -68,6 +68,20 @@ So the compiled program does the work in about 0.71 of master's time, and node's
 At full size node's JIT runs a round in about 1.09 ms, against about 1.3 ms in the 300-round copy, so its lead is larger at a minute than at a second.
 
 **The other races are no slower** (measured with the in-line rounding in, which neither uses in its loop): the fib race's executables run directly, alternated, medians of 9, 1,155 ms master and 1,136 ms; `shale x86/bank.shale size=small runs=5`, twice each, alternated, 0.86 and 0.83 s master against 0.79 and 0.79 s (its methods are leaves, fix 5).
+
+## Against Roc (2026-11-26)
+
+The third contestant is `fourteen.roc`, the race ported to Roc from cook-levin-riff's `roc/Fourteen.roc` and built by Roc's release build (LLVM, `--opt=speed`), the plain translation with no optimizing. A run is Fourteen.roc's tag union, `[Going(U64), Accepted, Rejected]`, and `step` and f (`is_accepted`, a question, for the lints) are Fourteen.roc's, the six places a list folded over inside f as Fourteen.roc has it; the JS passes them down from `main` only for js-x86's sake. Its round count is its argument (`fourteen-roc N`), so nothing of the race is known when Roc compiles it. Its time grows with the count (300 rounds 0.33 s, 1,200 rounds 1.35 s), so LLVM doesn't lift a round, the same every time, out of the loop.
+
+`shale x86/fourteen.shale`, 21,000 rounds, one run of each, load 3.15 at the start (the box was busy):
+
+    compiled: 54.77 s, matched
+    node: 21.10 s, matched; compiled/node 2.60
+    roc: 19.38 s, matched; compiled/roc 2.83
+
+`shale x86/fourteen.shale rounds=300 runs=5`, load 2.7 at the start:
+
+    medians of 5: compiled 0.99 s, node 0.57 s, roc 0.29 s; compiled/node 1.74, compiled/roc 3.47
 
 ## What is left
 

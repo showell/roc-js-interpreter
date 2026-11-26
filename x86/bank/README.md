@@ -25,7 +25,7 @@ From the repository's root:
     shale x86/bank.shale transfers=2000000   # any count of at least 100,000
     shale x86/bank.shale size=small runs=5   # five runs of each in turn, and the medians
 
-`transfers=` (or `size=small`) writes a copy of `bank_race.js` with its `const TRANSFERS` line changed, under the build mount, and both contestants run that copy. The script builds js-x86 on the dev backend, writes the executable, then runs it and then node, niced and never at the same time, each timed from outside by its wall clock, start to exit. Each contestant's output is held to verify.js's for that count. Each contestant gets one line, its wall time and whether its output matched; node's line adds the ratio of the compiled time to node's. With `runs=k`, a last line gives the medians and their ratio. `check.shale` doesn't run it, since its numbers are timings.
+`transfers=` (or `size=small`) writes a copy of `bank_race.js` with its `const TRANSFERS` line changed, under the build mount, and the two JS contestants run that copy. The script builds js-x86 on the dev backend, writes the executable, builds `bank_race.roc`'s release executable, then runs the compiled executable, node and Roc, niced and never at the same time, each timed from outside by its wall clock, start to exit. Each contestant's output is held to verify.js's for that count. Each contestant gets one line, its wall time and whether its output matched; node's line adds the ratio of the compiled time to node's, and Roc's the ratio of the compiled time to Roc's. With `runs=k`, a last line gives the medians and their ratios. `check.shale` doesn't run it, since its numbers are timings.
 
 **How the defaults were picked (2026-11-26).** After the hash index (ObjectTable.roc) and the hashes of literal keys, a quiet paired run of 18,000,000 transfers (load 0.83) took 9.71 s compiled, 0.54 µs a transfer, so the defaults were raised to 110,000,000 (about a minute) and 2,000,000 (about a second). The first calibration, below, was made before those two fixes.
 
@@ -37,6 +37,24 @@ The first paired run at that size, master 2026-11-26, load 0.68:
 **The first calibration.** Only from compiled runs, never beside node. The box didn't go below load 0.5 (other lanes were building), so the count is scaled, not measured. One run each of 100,000 to 1,600,000 transfers, at load 0.7 to 0.8, cost 3.1 to 3.6 µs a transfer, with no trend: the work grows linearly. 1,600,000 took 5.12 s, which scales to 18,000,000 in about 58 s; 300,000 took 0.97 s, the small size. Sets of runs at one count moved by half between minutes (seven runs of 300,000 a minute earlier took 1.21 to 1.52 s), so a single run of either size is noisy on a busy box.
 
 **One reshape for js-x86.** The generator keeps its seed in itself, a `Random` object, rather than in a function `nextSeed(seed)` whose result the caller passes back to it. js-x86 refuses any program in which a function's result reaches its own parameter: `function t(s) { return s + 1; }` called as `t(t(1))` stops with "the kinds of the functions' parameters and results never settle". A guess at why, not checked: each pass computes the parameters' kinds from the last pass's results, and the results from the last pass's parameters, so the two swap between `Number` and `Value` every pass and never meet. The fix is in `x86/roc/Lowering.roc` (`items_with_numbers`), widening each pass's kinds with the last pass's.
+
+## Against Roc (2026-11-26)
+
+The third contestant is `bank_race.roc`, the race ported to Roc and built by Roc's release build (LLVM, `--opt=speed`), the plain translation with no optimizing. Its count is its argument (`bank-race-roc N`), so nothing of the race is known when Roc compiles it, and its three lines are held to verify.js's as the others are. What the port had to choose:
+
+- **The dictionary is a `Dict(Str, Account)`, keyed by the same names.** The JS looks each account up by its name, and that lookup is most of the race's cost (below), so the fair port does a string-keyed lookup too, not a `List` read by account number. An `Account` is a nominal record with `deposit` and `withdraw` (`withdraw` answers `Withdrew(account)` or `Declined(account)`); a value can't be changed where it sits, so a changed account goes back under its name with `Dict.insert`, a second hashed lookup for each account a transfer changes, where the JS writes through the object it found.
+- **The generator is a record holding its seed,** `next` giving the next one, the same arithmetic in `U64`.
+- **The first 100,000 transfers run to `U64.min(count, check_at)`.** They depend on nothing the run gives, so Roc made them while compiling (`roc check` warned that the checksum's `if` was known); the minimum, which is always 100,000, ties them to the run.
+
+`shale x86/bank.shale`, 110,000,000 transfers, one run of each, load 2.25 at the start (the box was busy):
+
+    compiled: 56.63 s, matched (verify.js)
+    node: 19.97 s, matched (verify.js); compiled/node 2.84
+    roc: 40.17 s, matched (verify.js); compiled/roc 1.41
+
+`shale x86/bank.shale size=small runs=5`, load 0.4 to 0.6:
+
+    medians of 5: compiled 0.81 s, node 0.33 s, roc 0.48 s; compiled/node 2.43, compiled/roc 1.68
 
 ## History: measured under the old self-paced form
 
