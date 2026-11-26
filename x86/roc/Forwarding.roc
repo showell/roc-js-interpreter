@@ -1,13 +1,14 @@
 ## This module takes out the loads a function's code makes of a value a
-## register, general or xmm, already holds. The lowering moves every value through the
-## frame, an instruction at a time: a value stored to a place on the stack is
-## loaded back from it by the next instruction, and the load waits for the
-## store to reach it. `forward_loads` walks the statements once, keeping which
-## registers hold the value of which places of the frame, and turns such a
-## load into a move from the register (or into nothing, when it is the same
-## register): `mov` or `movsd` between two of one kind, `movq` across. A
-## holder of the load's own kind is preferred, so a value crosses between
-## the kinds only when no register of its kind holds it. The stores all stay, so the frame holds what it held before.
+## register, general or xmm, already holds. The lowering moves every value
+## through the frame, an instruction at a time: a value stored to a place on
+## the stack is loaded back from it by the next instruction, and the load
+## waits for the store to reach it. `forward_loads` walks the statements once,
+## keeping which registers hold the value of which places of the frame, and
+## turns such a load into a move from the register (or into nothing, when it
+## is the same register): `mov` or `movsd` between two of one kind, `movq`
+## across. A holder of the load's own kind is preferred, so a value crosses
+## between the kinds only when no register of its kind holds it. The stores
+## all stay, so the frame holds what it held before.
 ##
 ## It knows only the places at `rbp` and the four moves between registers,
 ## the frame and the xmm registers that read or write them. Any other
