@@ -218,66 +218,113 @@ callback_items = {
 	[call_back, kinds, start, walk, reduce].join()
 }
 
-## `runtime_join`, `runtime_slice` and `runtime_char_at`. join's frame holds
-## the array (`[rbp - 8]`), the separator (16), the text so far (24) and
-## the place (32).
+## `runtime_join`, `runtime_slice` and `runtime_char_at`. join takes two
+## passes, so its time and its memory are linear in the text it makes: the
+## first keeps each item's text (the empty text for `undefined` and `null`)
+## in a list of its own and sums their lengths with the separators'; the
+## second copies them into the one string it allocates. Its frame holds the
+## array, unboxed (`[rbp - 8]`), the separator (16), the texts (24), the
+## place (32), the length so far (40) and the string made (48).
 slice_items : List(Assembly.Statement)
 slice_items = {
+	# The text at `[rsi]`'s bytes copied to `rdi`, which ends past them. It
+	# changes `rcx` and `rsi`.
+	copied = |text| [
+		Emit.load(Rcx, Emit.mem(text, 0)),
+		Emit.lea(Rsi, Emit.mem(text, 8)),
+		Instruction(RepMovsb),
+	]
 	join = [
 		Emit.mark(Runtime.join),
 		Emit.save(Rbp),
 		Emit.mov(Rbp, Rsp),
-		Emit.minus_imm(Rsp, 32),
+		Emit.minus_imm(Rsp, 48),
 	]
 		.concat(RuntimeBuilders.array_check_items)
+		.concat(RuntimeBuilders.unboxed_items(Rdi))
 		.concat([
 			Emit.store(RuntimeBuilders.local(8), Rdi),
 			Emit.store(RuntimeBuilders.local(16), Rsi),
-			Emit.address_of(Rax, "runtime_text_empty"),
+			Emit.load(Rdi, Emit.mem(Rdi, 0)),
+			Emit.test(Rdi, Rdi),
+			Emit.jcc(E, "runtime_join_empty"),
+			Emit.shl(Rdi, 3),
+			Emit.call(Runtime.allocate),
 			Emit.store(RuntimeBuilders.local(24), Rax),
 			Emit.zero(Rax),
 			Emit.store(RuntimeBuilders.local(32), Rax),
+			Emit.store(RuntimeBuilders.local(40), Rax),
+			# The first pass: each item's text kept, its length counted.
 			Emit.mark("runtime_join_next"),
 			Emit.load(Rdi, RuntimeBuilders.local(8)),
-		])
-		.concat(RuntimeBuilders.unboxed_items(Rdi))
-		.concat([
 			Emit.load(Rcx, Emit.mem(Rdi, 0)),
 			Emit.load(Rdx, RuntimeBuilders.local(32)),
 			Emit.cmp(Rdx, Rcx),
-			Emit.jcc(Ae, "runtime_join_done"),
-			Emit.test(Rdx, Rdx),
-			Emit.jcc(E, "runtime_join_item"),
-			Emit.load(Rdi, RuntimeBuilders.local(24)),
-			Emit.load(Rsi, RuntimeBuilders.local(16)),
-			Emit.call("runtime_concat"),
-			Emit.store(RuntimeBuilders.local(24), Rax),
-			Emit.mark("runtime_join_item"),
-			Emit.load(Rdi, RuntimeBuilders.local(8)),
-		])
-		.concat(RuntimeBuilders.unboxed_items(Rdi))
-		.concat([
+			Emit.jcc(Ae, "runtime_join_counted"),
 			Emit.load(R8, Emit.mem(Rdi, 16)),
-			Emit.load(Rdx, RuntimeBuilders.local(32)),
 			Emit.load(Rdi, RuntimeBuilders.listed_item(Rdx)),
+			Emit.address_of(Rax, "runtime_text_empty"),
 			Emit.imm(Rcx, Boxing.undefined_bits),
 			Emit.cmp(Rdi, Rcx),
-			Emit.jcc(E, "runtime_join_stepped"),
+			Emit.jcc(E, "runtime_join_item"),
 			Emit.imm(Rcx, Boxing.null_bits),
 			Emit.cmp(Rdi, Rcx),
-			Emit.jcc(E, "runtime_join_stepped"),
+			Emit.jcc(E, "runtime_join_item"),
 			Emit.call("runtime_text_of"),
-			Emit.mov(Rsi, Rax),
-			Emit.load(Rdi, RuntimeBuilders.local(24)),
-			Emit.call("runtime_concat"),
-			Emit.store(RuntimeBuilders.local(24), Rax),
+			Emit.mark("runtime_join_item"),
+			Emit.load(R8, RuntimeBuilders.local(24)),
+			Emit.load(Rdx, RuntimeBuilders.local(32)),
+			Emit.store(RuntimeBuilders.listed_item(Rdx), Rax),
+			Emit.load(R9, RuntimeBuilders.local(40)),
+			Emit.load(Rcx, Emit.mem(Rax, 0)),
+			Emit.plus(R9, Rcx),
+			Emit.test(Rdx, Rdx),
+			Emit.jcc(E, "runtime_join_stepped"),
+			Emit.load(Rsi, RuntimeBuilders.local(16)),
+			Emit.load(Rcx, Emit.mem(Rsi, 0)),
+			Emit.plus(R9, Rcx),
 			Emit.mark("runtime_join_stepped"),
-			Emit.load(Rax, RuntimeBuilders.local(32)),
-			Emit.plus_imm(Rax, 1),
-			Emit.store(RuntimeBuilders.local(32), Rax),
+			Emit.store(RuntimeBuilders.local(40), R9),
+			Emit.plus_imm(Rdx, 1),
+			Emit.store(RuntimeBuilders.local(32), Rdx),
 			Emit.jmp("runtime_join_next"),
+			# The second pass: the string allocated once and the texts
+			# copied in, the separator between them. The array's length in
+			# `r9`, the place in `r10`, the separator in `r11`.
+			Emit.mark("runtime_join_counted"),
+			Emit.load(Rdi, RuntimeBuilders.local(40)),
+			Emit.plus_imm(Rdi, 8),
+			Emit.call(Runtime.allocate),
+			Emit.store(RuntimeBuilders.local(48), Rax),
+			Emit.load(Rcx, RuntimeBuilders.local(40)),
+			Emit.store(Emit.mem(Rax, 0), Rcx),
+			Emit.lea(Rdi, Emit.mem(Rax, 8)),
+			Emit.load(R8, RuntimeBuilders.local(24)),
+			Emit.load(R9, RuntimeBuilders.local(8)),
+			Emit.load(R9, Emit.mem(R9, 0)),
+			Emit.zero(R10),
+			Emit.load(R11, RuntimeBuilders.local(16)),
+			Emit.mark("runtime_join_copy"),
+			Emit.cmp(R10, R9),
+			Emit.jcc(Ae, "runtime_join_copied"),
+			Emit.test(R10, R10),
+			Emit.jcc(E, "runtime_join_piece"),
+		])
+		.concat(copied(R11))
+		.concat([
+			Emit.mark("runtime_join_piece"),
+			Emit.load(Rdx, RuntimeBuilders.listed_item(R10)),
+		])
+		.concat(copied(Rdx))
+		.concat([
+			Emit.plus_imm(R10, 1),
+			Emit.jmp("runtime_join_copy"),
+			Emit.mark("runtime_join_copied"),
+			Emit.load(Rax, RuntimeBuilders.local(48)),
+			Emit.jmp("runtime_join_done"),
+			Emit.mark("runtime_join_empty"),
+			Emit.address_of(Rax, "runtime_text_empty"),
 			Emit.mark("runtime_join_done"),
-			Emit.load(Rax, RuntimeBuilders.local(24)),
 		])
 		.concat(RuntimeBuilders.boxed_string_items)
 		.concat([
