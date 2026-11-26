@@ -245,13 +245,8 @@ one_move_of = |first, { next, after }| {
 		(MovRegReg({ to: _, from: source }), MovMemReg({ to, from }))
 		if reads_through(from) and U32.bitwise_and(mem_units(to), through_unit) == 0 =>
 			Ok(MovMemReg({ to, from: source }))
-		(MovqFromXmm({ to: _, from: source }), MovMemReg({ to, from }))
-		if reads_through(from) and U32.bitwise_and(mem_units(to), through_unit) == 0 =>
-			Ok(MovsdStore({ to, from: source }))
 		(MovRegReg({ to: _, from: source }), MovqToXmm({ to, from })) if reads_through(from) =>
 			Ok(MovqToXmm({ to, from: source }))
-		(MovRegMem({ to: _, from: place }), MovqToXmm({ to, from })) if reads_through(from) =>
-			Ok(MovsdLoad({ to, from: place }))
 		_ => Err(Apart)
 	}
 }
