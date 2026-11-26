@@ -1,5 +1,8 @@
-// A result fed back that stays a number: the loop's counter is the
-// function's result, and its parameter's kind settles to a number.
+// Results fed back into loops that stay numbers. `half` gives a number
+// whatever it is passed, so its parameter settles to a number; `step`'s
+// result and parameter go round between a number and a value as the passes
+// guess, and rise to a value (Lowering's `KINDS ONLY RISE`), though every
+// value they hold is a number.
 function step(i) { return i + 1; }
 function half(v) { return v / 2; }
 let total = 0;
