@@ -7,6 +7,6 @@ const s = fib(n).toString();
 const t = fib(1000).toString();
 console.log("F(100) is " + fib(100).toString() + ", as expected");
 console.log("F(1000) ends " + t.slice(-12));
-console.log("reached F(" + n + "): " + s.length + " digits");
+console.log("F(" + n + "): " + s.length + " digits");
 console.log("first digits " + s.slice(0, 20) + ", last digits " + s.slice(-20));
 console.log(s);
