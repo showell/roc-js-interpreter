@@ -464,11 +464,12 @@ OperatorLowering :: [].{
 		}
 	}
 
-	## `+`, `-` or `*` of the two `Integer`s on top, which give `kind`
+	## `+`, `-`, `*` or `%` of the two `Integer`s on top, which give `kind`
 	## (`LoweringBasics.integer_arithmetic`), in the first's place: integer
 	## arithmetic, which the bounds keep from overflowing. A sum or a
 	## difference whose second is a literal (`checked`'s origins say where the
-	## top came from) adds or takes its integer as an immediate.
+	## top came from) adds or takes its integer as an immediate; a remainder
+	## is `integer_remainder_items`'.
 	integer_arithmetic_items : LoweringBasics.Site,
 	{
 		state : LoweringBasics.State,
@@ -497,8 +498,17 @@ OperatorLowering :: [].{
 			(Subtract, _) => [Emit.load(Rcx, right), Emit.minus(Rax, Rcx)]
 			_ => [Emit.load(Rcx, right), Instruction(Imul({ to: Rax, from: Rcx }))]
 		}
+		statements = match operator {
+			Remainder =>
+				integer_remainder_items({
+					left,
+					right,
+					divisor: LoweringBasics.kind_below(state, 0),
+				})
+			_ => [Emit.load(Rax, left)].concat(operated).append(Emit.store(left, Rax))
+		}
 		LoweringBasics.falling(
-			[Emit.load(Rax, left)].concat(operated).append(Emit.store(left, Rax)),
+			statements,
 			LoweringBasics.with_top(LoweringBasics.without_top(state, 2), kind),
 		)
 	}
@@ -1236,38 +1246,7 @@ constant_remainder_items = |site, { kind, left, divisor, slow_items }| {
 		if divisor == 1 {
 			[Emit.zero(Rcx)]
 		} else {
-			{ multiplier, shift } = remainder_magic(divisor)
-			added =
-				if multiplier < 0 {
-					[Emit.plus(Rdx, Rcx)]
-				} else {
-					[]
-				}
-			shifted =
-				if shift > 0 {
-					[
-						Instruction(
-							Shift({
-								operation: Sar,
-								reg: Rdx,
-								count: shift,
-							}),
-						),
-					]
-				} else {
-					[]
-				}
-			[Emit.imm(Rax, multiplier), Instruction(ImulWide(Rcx))]
-				.concat(added)
-				.concat(shifted)
-				.concat([
-					Emit.mov(Rax, Rcx),
-					Emit.shr(Rax, 63),
-					Emit.plus(Rdx, Rax),
-					Emit.imm(Rax, divisor.to_i64_wrap()),
-					Instruction(Imul({ to: Rdx, from: Rax })),
-					Emit.minus(Rcx, Rdx),
-				])
+			magic_remainder_items({ divisor, signed: True })
 		}
 	# The remainder made a double, with the dividend's sign bit or-ed in: a
 	# remainder not 0 has the dividend's sign already, and a 0 one is -0
@@ -1295,6 +1274,101 @@ constant_remainder_items = |site, { kind, left, divisor, slow_items }| {
 		.concat(slow_items)
 		.append(Emit.mark(done_label))
 }
+
+## `%` of the `Integer` at `left`, at least 0, by the one at `right`, whose
+## range holds no 0 (`LoweringBasics.integer_arithmetic` says so), the
+## remainder at `left`. A divisor whose range is one value is a constant of
+## that size (`n % -d` is `n % d`): 1 gives 0, a power of two up to 2^31 an
+## `and`, any other the magic multiply. Any other divisor takes an `idiv`,
+## whose remainder has the dividend's sign, as `%`'s has.
+integer_remainder_items : {
+	left : X86.Mem,
+	right : X86.Mem,
+	divisor : LoweringBasics.Kind,
+} -> List(Assembly.Statement)
+integer_remainder_items = |{ left, right, divisor }|
+	match constant_size(divisor) {
+		Ok(1) => [Emit.zero(Rax), Emit.store(left, Rax)]
+		Ok(size) if is_power_of_two(size) and size <= 2147483648 => [
+			Emit.load(Rax, left),
+			Emit.bit_and_imm(Rax, (size - 1).to_i64_wrap()),
+			Emit.store(left, Rax),
+		]
+		Ok(size) =>
+			[Emit.load(Rcx, left)]
+				.concat(magic_remainder_items({ divisor: size, signed: False }))
+				.append(Emit.store(left, Rcx))
+		Err(Unknown) => [
+			Emit.load(Rax, left),
+			Instruction(Cqo),
+			Emit.load(Rcx, right),
+			Instruction(Idiv(Rcx)),
+			Emit.store(left, Rdx),
+		]
+	}
+
+## The size of an `Integer` divisor whose range is one value, not 0.
+constant_size : LoweringBasics.Kind -> Try(U64, [Unknown])
+constant_size = |kind|
+	match kind {
+		Integer({ low, high }) if low == high and low > 0 => Ok(low.to_u64_wrap())
+		Integer({ low, high }) if low == high and low < 0 => Ok((0 - low).to_u64_wrap())
+		_ => Err(Unknown)
+	}
+
+## Whether a size is a power of two.
+is_power_of_two : U64 -> Bool
+is_power_of_two = |size| size > 0 and size.bitwise_and(size - 1) == 0
+
+## The quotient of the integer in `rcx` by `divisor`, at least 2, rounded
+## toward 0, in `rdx`, by the magic multiply (`remainder_magic`; `rax`
+## taken). A dividend known to be at least 0 (`signed` false) leaves out
+## the 1 a negative one adds.
+magic_quotient_items : { divisor : U64, signed : Bool } -> List(Assembly.Statement)
+magic_quotient_items = |{ divisor, signed }| {
+	{ multiplier, shift } = remainder_magic(divisor)
+	added =
+		if multiplier < 0 {
+			[Emit.plus(Rdx, Rcx)]
+		} else {
+			[]
+		}
+	shifted =
+		if shift > 0 {
+			[
+				Instruction(
+					Shift({
+						operation: Sar,
+						reg: Rdx,
+						count: shift,
+					}),
+				),
+			]
+		} else {
+			[]
+		}
+	rounded =
+		if signed {
+			[Emit.mov(Rax, Rcx), Emit.shr(Rax, 63), Emit.plus(Rdx, Rax)]
+		} else {
+			[]
+		}
+	[Emit.imm(Rax, multiplier), Instruction(ImulWide(Rcx))]
+		.concat(added)
+		.concat(shifted)
+		.concat(rounded)
+}
+
+## The remainder of the integer in `rcx` by `divisor`, at least 2, in
+## `rcx`: the dividend less its quotient (`magic_quotient_items`) times the
+## divisor, so it has the dividend's sign (`rax` and `rdx` taken).
+magic_remainder_items : { divisor : U64, signed : Bool } -> List(Assembly.Statement)
+magic_remainder_items = |{ divisor, signed }|
+	magic_quotient_items({ divisor, signed }).concat([
+		Emit.imm(Rax, divisor.to_i64_wrap()),
+		Instruction(Imul({ to: Rdx, from: Rax })),
+		Emit.minus(Rcx, Rdx),
+	])
 
 ## The multiplier and shift that divide a signed 64-bit integer by
 ## `divisor`, at least 2, with a multiply (Hacker's Delight, figure 10-1,

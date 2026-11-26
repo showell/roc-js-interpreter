@@ -198,10 +198,11 @@ LoweringBasics :: [].{
 			Err(_) => crash "LoweringBasics.whole_of_literal: a whole number within ±2^53"
 		}
 
-	## The `Integer` that `+`, `-` or `*` of two kinds gives (x86/README.md,
-	## "An integer kind"): both `Integer`s, and the result's bounds within
-	## ±2^53. A product that may be -0 (a factor that may be 0 times one that
-	## may be negative) is no `Integer`.
+	## The `Integer` that `+`, `-`, `*` or `%` of two kinds gives
+	## (x86/README.md, "An integer kind"): both `Integer`s, and the result's
+	## bounds within ±2^53. A product that may be -0 (a factor that may be 0
+	## times one that may be negative) is no `Integer`, nor is a remainder
+	## that may be NaN or -0 (`integer_remainder`).
 	integer_arithmetic : {
 		operator : Ast.BinaryOperator,
 		left : LoweringBasics.Kind,
@@ -214,8 +215,35 @@ LoweringBasics :: [].{
 					Add => integer_within(one.low + other.low, one.high + other.high)
 					Subtract => integer_within(one.low - other.high, one.high - other.low)
 					Multiply => integer_product(one, other)
+					Remainder => integer_remainder(one, other)
 					_ => Err(NotInteger)
 				}
+			_ => Err(NotInteger)
+		}
+
+	## The `Integer` that `Math.floor(a / b)` of two kinds gives: both
+	## `Integer`s and the divisor at least 1, so the quotient is never NaN, an
+	## infinity or -0 (a dividend of 0 over a positive divisor is 0). Its
+	## bounds are the least and the most of the four corners' floored
+	## quotients, within the dividend's own.
+	integer_floor_quotient : LoweringBasics.Kind,
+	LoweringBasics.Kind -> Try(
+		LoweringBasics.Kind,
+		[NotInteger],
+	)
+	integer_floor_quotient = |left, right|
+		match (left, right) {
+			(Integer(dividend), Integer(divisor)) if divisor.low >= 1 => {
+				first = floored(dividend.low, divisor.low)
+				corners = [
+					floored(dividend.low, divisor.high),
+					floored(dividend.high, divisor.low),
+					floored(dividend.high, divisor.high),
+				]
+				low = corners.fold(first, I64.min)
+				high = corners.fold(first, I64.max)
+				integer_within(low, high)
+			}
 			_ => Err(NotInteger)
 		}
 
@@ -725,6 +753,45 @@ integer_product = |one, other| {
 	integer_within($low, $high)
 }
 
+## The `Integer` of a remainder of two ranges. The divisor's range must hold
+## no 0 (`x % 0` is NaN), and the dividend's no negative: the remainder's
+## sign is the dividend's, so a negative one that divides evenly gives -0. A
+## divisor's sign is dropped, as JavaScript's `n % -d` is `n % d`. The
+## remainder is at most the dividend and less than the divisor's largest
+## size, and a dividend below the divisor's least size is its own remainder.
+integer_remainder : { low : I64, high : I64 },
+{ low : I64, high : I64 } -> Try(
+	LoweringBasics.Kind,
+	[NotInteger],
+)
+integer_remainder = |dividend, divisor| {
+	if dividend.low < 0 or (divisor.low <= 0 and divisor.high >= 0) {
+		return Err(NotInteger)
+	}
+	(least, most) =
+		if divisor.low > 0 {
+			(divisor.low, divisor.high)
+		} else {
+			(0 - divisor.high, 0 - divisor.low)
+		}
+	if dividend.high < least {
+		Ok(Integer(dividend))
+	} else {
+		Ok(Integer({ low: 0, high: I64.min(dividend.high, most - 1) }))
+	}
+}
+
+## `dividend` over `divisor`, at least 1, rounded down.
+floored : I64, I64 -> I64
+floored = |dividend, divisor| {
+	truncated = dividend // divisor
+	if dividend < 0 and truncated * divisor != dividend {
+		truncated - 1
+	} else {
+		truncated
+	}
+}
+
 ## A range's least and most, for the expects.
 Bounds : (I64, I64)
 
@@ -769,6 +836,40 @@ expect {
 		and product((0, 94906265), (0, 94906265)) == between(0, 9007199136250225)
 		and product((0, 94906267), (0, 94906267)) == Err(NotInteger)
 		and product((0, 4294967296), (0, 4294967296)) == Err(NotInteger)
+}
+
+# A remainder is an `Integer` when its divisor can't be 0 and its dividend
+# can't be negative, between 0 and one less than the divisor's largest size
+# (or the dividend's most), a dividend below the divisor its own; one that
+# may be NaN or -0 is none.
+expect {
+	remainder = arithmetic_of_ranges(Remainder)
+	limit = LoweringBasics.integer_limit
+	remainder((0, limit), (4, 4)) == between(0, 3)
+		and remainder((0, 2), (4, 4)) == between(0, 2)
+		and remainder((5, 9), (16, 16)) == between(5, 9)
+		and remainder((0, 100), (1, 4294967297)) == between(0, 100)
+		and remainder((0, limit), (-3, -3)) == between(0, 2)
+		and remainder((-1, 10), (4, 4)) == Err(NotInteger)
+		and remainder((0, 10), (0, 4)) == Err(NotInteger)
+		and remainder((0, 10), (-2, 3)) == Err(NotInteger)
+}
+
+# `Math.floor(a / b)` is an `Integer` when `b` is at least 1, rounded down
+# for a negative dividend, its bounds the corners'; a divisor that may be 0
+# or negative gives none.
+expect {
+	quotient = |(one_low, one_high), (other_low, other_high)|
+		LoweringBasics.integer_floor_quotient(
+			Integer({ low: one_low, high: one_high }),
+			Integer({ low: other_low, high: other_high }),
+		)
+	quotient((0, 199999), (16, 16)) == between(0, 12499)
+		and quotient((-7, 7), (4, 4)) == between(-2, 1)
+		and quotient((-7, 7), (2, 5)) == between(-4, 3)
+		and quotient((-9, -5), (2, 3)) == between(-5, -2)
+		and quotient((0, 10), (0, 4)) == Err(NotInteger)
+		and quotient((0, 10), (-3, -1)) == Err(NotInteger)
 }
 
 # A literal is an `Integer` when it is whole, within ±2^53 and not -0; a

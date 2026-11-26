@@ -709,27 +709,23 @@ code_items = |context| {
 }
 
 ## Whether a loop's head widened to `after` from `head` differs only in its
-## slots' `Integer` ranges, each now the whole range.
+## slots' `Integer` ranges, each side kept or now at ±2^53.
 only_integers_widened : LoweringBasics.State, LoweringBasics.State -> Bool
 only_integers_widened = |head, after| {
-	kept = |
-		one,
-		other,
-	| one == other or (other == Ready(LoweringBasics.any_integer) and is_integer_slot(one))
+	limit = LoweringBasics.integer_limit
+	kept = |one, other|
+		match (one, other) {
+			(Ready(Integer(was)), Ready(Integer(now))) =>
+				(now.low == was.low or now.low == 0 - limit)
+					and (now.high == was.high or now.high == limit)
+			_ => one == other
+		}
 	head.stack_kinds == after.stack_kinds and List.map2(
 		head.slots,
 		after.slots,
 		kept,
 	).all(|same| same)
 }
-
-## Whether a slot holds an `Integer`.
-is_integer_slot : LoweringBasics.Slot -> Bool
-is_integer_slot = |slot|
-	match slot {
-		Ready(Integer(_)) => True
-		_ => False
-	}
 
 ## A state with each of `slots` that holds an `Integer` holding a number.
 without_integers : LoweringBasics.State, List(U64) -> LoweringBasics.State
@@ -1728,17 +1724,31 @@ integer_clashes = |one, other| {
 	$out
 }
 
-## A loop's head met with a way back (`met`), each `Integer` slot whose range
-## grew widened to the whole range, so a counter's head settles at once.
+## A loop's head met with a way back (`met`), each `Integer` slot's range
+## widened on the side it grew, to ±2^53 there, so a counter's head settles
+## at once and a counter that only climbs keeps its least (`i = 0`, `i++`
+## stays at least 0).
 integers_widened : LoweringBasics.State, LoweringBasics.State -> LoweringBasics.State
 integers_widened = |head, met| {
+	limit = LoweringBasics.integer_limit
 	slots = List.map2(
 		head.slots,
 		met.slots,
 		|before, after|
 			match (before, after) {
-				(Ready(Integer(_)), Ready(Integer(_))) if before != after =>
-					Ready(LoweringBasics.any_integer)
+				(Ready(Integer(was)), Ready(Integer(grown))) if before != after => {
+					low = if grown.low < was.low {
+						0 - limit
+					} else {
+						grown.low
+					}
+					high = if grown.high > was.high {
+						limit
+					} else {
+						grown.high
+					}
+					Ready(Integer({ low, high }))
+				}
 				_ => after
 			},
 	)
