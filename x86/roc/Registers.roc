@@ -13,8 +13,10 @@
 ## instruction that names it is one of the four plain moves (`mov` to or
 ## from a general register, `movsd` to or from an xmm register), with no
 ## index, so nothing takes its address or reads a byte of it. A function is
-## renamed only when it has a loop, so recursive fib, which has none, pays
-## nothing for it; when nothing in it names `rbp` but as such a place's base;
+## renamed only when it has a loop, or calls no function of the program (a
+## leaf, such as the Nibble machine's `step`, whose few loads and stores of
+## its places outnumber the saves), so recursive fib, which has neither,
+## pays nothing for it; when nothing in it names `rbp` but as such a place's base;
 ## and a spare register the function names itself (`rbx` in a function that
 ## captures cells) is left to it, the places going to the others. The caller
 ## (`Lowering.code_walk`) renames nothing in a program with a `try`: a throw
@@ -44,10 +46,10 @@ Registers :: [].{
 	promote_statements : {
 		statements : List(Assembly.Statement),
 		frame_bytes : U64,
-		loops : Bool,
+		worth_renaming : Bool,
 	} -> List(Assembly.Statement)
-	promote_statements = |{ statements, frame_bytes, loops }| {
-		if !loops {
+	promote_statements = |{ statements, frame_bytes, worth_renaming }| {
+		if !worth_renaming {
 			return statements
 		}
 		var $counts = Dict.empty()
@@ -211,7 +213,9 @@ is_frame_pointer = |register| X86.register_index(register) == X86.register_index
 ## expects.
 promotes_to : List(Assembly.Statement), List(Assembly.Statement) -> Bool
 promotes_to = |statements, expected|
-	Assembly.assemble(Registers.promote_statements({ statements, frame_bytes: 16, loops: True }))
+	Assembly.assemble(
+		Registers.promote_statements({ statements, frame_bytes: 16, worth_renaming: True }),
+	)
 		== Assembly.assemble(expected)
 
 ## The place at `displacement` from `rbp`.
@@ -393,7 +397,7 @@ expect {
 		Registers.promote_statements({
 			statements: unlooped,
 			frame_bytes: 16,
-			loops: False,
+			worth_renaming: False,
 		}),
 	)
 	promotes_to(body, body) and kept == Assembly.assemble(unlooped)

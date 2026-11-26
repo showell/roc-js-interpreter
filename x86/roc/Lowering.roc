@@ -913,7 +913,7 @@ code_walk = |context, { heads, doubted }| {
 			Registers.promote_statements({
 				statements: made,
 				frame_bytes,
-				loops: !looped_to.is_empty(),
+				worth_renaming: !looped_to.is_empty() or !code.ops.any(calls_code),
 			})
 		}
 	Ok(
@@ -925,6 +925,15 @@ code_walk = |context, { heads, doubted }| {
 		}),
 	)
 }
+
+## Whether an instruction may call a function of the program.
+calls_code : Bytecode.Op -> Bool
+calls_code = |instruction|
+	match instruction {
+		Call(_) | CallSpread(_) | CallIndexed(_) | Construct(_) => True
+		CallMethod(_) | CallMethodSpread(_) => True
+		_ => False
+	}
 
 ## The places a `Loop` of the code goes back to.
 loop_targets : Bytecode.Code -> List(U64)
