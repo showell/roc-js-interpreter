@@ -58,7 +58,7 @@ The playground moved onto the VM next: the canvas samples (`3d151f80`), then the
 
 The page gained a memory view (`668c52ca`, `c7a85d90`): a popup with the last run's heap over time. Then came a speed fix (`3aba5cf7`), the subject of {{chapter What copies}}. Two gaps closed next: calls nest 10,000 deep (`f4320451`), and a Map or a Set drops its deleted entries once they outnumber the rest (`865341ff`).
 
-Classes came last, as syntax sugar (`0b6d8deb`, `be76fa0f`, `a2cd6994`). The parser writes each class as plain functions, one that sets the methods on an instance, one that runs the constructor's body and one that makes the instance and calls both, so `Resolve`, `Compile` and the VM see only functions.
+Classes came last, as syntax sugar (`0b6d8deb`, `be76fa0f`, `a2cd6994`). The parser writes each class as plain functions, one that sets the methods on an instance, one that runs the constructor's body and one that makes the instance and calls both, so `Resolve`, `Compile` and the VM see only functions. On 2026-11-26 the methods moved off the instances: each class now has one table of its methods, each method a single function whose first parameter is the receiver, so a compiler can call a method directly once it knows the receiver's class.
 
 ### Garbage you can watch
 
@@ -127,7 +127,7 @@ A cell is one of these:
 
 {{lines js/roc/Heap.roc from "Cell : [" to "Freed(Heap.Free),"}}
 
-An `Instance` is an object marked with the names of its class and of each class it extends, which `x instanceof C` reads. Two variables that hold one array hold one index, so each sees the other's writes.
+An `Instance` is an object marked with the names of its class and of each class it extends, which `x instanceof C` reads, and holding its class's table of methods, where a property the instance lacks is read. Two variables that hold one array hold one index, so each sees the other's writes.
 
 ### The free list
 
@@ -610,9 +610,8 @@ The limits fall in three groups: the runtime is small on purpose, the language i
 
 The language itself is fairly complete: numbers, strings, arrays, objects, closures, `let` and `const`, `try` and `finally`, `switch`, destructuring, optional chains, spread, Maps, Sets and classes ({{chapter Introduction}}). These are its known differences from node:
 
-- Each class instance holds its own method closures, so `a.m === b.m` is false where node's is true (`js/README.md`, "Classes are syntax sugar").
-- A method read off an instance and called alone keeps its instance, where node loses `this` and throws (the same section).
-- Printing or listing a class instance, or printing a class, is refused: node prints an instance by its class's name, and an instance here holds its methods beside its fields (the same section).
+- Printing or listing a class instance, or printing a class, is refused: node prints an instance by its class's name first (`js/README.md`, "Classes are syntax sugar").
+- An instance's property named `"þsuper m"` reads its class's parent's method `m`, which is the key `super.m` is written as, where node's is `undefined` (the same section). No ASCII text is that key.
 - An exhausted Map iterator still sees entries added after it finished, where node's stays done. No corpus program holds this yet.
 - A builtin's callback (`map`, `sort`, a Map's `forEach`) throws a RangeError once 400 calls wait under it, where a plain call goes 10,000 deep, near node's own limit (`f4320451`).
 - A string method that counts positions is refused on non-ASCII text: JavaScript counts UTF-16 units, and these strings are UTF-8 (`js/README.md`, "The subset").
@@ -828,7 +827,7 @@ An optimizer would pay most on loops. The loops program has the widest gap, 6 to
 
 ### What comes next
 
-The compiler's own milestones say what follows (`x86/README.md`). Classes came first, and compile since `6ec8068`: the parser already writes each class as plain functions, so the work was the `NewInstance` and `InstanceOf` instructions of the VM's bytecode. Next is milestone 4, the runtime in the subset: `console.log`'s formatting, Map and Set, and number printing, which four corpus programs wait on (02, 30, 58 and 54), written in the JavaScript subset and compiled by this compiler. Then milestone 5, the collector, with the shadow stack as its roots, so a program can outgrow the 1 GiB heap and the whole corpus can be held to node. Then milestone 6, the register allocation and type specialization the loops above ask for.
+The compiler's own milestones say what follows (`x86/README.md`). Classes came first, and compile since `6ec8068`: the parser already writes each class as plain functions, so the work was the `NewInstance` and `InstanceOf` instructions of the VM's bytecode. Since 2026-11-26 an instance holds its class's table of methods, and a method takes its receiver as its first parameter, passed in `rdx` by every call through a value. Next is milestone 4, the runtime in the subset: `console.log`'s formatting, Map and Set, and number printing, which four corpus programs wait on (02, 30, 58 and 54), written in the JavaScript subset and compiled by this compiler. Then milestone 5, the collector, with the shadow stack as its roots, so a program can outgrow the 1 GiB heap and the whole corpus can be held to node. Then milestone 6, the register allocation and type specialization the loops above ask for.
 
 ## Appendix A: The playground's samples
 
