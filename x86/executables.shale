@@ -3,8 +3,9 @@
 -- programs.shale. Roc's default platform writes only text to stdout, so a
 -- driver prints an executable's bytes as hex (X86.hex_text's two lowercase
 -- digits a byte, a space between), and `bytes_of_hex` turns each pair back
--- into its byte, by BYTES, a string holding every byte from 0 to 255 in
--- order. It decides none of them: every byte of the file is the Roc's.
+-- into its byte, by a map from each of the 256 pairs to its byte of BYTES,
+-- a string holding every byte from 0 to 255 in order. It decides none of
+-- them: every byte of the file is the Roc's.
 --
 -- Each script names it as `use("./executables.shale")`.
 
@@ -15,21 +16,32 @@ const WANT_DRIVER = "x86: the backend's driver, built here"
 const WANT_BINARY = "x86: an executable the Roc wrote, run to check it"
 const WANT_NODE = "node: the oracle the compiled programs are held to"
 
+-- Each of the 256 pairs of lowercase hex digits, mapped to its byte.
+function byte_of_pair()
+  if #BYTES ~= 256 then fail("x86/executables.shale: BYTES holds " .. #BYTES .. " bytes, not 256") end
+  local out = {}
+  for high = 1, 16 do
+    for low = 1, 16 do
+      local n = (high - 1) * 16 + low
+      out[sub(HEX_DIGITS, high, high) .. sub(HEX_DIGITS, low, low)] = sub(BYTES, n, n)
+    end
+  end
+  return out
+end
+
 -- The bytes the hex text `spaced` spells, two lowercase digits a byte and a
--- space between bytes.
+-- space between bytes. Its pieces between spaces are looked up whole, so a
+-- piece that is not a pair of lowercase hex digits (an odd digit, a capital,
+-- a newline, two spaces) is found by the lookup, with no pattern over the
+-- whole text.
 function bytes_of_hex(who, spaced)
-  if #BYTES ~= 256 then fail(who .. ": BYTES holds " .. #BYTES .. " bytes, not 256") end
-  if not re_match(spaced, "^([0-9a-f]{2}( [0-9a-f]{2})*)?$") then fail(who .. ": the driver printed something that is not spaced lowercase hex: " .. sub(spaced, 1, 200)) end
-  local hex = re_replace(spaced, " ", "")
-  if #hex % 2 ~= 0 then fail(who .. ": the driver printed an odd number of hex digits (" .. #hex .. ")") end
+  if spaced == "" then return "" end
+  local byte_of = byte_of_pair()
   local parts = {}
-  local i = 1
-  while i < #hex do
-    local high = find(HEX_DIGITS, sub(hex, i, i)) - 1
-    local low = find(HEX_DIGITS, sub(hex, i + 1, i + 1)) - 1
-    local n = high * 16 + low + 1
-    push(parts, sub(BYTES, n, n))
-    i = i + 2
+  for pair in split(spaced, " ") do
+    local b = get(byte_of, pair, "")
+    if b == "" then fail(who .. ": the driver printed something that is not spaced lowercase hex: " .. json_write(sub(pair, 1, 40)) .. " at byte " .. (#parts + 1) .. " of " .. sub(spaced, 1, 200)) end
+    push(parts, b)
   end
   return join(parts, "")
 end

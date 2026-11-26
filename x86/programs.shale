@@ -1,4 +1,4 @@
--- budget: steps=440000000
+-- budget: steps=132000000
 -- x86/programs.shale: the x86-64 backend's programs, each held to node or to
 -- its refusal. From the repository's root:
 --
