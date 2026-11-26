@@ -107,8 +107,15 @@ LoweringBasics :: [].{
 		# The places an instance's entries are expected to hold each field at
 		# (`FieldSlots.field_slots`).
 		field_slots : Dict(Str, List(U64)),
+		# The places a class's table is expected to hold each key at, and the
+		# codes it may hold there (`MethodTables.method_tables`).
+		methods : LoweringBasics.MethodGuesses,
 		index : U64,
 	}
+
+	## For each key some class's table holds, the places among a table's
+	## entries it is expected at, and the codes of the methods it may hold.
+	MethodGuesses : { places : Dict(Str, List(U64)), codes : Dict(Str, List(U64)) }
 
 	## Which array literals a lowering keeps as arrays of numbers: none
 	## (`AnyItems`), those of known numbers (`NumberItems`, `Numbers`), and

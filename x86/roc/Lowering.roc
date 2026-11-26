@@ -118,6 +118,7 @@ import Jumps
 import LoweringBasics
 import Moves
 import FieldSlots
+import MethodTables
 import ObjectTable
 import CallLowering
 import IndexLowering
@@ -222,6 +223,7 @@ items_with_numbers = |program, arrays| {
 		$parameters = $parameters.insert(index, List.repeat(Number, parameter_count(code)))
 	}
 	known = { program, makers, statics }
+	methods = MethodTables.method_tables(known)
 	trying = program.codes.any(
 		|code|
 			code.ops.any(
@@ -268,6 +270,7 @@ items_with_numbers = |program, arrays| {
 				parameters: $parameters,
 				literals,
 				field_slots,
+				methods,
 				index,
 			}
 			match code_items(context) {
@@ -3282,19 +3285,37 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 							LoweringBasics.with_top(state, StaticMethod({ owner, name })),
 						),
 					)
-				(Object, _) | (Value, _) | (Null, _) | (Undefined, _) =>
-					Ok(
-						LoweringBasics.falling(
-							[
-								Emit.load(Rdi, top_place(0)),
-								Emit.address_of(Rsi, LoweringBasics.text_label(site, name)),
-								Emit.imm(R8, ObjectTable.key_hash(name)),
-								Emit.call(property_reader(site, name)),
-								Emit.store(next_place, Rax),
-							],
-							LoweringBasics.with_top(state, Value),
-						),
-					)
+				(Object, _) | (Value, _) | (Null, _) | (Undefined, _) => {
+					kind = LoweringBasics.kind_below(state, 0)
+					reader = property_reader(site, name)
+					slow_items = [
+						Emit.load(Rdi, top_place(0)),
+						Emit.address_of(Rsi, LoweringBasics.text_label(site, name)),
+						Emit.imm(R8, ObjectTable.key_hash(name)),
+						Emit.call(reader),
+						Emit.store(next_place, Rax),
+					]
+					# A method's name read in line from the instance's class's table
+					# (MethodTables' header), as the runtime's method read reads it.
+					is_instance_kind = kind == Object or kind == Value
+					reads_table = reader == ObjectTable.get_method_hashed and is_instance_kind
+					items = match site.context.methods.places.get(name) {
+						Ok(places) if reads_table =>
+							MethodTables.table_read_items(
+								site,
+								{
+									places,
+									receiver: top_place(0),
+									receiver_kind: kind,
+									key: name,
+									result: next_place,
+									slow_items,
+								},
+							)
+						_ => slow_items
+					}
+					Ok(LoweringBasics.falling(items, LoweringBasics.with_top(state, Value)))
+				}
 				(kind, _) => {
 					phrase = LoweringBasics.kind_phrase(kind)
 					LoweringBasics.refusal(

@@ -232,6 +232,19 @@ KnownFunctions :: [].{
 		$found
 	}
 
+	## The capture whose cell lands in `slot` of the code's frame, the
+	## inverse of the entry's `CapturedBox`.
+	capture_holding : Bytecode.Code, U64 -> Try(U64, [Unfound])
+	capture_holding = |code, slot| {
+		for step in code.entry {
+			match step {
+				CapturedBox({ slot: held, capture }) if held == slot => return Ok(capture)
+				_ => {}
+			}
+		}
+		Err(Unfound)
+	}
+
 	## Whether `key` names some class's method in the program (a code whose
 	## form is `Method`, or a parent's method kept for `super`), so that a
 	## read of it looks in an instance's class's table first (ObjectTable's

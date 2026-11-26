@@ -30,6 +30,7 @@ import js.Bytecode
 import Assembly
 import Boxing
 import Emit
+import KnownFunctions
 import LoweringBasics
 import RuntimeBuilders
 import X86
@@ -55,7 +56,7 @@ FieldSlots :: [].{
 				for (key, place) in fields.map_with_index(|key, place| (key, place)) {
 					slot = first_field + place
 					guesses = $slots.get(key) ?? []
-					if !guesses.contains(slot) and guesses.len() < most_guesses {
+					if !guesses.contains(slot) and guesses.len() < FieldSlots.most_guesses {
 						$slots = $slots.insert(key, guesses.append(slot))
 					}
 				}
@@ -121,12 +122,40 @@ FieldSlots :: [].{
 			.concat(slow_items)
 			.append(Emit.mark(done_label))
 	}
-}
 
-## The most places guessed for one key: each costs a compare and a jump
-## at every read and write of it.
-most_guesses : U64
-most_guesses = 3
+	## The test of each expected place of an object's entries, `rcx` their
+	## count, `rdi` their address and `rdx` the key's literal: the entries
+	## more than the place and the entry's key the literal, then `hit_items`
+	## of the place; past every place, the statements after them. They
+	## change `rax`.
+	entry_tests_items : LoweringBasics.Site,
+	{
+		slots : List(U64),
+		hit_items : U64 -> List(Assembly.Statement),
+	} -> List(Assembly.Statement)
+	entry_tests_items = |site, { slots, hit_items }|
+		slots
+			.map(
+				|slot| {
+					missed = LoweringBasics.inner_label(site, "entry_miss_${slot.to_str()}")
+					[
+						Emit.cmp_imm(Rcx, slot.to_i64_wrap()),
+						Emit.jcc(Be, missed),
+						Emit.load(Rax, Emit.mem(Rdi, 16 * slot.to_i64_wrap())),
+						Emit.cmp(Rax, Rdx),
+						Emit.jcc(Ne, missed),
+					]
+						.concat(hit_items(slot))
+						.append(Emit.mark(missed))
+				},
+			)
+			.join()
+
+	## The most places guessed for one key: each costs a compare and a jump
+	## at every read and write of it.
+	most_guesses : U64
+	most_guesses = 3
+}
 
 ## How many classes deep `class_fields` follows `super(...)`: a class
 ## extends only a class declared above it, so a chain never loops, and this
@@ -170,23 +199,7 @@ guarded_items = |site, { slots, receiver, receiver_kind, key, hit_items }| {
 				Emit.load(Rdi, Emit.mem(Rdi, 16)),
 				Emit.address_of(Rdx, LoweringBasics.text_label(site, key)),
 			])
-	tests =
-		slots
-			.map(
-				|slot| {
-					missed = LoweringBasics.inner_label(site, "field_miss_${slot.to_str()}")
-					[
-						Emit.cmp_imm(Rcx, slot.to_i64_wrap()),
-						Emit.jcc(Be, missed),
-						Emit.load(Rax, Emit.mem(Rdi, 16 * slot.to_i64_wrap())),
-						Emit.cmp(Rax, Rdx),
-						Emit.jcc(Ne, missed),
-					]
-						.concat(hit_items(slot))
-						.append(Emit.mark(missed))
-				},
-			)
-			.join()
+	tests = FieldSlots.entry_tests_items(site, { slots, hit_items })
 	opened.concat(tests).append(Emit.mark(slow_label))
 }
 
@@ -250,7 +263,7 @@ constructor_of = |program, { code, maker }| {
 		) => held
 		_ => return Err(Unfound)
 	}
-	capture = capture_of(code, slot)?
+	capture = KnownFunctions.capture_holding(code, slot)?
 	from = match maker.captures.get(capture) {
 		Ok(held) => held
 		Err(_) => return Err(Unfound)
@@ -271,18 +284,6 @@ constructor_of = |program, { code, maker }| {
 				Ok(SetBoxed(set)),
 			) if set == from =>
 				return Ok(made)
-			_ => {}
-		}
-	}
-	Err(Unfound)
-}
-
-## The capture whose cell lands in `slot` of the code's frame.
-capture_of : Bytecode.Code, U64 -> Try(U64, [Unfound])
-capture_of = |code, slot| {
-	for step in code.entry {
-		match step {
-			CapturedBox({ slot: held, capture }) if held == slot => return Ok(capture)
 			_ => {}
 		}
 	}
