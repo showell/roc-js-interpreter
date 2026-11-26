@@ -23,7 +23,7 @@ Forwarding :: [].{
 	## The statements with each load of a value a register holds made a move.
 	forward_loads : List(Assembly.Statement) -> List(Assembly.Statement)
 	forward_loads = |statements| {
-		named = named_labels(statements)
+		named = Forwarding.named_labels(statements)
 		var $out = List.with_capacity(statements.len())
 		var $holdings = []
 		for statement in statements {
@@ -103,24 +103,24 @@ Forwarding :: [].{
 		}
 		$out
 	}
-}
 
-## Every label a statement names.
-named_labels : List(Assembly.Statement) -> Set(Str)
-named_labels = |statements| {
-	var $named = Set.empty()
-	for statement in statements {
-		match statement {
-			JmpTo(label) | CallTo(label) | Distance(label) => {
-				$named = $named.insert(label)
+	## Every label a statement names: a place another way may reach.
+	named_labels : List(Assembly.Statement) -> Set(Str)
+	named_labels = |statements| {
+		var $named = Set.empty()
+		for statement in statements {
+			match statement {
+				JmpTo(label) | CallTo(label) | Distance(label) => {
+					$named = $named.insert(label)
+				}
+				JccTo({ condition: _, label }) | LeaTo({ to: _, label }) => {
+					$named = $named.insert(label)
+				}
+				_ => {}
 			}
-			JccTo({ condition: _, label }) | LeaTo({ to: _, label }) => {
-				$named = $named.insert(label)
-			}
-			_ => {}
 		}
+		$named
 	}
-	$named
 }
 
 ## A register known to hold the value of the frame's place at `offset`.

@@ -447,6 +447,10 @@ X86 :: [].{
 	register_index : X86.Register -> U8
 	register_index = |reg| register_number(reg)
 
+	## An xmm register's number, 0 to 15, as its encodings name it.
+	xmm_index : X86.Xmm -> U8
+	xmm_index = |xmm| xmm_number(xmm)
+
 	## The bytes of one instruction alone.
 	instruction_bytes : X86.Instruction -> List(U8)
 	instruction_bytes = |instruction| X86.append_instruction([], instruction)

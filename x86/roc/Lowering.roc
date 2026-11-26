@@ -76,6 +76,7 @@ import Emit
 import Forwarding
 import KnownFunctions
 import LoweringBasics
+import Moves
 import CallLowering
 import IndexLowering
 import OperatorLowering
@@ -192,22 +193,20 @@ items_with_numbers = |program, numbers_arrays| {
 				return Err(Refused(numbers_escape_text))
 			}
 			return match $first_refusal {
-				Ok({}) =>
-					Ok(
-						Forwarding.forward_loads(
-							$items
-								.concat(RuntimeCode.items)
-								.concat(literal_statements(literals))
-								.concat(
-									KnownFunctions.closure_statements({
-										program,
-										makers,
-										statics,
-										escaped_codes: $escaped_codes,
-									}),
-								),
-						),
-					)
+				Ok({}) => {
+					closures = KnownFunctions.closure_statements({
+						program,
+						makers,
+						statics,
+						escaped_codes: $escaped_codes,
+					})
+					statements =
+						$items
+							.concat(RuntimeCode.items)
+							.concat(literal_statements(literals))
+							.concat(closures)
+					Ok(Moves.trim_moves(Forwarding.forward_loads(statements)))
+				}
 				Err(refused) => Err(refused)
 			}
 		}
