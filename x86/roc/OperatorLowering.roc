@@ -1475,7 +1475,11 @@ magic_quotient_items = |{ divisor, signed }| {
 		}
 	rounded =
 		if signed {
-			[Emit.mov(Rax, Rcx), Emit.shr(Rax, 63), Emit.plus(Rdx, Rax)]
+			[
+				Emit.mov(Rax, Rcx),
+				Emit.shr(Rax, 63),
+				Emit.plus(Rdx, Rax),
+			]
 		} else {
 			[]
 		}

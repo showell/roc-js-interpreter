@@ -577,7 +577,8 @@ BuiltinLowering :: [].{
 	keeps_integer : LoweringBasics.Kind -> Bool
 	keeps_integer = |callee|
 		match callee {
-			StaticMethod({ owner: "Math", name }) => ["floor", "ceil", "round", "trunc"].contains(name)
+			StaticMethod({ owner: "Math", name }) =>
+				["floor", "ceil", "round", "trunc"].contains(name)
 			_ => False
 		}
 

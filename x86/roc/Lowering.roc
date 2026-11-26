@@ -1540,7 +1540,8 @@ integers_on_top = |state|
 ## `+ - * %` or a floored `/` with an `Integer` below that stays one
 ## (`integer_binary`), an ordering, `===` or `!==` with an `Integer` below
 ## that its `JumpIfFalse` follows, no other way reaching that jump or that
-## call (`jump_joined` says whether one does), or an index of an array. A literal is `PushNumber`, or a captured number held for good
+## call (`jump_joined` says whether one does), or an index of an array. A
+## literal is `PushNumber`, or a captured number held for good
 ## (`KnownFunctions.constant_numbers`). Lowering asks only where no other
 ## way reaches the place after it, and a program with a `try` makes none (a
 ## throw lands with every variable a value).
@@ -1619,7 +1620,17 @@ integer_binary : LoweringBasics.Site,
 	step : U64,
 	joined : Bool,
 } -> Try(LoweringBasics.Kind, [NotInteger])
-integer_binary = |site, { operator, left, right, callee, step, joined }|
+integer_binary = |
+	site,
+	{
+		operator,
+		left,
+		right,
+		callee,
+		step,
+		joined,
+	},
+|
 	match operator {
 		Divide if !joined and floor_call_at(site, { step, callee }) =>
 			LoweringBasics.integer_floor_quotient(left, right)

@@ -234,11 +234,11 @@ LoweringBasics :: [].{
 	integer_floor_quotient = |left, right|
 		match (left, right) {
 			(Integer(dividend), Integer(divisor)) if divisor.low >= 1 => {
-				first = floored(dividend.low, divisor.low)
+				first = floor_of_quotient(dividend.low, divisor.low)
 				corners = [
-					floored(dividend.low, divisor.high),
-					floored(dividend.high, divisor.low),
-					floored(dividend.high, divisor.high),
+					floor_of_quotient(dividend.low, divisor.high),
+					floor_of_quotient(dividend.high, divisor.low),
+					floor_of_quotient(dividend.high, divisor.high),
 				]
 				low = corners.fold(first, I64.min)
 				high = corners.fold(first, I64.max)
@@ -782,8 +782,8 @@ integer_remainder = |dividend, divisor| {
 }
 
 ## `dividend` over `divisor`, at least 1, rounded down.
-floored : I64, I64 -> I64
-floored = |dividend, divisor| {
+floor_of_quotient : I64, I64 -> I64
+floor_of_quotient = |dividend, divisor| {
 	truncated = dividend // divisor
 	if dividend < 0 and truncated * divisor != dividend {
 		truncated - 1
