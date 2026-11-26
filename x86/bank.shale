@@ -1,6 +1,8 @@
 -- budget: steps=50000000
 -- x86/bank.shale: the bank race, x86/bank/bank_race.js, compiled by js-x86
--- against node, as x86/race.shale runs the fib race. Each contestant makes
+-- against node and against x86/bank/bank_race.roc, its Roc port, built by
+-- Roc's release build (LLVM, --opt=speed, from the shared cache), as
+-- x86/race.shale runs the fib race. Each contestant makes
 -- the same TRANSFERS transfers; the race is the wall time of each one's
 -- whole run. check.shale does not run it: the full size takes minutes, and
 -- its numbers are timings. From the repository's root:
@@ -11,22 +13,28 @@
 --   shale x86/bank.shale size=small runs=5      # five runs of each in turn, and the medians
 --
 -- `transfers=` (or `size=small`) writes a copy of bank_race.js with its
--- `const TRANSFERS` line changed, under the build mount, and both
--- contestants run the copy; unset, the copy is the file as written.
+-- `const TRANSFERS` line changed, under the build mount, and the two JS
+-- contestants run the copy; unset, the copy is the file as written. Roc's
+-- count is its argument, so nothing of the race is known when Roc compiles
+-- it.
 --
 -- It builds js-x86 on the dev backend, writes the race's executable under
--- the build mount, then runs the executable and node, niced, one after the
+-- the build mount, builds bank_race.roc's release executable, then runs the
+-- compiled executable, node and `bank-race-roc N`, niced, one after the
 -- other, never at once (the box has 2 cores), each timed from outside by
 -- its wall clock, start to exit. Each contestant's output is checked by
 -- x86/bank/verify.js, a second implementation of the ledger, run in node to
 -- the same count: its three lines must be verify.js's exactly. Each
 -- contestant's line says its wall time and whether its output matched;
--- node's line adds the ratio of the compiled time to node's.
+-- node's line adds the ratio of the compiled time to node's, and Roc's the
+-- ratio of the compiled time to Roc's.
 
 use("./executables.shale")
 
 const WHO = "x86/bank.shale"
 const RACE = "x86/bank/bank_race.js"
+const ROC_RACE = "x86/bank/bank_race.roc"
+const WANT_ROC_RACE = "x86: bank_race.roc's release executable, a contestant"
 const VERIFY = "x86/bank/verify.js"
 const WANT_VERIFY = "node: verify.js, the second ledger's answer for the race"
 const SMALL_TRANSFERS = 2000000
@@ -113,24 +121,29 @@ function main()
   local copy = dir .. "/bank-bank_race.js"
   replace(copy, race.text)
   local bytes = written_executable(WHO, exe, race.text, path)
+  local roc_exe = built_roc(WHO, ROC_RACE, "bank-race-roc", "speed")
   local want = wanted(race.n)
   local node = run({"node", "--version"}, {timeout_ms = 10000, whole = 1000, want = WANT_NODE})
   local uptime = trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out)
   print(race.n .. " transfers; the race's executable: " .. bytes .. " bytes; node " .. trim(node.out) .. "; " .. uptime)
-  local times = {compiled = {}, node = {}}
+  local times = {compiled = {}, node = {}, roc = {}}
   for i = 1, runs do
     local compiled = raced("compiled", {real(path)}, WANT_BINARY)
     local js = raced("node", {"node", real(copy)}, WANT_NODE)
+    local roc = raced("roc", {roc_exe, "" .. race.n}, WANT_ROC_RACE)
     push(times.compiled, compiled.ms)
     push(times.node, js.ms)
+    push(times.roc, roc.ms)
     print("compiled: " .. secs(compiled.ms) .. ", " .. checked(compiled, want))
     print("node: " .. secs(js.ms) .. ", " .. checked(js, want) .. "; compiled/node " .. ratio(compiled.ms, js.ms))
+    print("roc: " .. secs(roc.ms) .. ", " .. checked(roc, want) .. "; compiled/roc " .. ratio(compiled.ms, roc.ms))
   end
   if runs > 1 then
     local after = trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out)
     local c = median(times.compiled)
     local j = median(times.node)
-    print("medians of " .. runs .. ": compiled " .. secs(c) .. ", node " .. secs(j) .. "; compiled/node " .. ratio(c, j) .. "; " .. after)
+    local k = median(times.roc)
+    print("medians of " .. runs .. ": compiled " .. secs(c) .. ", node " .. secs(j) .. ", roc " .. secs(k) .. "; compiled/node " .. ratio(c, j) .. ", compiled/roc " .. ratio(c, k) .. "; " .. after)
   end
 end
 

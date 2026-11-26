@@ -44,7 +44,7 @@
 -- own gate.
 
 const WANT = "roc-pin: the repository's pinned nightly"
-const ROOTS = {"js-book/app/main.roc", "js/roc/JsApp.roc", "js/roc/JsCanvas.roc", "js/roc/JsDump.roc", "js/roc/JsMachineSize.roc", "js/roc/JsVm.roc", "x86/race/fibonacci_race.roc", "x86/roc/Hello.roc", "x86/roc/JsToX86.roc"}
+const ROOTS = {"js-book/app/main.roc", "js/roc/JsApp.roc", "js/roc/JsCanvas.roc", "js/roc/JsDump.roc", "js/roc/JsMachineSize.roc", "js/roc/JsVm.roc", "x86/bank/bank_race.roc", "x86/race/fibonacci_race.roc", "x86/roc/Hello.roc", "x86/roc/JsToX86.roc"}
 -- The expects `roc test` runs from each of js/'s roots: Canvas.roc's 8 and
 -- NumberText.roc's 11, and NumberText.roc's alone from JsDump.roc, which
 -- imports no Canvas.
