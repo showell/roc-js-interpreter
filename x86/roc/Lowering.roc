@@ -417,6 +417,17 @@ literals_of = |program| {
 	Ok($found)
 }
 
+## The routine that reads the property `key`, written in the program: a
+## method's name of an instance's class's table first, any other own keys
+## first (ObjectTable's header).
+property_reader : LoweringBasics.Site, Str -> Str
+property_reader = |site, key|
+	if KnownFunctions.is_method_name(site.context.makers, key) {
+		ObjectTable.get_method_hashed
+	} else {
+		ObjectTable.get_property_hashed
+	}
+
 ## The key that marks an instance of the class `name`: `þ` (bytes 0xC3
 ## 0xBE) and the name. A program's strings are ASCII, so none is one.
 class_key : Str -> Str
@@ -1258,6 +1269,7 @@ numbers_escaping = |site, { instruction, state }| {
 			}
 		# console.log only reads what it prints.
 		CallMethod({ name: _, site: { count, written: _, at: _ } }) if below(count) == Log => False
+		CallIndexed({ count, written: _, at: _ }) => within(count + 2)
 		CallMethod({ name: _, site: { count, written: _, at: _ } }) =>
 			if below(count) == Method("push") and below(count + 1) == Numbers {
 				!all_numbers(count)
@@ -1300,6 +1312,7 @@ taken_count = |instruction|
 		MakeArray(count) => count
 		Call({ count, written: _, at: _ }) => count
 		CallMethod({ name: _, site: { count, written: _, at: _ } }) => count
+		CallIndexed({ count, written: _, at: _ }) => count
 		_ => 0
 	}
 
@@ -1449,7 +1462,7 @@ instruction_items = |site, { instruction, state, checked }| {
 				Emit.load(Rdi, top_place(0)),
 				Emit.address_of(Rsi, LoweringBasics.text_label(site, key)),
 				Emit.imm(R8, ObjectTable.key_hash(key)),
-				Emit.call(ObjectTable.get_property_hashed),
+				Emit.call(property_reader(site, key)),
 				Emit.store(top_place(0), Rax),
 			]
 			# Of `undefined` or `null`, the runtime throws node's TypeError.
@@ -2135,7 +2148,7 @@ instruction_items = |site, { instruction, state, checked }| {
 								Emit.load(Rdi, top_place(0)),
 								Emit.address_of(Rsi, LoweringBasics.text_label(site, name)),
 								Emit.imm(R8, ObjectTable.key_hash(name)),
-								Emit.call(ObjectTable.get_property_hashed),
+								Emit.call(property_reader(site, name)),
 								Emit.store(next_place, Rax),
 							],
 							LoweringBasics.with_top(state, Value),
@@ -2162,6 +2175,11 @@ instruction_items = |site, { instruction, state, checked }| {
 				)
 			}
 		Call({ count, written: _, at: _ }) => CallLowering.call_items(site, { state, count })
+		# `o[k](...)`: what the key reads, called with `o` as the receiver.
+		CallIndexed({ count, written: _, at: _ }) => {
+			call = { state, count, taken: count + 2 }
+			CallLowering.value_call_items(site, call)
+		}
 		Return => {
 			kind = LoweringBasics.kind_below(state, 0)
 			if !LoweringBasics.is_value_kind(kind) {

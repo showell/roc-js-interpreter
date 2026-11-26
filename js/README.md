@@ -178,9 +178,10 @@ up the chain, and holding its class's table.
   is the class's method, the same function for every instance (`a.m ===
   b.m`, as in node), unless the instance was given a property `m` of its own,
   which then wins.
-- **A method call passes its receiver first**: `o.m(...)` of a method (a
-  function whose form is `Method`, `Bytecode.Code`'s `receiver`) puts `o` in
-  the method's first parameter, `this`.
+- **A method call passes its receiver first**: `o.m(...)`, or `o[k](...)`
+  (`CallIndexed`), of a method (a function whose form is `Method`,
+  `Bytecode.Code`'s `form`) puts `o` in the method's first parameter,
+  `this`. A computed key's call with a spread is refused.
 - **Any other call of a method passes `undefined` there**: a method read off
   an instance and called alone, or passed as a callback, has `this`
   undefined and throws node's TypeError when it reads a property of it.

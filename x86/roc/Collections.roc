@@ -14,6 +14,7 @@
 import Assembly
 import Boxing
 import Emit
+import ObjectTable
 import Runtime
 import RuntimeBuilders
 
@@ -527,7 +528,11 @@ Collections :: [].{
 					Emit.mark("runtime_collection_method_property"),
 					Emit.load(Rdi, RuntimeBuilders.local(8)),
 					Emit.load(Rsi, RuntimeBuilders.local(48)),
-					Emit.call(Runtime.get_property),
+					# A class's method of that name first (ObjectTable's header).
+					Emit.mov(Rdx, Rsi),
+					Emit.call("runtime_text_hash"),
+					Emit.mov(R8, Rax),
+					Emit.call(ObjectTable.get_method_hashed),
 					Emit.mov(Rdi, Rax),
 					Emit.load(Rsi, RuntimeBuilders.local(24)),
 					# A method of the receiver's own takes it first.

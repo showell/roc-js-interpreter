@@ -1581,6 +1581,23 @@ call_compiled = |state, { callee, arguments, at }| {
 				List.concat(holder.ops.append(Do(MethodLookup(name, at))), given.ops).append(Do(call)),
 			)
 		}
+		# `o[k](...)` is a method call too: `o` is the receiver.
+		Index(object, key, key_at) if !spreads => {
+			holder = expression_compiled(state, object)?
+			keyed = expression_compiled(holder.state, key)?
+			given = singles(keyed.state, arguments)?
+			read = holder.ops.append(Do(Duplicate)).concat(keyed.ops).append(Do(GetIndex(key_at)))
+			site = {
+				count: arguments.len(),
+				written: written,
+				at: at,
+			}
+			compiled(given.state, List.concat(read, given.ops).append(Do(CallIndexed(site))))
+		}
+		Index(_, _, _) => {
+			refused = "unsupported: a call by a computed key with a spread"
+			Err(Unsupported("${refused}${ValueRules.line_note(at)}"))
+		}
 		_ => {
 			function = expression_compiled(state, callee)?
 			given = if spreads {

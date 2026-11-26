@@ -135,6 +135,10 @@ Bytecode :: [].{
 		# arguments, on the stack.
 		CallMethod({ name : Str, site : Bytecode.CallSite }),
 		CallMethodSpread({ name : Str, written : Str, at : Ast.Where }),
+		# A method call by a computed key, `o[k](...)`: the receiver, the
+		# value its key reads, then the arguments, on the stack. A class's
+		# method takes the receiver first, as a `CallMethod`'s does.
+		CallIndexed(Bytecode.CallSite),
 		Construct({ count : U64, callee : Ast.Expression, at : Ast.Where }),
 		# A `for ... of`'s iterable made the array it walks: an array as it is,
 		# a string as its characters.

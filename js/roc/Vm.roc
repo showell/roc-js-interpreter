@@ -404,6 +404,10 @@ dispatch! = |host, program, machine, op|
 		CallSpread({ written, at }) => spread_called!(host, program, machine, { written: written, at: at })
 		MethodLookup(name, at) => Instructions.method_looked_up(machine, name, at)
 		CallMethod({ name, site }) => method_called!(host, program, machine, { name: name, site: site })
+		CallIndexed(site) => {
+			calling = Instructions.indexed_calling(machine, site)
+			called!(host, program, machine, calling)
+		}
 		CallMethodSpread({ name, written, at }) => spread_method_called!(host, program, machine, { name: name, written: written, at: at })
 		Construct({ count, callee, at }) => Instructions.constructed(machine, { count: count, callee: callee, at: at })
 		IterStart({ source, at }) => Instructions.iteration_started(machine, source, at)

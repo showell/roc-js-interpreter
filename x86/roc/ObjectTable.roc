@@ -43,6 +43,16 @@
 ##   as everything is while no collector runs.
 ##
 ## No object loses a key: the subset has no `delete`.
+##
+## **A method's name is looked up in the class's table first.** A read
+## whose key is the name of some class's method (Lowering asks
+## `KnownFunctions.is_method_name`) calls `runtime_get_method_hashed`: of an
+## instance, it looks in the instance's class's table before the instance's
+## own keys, which are its fields, so a method call skips the search of the
+## fields it would miss. That is only right while no instance holds an own
+## property its class's table also has, so `runtime_set_property`, adding
+## a key to an instance, sets `Runtime.shadowed_place` when the table holds
+## it, and from then on every such read is the plain one, own keys first.
 import Assembly
 import Boxing
 import Emit
@@ -54,7 +64,13 @@ ObjectTable :: [].{
 
 	## The routines, laid down with Runtime's.
 	items : List(Assembly.Statement)
-	items = [entry_items, index_items, hash_items, hashed_property_items].join()
+	items = [entry_items, index_items, hash_items, hashed_property_items, method_items].join()
+
+	## The routine that reads the property `rsi` of `rdi`, a name some
+	## class's method has, as `runtime_get_property_hashed` does: of an
+	## instance its class's table first (the module's header).
+	get_method_hashed : Str
+	get_method_hashed = "runtime_get_method_hashed"
 
 	## The routine that reads the property `rsi` of `rdi` as
 	## `runtime_get_property` does, the key's hash in `r8`.
@@ -375,6 +391,42 @@ inherited_items = |{ label, entry }|
 			Emit.call(entry),
 			Emit.test(Rax, Rax),
 			Emit.jcc(E, "runtime_get_undefined"),
+			Emit.load(Rax, Emit.mem(Rax, 0)),
+			Emit.ret,
+		])
+
+## `runtime_get_method_hashed`: the key `rsi`, hashed in `r8`, of `rdi`.
+## Of an instance, while no method was ever shadowed, its class's table
+## first; then, or of anything else, `runtime_get_property_hashed`.
+method_items : List(Assembly.Statement)
+method_items =
+	[Emit.mark(ObjectTable.get_method_hashed)]
+		.concat(RuntimeBuilders.tag_load_items(Rdi))
+		.concat([
+			Emit.cmp_imm(Rcx, Boxing.object_tag),
+			Emit.jcc(Ne, Runtime.get_property),
+			Emit.load(Rcx, Runtime.shadowed_place),
+			Emit.test(Rcx, Rcx),
+			Emit.jcc(Ne, ObjectTable.get_property_hashed),
+			Emit.save(Rdi),
+		])
+		.concat(RuntimeBuilders.unboxed_items(Rdi))
+		.concat(RuntimeBuilders.instance_jump_items("runtime_get_method_table"))
+		.concat([
+			Emit.restore(Rdi),
+			Emit.jmp(ObjectTable.get_property_hashed),
+			Emit.mark("runtime_get_method_table"),
+			Emit.load(Rdi, Emit.mem(Rdi, 16)),
+			Emit.load(Rdi, Emit.mem(Rdi, 8)),
+		])
+		.concat(RuntimeBuilders.unboxed_items(Rdi))
+		.concat([
+			Emit.save(R8),
+			Emit.call("runtime_object_entry_hashed"),
+			Emit.restore(R8),
+			Emit.restore(Rdi),
+			Emit.test(Rax, Rax),
+			Emit.jcc(E, ObjectTable.get_property_hashed),
 			Emit.load(Rax, Emit.mem(Rax, 0)),
 			Emit.ret,
 		])

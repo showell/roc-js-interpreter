@@ -203,6 +203,13 @@ Runtime :: [].{
 	pack : Str
 	pack = "runtime_pack"
 
+	## Whether the program has ever given a class's instance an own
+	## property of a name its class's table holds, shadowing a method: 1
+	## once it has, else 0. Set by `runtime_set_property` when it adds the
+	## key, read by ObjectTable's `runtime_get_method_hashed`.
+	shadowed_place : X86.Mem
+	shadowed_place = Emit.mem(R13, 56)
+
 	## The same for a class's method called through a value: the array of
 	## its receiver, in `r8`, then the `rsi` arguments at `rdi`.
 	pack_received : Str
@@ -509,10 +516,11 @@ stack_size = 6 * 1024 * 1024
 
 ## Where the output buffer starts past `r13`, and its size. Before it are
 ## the buffer's fill (`[r13]`), node's inspect depth (8), the innermost
-## `try`'s handler (16, 0 when none waits), and the timers' places, 24 to
-## 48, which `Timers` holds and describes.
+## `try`'s handler (16, 0 when none waits), the timers' places, 24 to
+## 48, which `Timers` holds and describes, and whether a method was ever
+## shadowed (56, `Runtime.shadowed_place`).
 buffer_place : I64
-buffer_place = 56
+buffer_place = 64
 
 buffer_size : I64
 buffer_size = 65536
@@ -1407,6 +1415,30 @@ container_items = {
 			Emit.store(Emit.mem(Rax, 0), Rdx),
 			Emit.ret,
 			Emit.mark("runtime_set_property_new"),
+			# A key new to an instance that its class's table holds shadows a
+			# method: the lookups of methods' names go own-first from then on.
+			Emit.save(Rdi),
+			Emit.save(Rsi),
+			Emit.save(Rdx),
+		])
+		.concat(RuntimeBuilders.instance_jump_items("runtime_set_property_instance"))
+		.concat([
+			Emit.jmp("runtime_set_property_unshadowed"),
+			Emit.mark("runtime_set_property_instance"),
+			Emit.load(Rdi, Emit.mem(Rdi, 16)),
+			Emit.load(Rdi, Emit.mem(Rdi, 8)),
+		])
+		.concat(RuntimeBuilders.unboxed_items(Rdi))
+		.concat([
+			Emit.call("runtime_object_entry"),
+			Emit.test(Rax, Rax),
+			Emit.jcc(E, "runtime_set_property_unshadowed"),
+			Emit.imm(Rax, 1),
+			Emit.store(Runtime.shadowed_place, Rax),
+			Emit.mark("runtime_set_property_unshadowed"),
+			Emit.restore(Rdx),
+			Emit.restore(Rsi),
+			Emit.restore(Rdi),
 			Emit.save(Rdi),
 			Emit.mov(Rdi, Rsi),
 			Emit.call("runtime_is_index_key"),

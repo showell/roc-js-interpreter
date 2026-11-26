@@ -232,6 +232,15 @@ KnownFunctions :: [].{
 		$found
 	}
 
+	## Whether `key` names some class's method in the program (a code whose
+	## form is `Method`, or a parent's method kept for `super`), so that a
+	## read of it looks in an instance's class's table first (ObjectTable's
+	## header).
+	is_method_name : Dict(U64, LoweringBasics.Maker), Str -> Bool
+	is_method_name = |makers, key|
+		key.starts_with("þsuper ")
+			or makers.to_list().any(|(_, maker)| maker.form == Method and maker.name == key)
+
 	## The text console.log writes for each function a value may hold, and the
 	## closure record, in the read-only segment, of each known before the
 	## program runs (`Boxing.function_tag`'s layout, with no captures).

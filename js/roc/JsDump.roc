@@ -170,6 +170,7 @@ instruction_text = |instruction|
 		CallSpread({ written, at: _ }) => "CallSpread(${Str.inspect(written)})"
 		MethodLookup(name, _) => "MethodLookup(${Str.inspect(name)})"
 		CallMethod({ name, site }) => "CallMethod(${Str.inspect(name)}, ${site.count.to_str()})"
+		CallIndexed(site) => "CallIndexed(${site.count.to_str()})"
 		CallMethodSpread({ name, written: _, at: _ }) => "CallMethodSpread(${Str.inspect(name)})"
 		Construct({ count, callee: _, at: _ }) => "Construct(${count.to_str()})"
 		IterStart(_) => "IterStart"

@@ -680,6 +680,17 @@ Instructions :: [].{
 		receiving : Instructions.Receiving,
 	}
 
+	# `o[k](...)`'s call: the value `o[k]` called with `o`, beneath it, as a
+	# method's receiver.
+	indexed_calling : Machine.Machine, Bytecode.CallSite -> Instructions.Calling
+	indexed_calling = |machine, site| {
+		count: site.count,
+		result_at: machine.top - site.count - 2,
+		naming: Written(site.written),
+		at: site.at,
+		receiving: Given(Machine.value_at(machine, site.count + 2)),
+	}
+
 	# The machine after a call too deep, as node throws it: a RangeError.
 	stack_exceeded : Machine.Machine, Ast.Where -> Machine.Machine
 	stack_exceeded = |machine, at|
