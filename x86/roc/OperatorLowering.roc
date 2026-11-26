@@ -411,6 +411,72 @@ OperatorLowering :: [].{
 		}
 	}
 
+	## Where a select's arm finds its known number: a literal's bits, or a
+	## place of the frame.
+	Arm : [Bits(I64), Place(X86.Mem)]
+
+	## An ordering of two known numbers and a conditional of two known numbers
+	## after it, lowered as one with no jump (Lowering's `fused_jump` says
+	## when): the arm `held` when the ordering holds, `otherwise` when it
+	## doesn't, in the place of the ordering's first operand. Both arms'
+	## bits are loaded (`rax`, `rcx`) before the `ucomisd`, and `cmov` on its
+	## flags keeps `held`'s: CF and ZF are clear only when the first is the
+	## greater and neither is a NaN (`cmova`), and CF alone when the first is
+	## at least the second (`cmovae`), so an ordering with a NaN keeps
+	## `otherwise`, as JavaScript's false.
+	selected_items : LoweringBasics.Site,
+	{
+		state : LoweringBasics.State,
+		operator : Ast.BinaryOperator,
+		held : OperatorLowering.Arm,
+		otherwise : OperatorLowering.Arm,
+	} -> LoweringBasics.Lowered
+	selected_items = |site, { state, operator, held, otherwise }| {
+		left = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 2)
+		right = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 1)
+		{ first, second, truthy } = match operator {
+			Less => {
+				first: right,
+				second: left,
+				truthy: A,
+			}
+			LessOrEqual => {
+				first: right,
+				second: left,
+				truthy: Ae,
+			}
+			Greater => {
+				first: left,
+				second: right,
+				truthy: A,
+			}
+			_ => {
+				first: left,
+				second: right,
+				truthy: Ae,
+			}
+		}
+		statements = [
+			Instruction(arm_load(held, Rax)),
+			Instruction(arm_load(otherwise, Rcx)),
+			Instruction(MovsdLoad({ to: Xmm0, from: first })),
+			Instruction(MovsdLoad({ to: Xmm1, from: second })),
+			Instruction(Ucomisd({ left: Xmm0, right: Xmm1 })),
+			Instruction(
+				Cmov({
+					condition: truthy,
+					to: Rcx,
+					from: Rax,
+				}),
+			),
+			Instruction(MovMemReg({ to: left, from: Rcx })),
+		]
+		LoweringBasics.falling(
+			statements,
+			LoweringBasics.with_top(LoweringBasics.without_top(state, 2), Number),
+		)
+	}
+
 	## `===` or `!==` of two values whose kinds aren't both numbers or both
 	## booleans: settled here when their kinds are known to differ, and by
 	## `runtime_strict_equal` otherwise.
@@ -780,3 +846,11 @@ numbers_first_items = |site, { kinds, left, right, fast_items, slow_items }| {
 		.concat(slow_items)
 		.append(Emit.mark(done_label))
 }
+
+## The load of an arm's bits into `to`.
+arm_load : OperatorLowering.Arm, X86.Register -> X86.Instruction
+arm_load = |arm, to|
+	match arm {
+		Bits(value) => MovRegImm({ to, value })
+		Place(from) => MovRegMem({ to, from })
+	}

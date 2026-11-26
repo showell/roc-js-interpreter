@@ -130,6 +130,15 @@ X86 :: [].{
 		Ret,
 		Syscall,
 		MovsdRegReg({ to : X86.Xmm, from : X86.Xmm }),
+		# `from` copied to `to` when the condition holds (`cmovcc`), else `to`
+		# kept: a choice of two values with no jump.
+		Cmov(
+			{
+				condition : X86.Condition,
+				to : X86.Register,
+				from : X86.Register,
+			},
+		),
 		MovsdLoad({ to : X86.Xmm, from : X86.Mem }),
 		MovsdStore({ to : X86.Mem, from : X86.Xmm }),
 		Sse(
@@ -357,6 +366,14 @@ X86 :: [].{
 					opcode: [0x0F, 0x10],
 					reg: xmm_number(to),
 					operand: Direct(xmm_number(from)),
+				}),
+			)
+			Cmov({ condition, to, from }) => append_encoded(
+				out,
+				integer_layout({
+					opcode: [0x0F, 0x40 + condition_code(condition)],
+					reg: register_number(to),
+					operand: Direct(register_number(from)),
 				}),
 			)
 			MovsdLoad({ to, from }) => append_encoded(
@@ -721,6 +738,20 @@ X86 :: [].{
 			from: Xmm1,
 		}),
 	) == "f2 0f 58 c1"
+	expect hex_of(
+		Cmov({
+			condition: Ae,
+			to: Rcx,
+			from: Rax,
+		}),
+	) == "48 0f 43 c8"
+	expect hex_of(
+		Cmov({
+			condition: A,
+			to: R9,
+			from: R10,
+		}),
+	) == "4d 0f 47 ca"
 	expect hex_of(
 		Sse({
 			operation: Subsd,

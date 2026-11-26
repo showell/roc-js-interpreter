@@ -160,6 +160,10 @@ accesses = |instruction|
 			writes: xmm_unit(to),
 		})
 		MovsdLoad({ to, from }) => Ok({ reads: mem_units(from), writes: xmm_unit(to) })
+		Cmov({ condition: _, to, from }) => Ok({
+			reads: both(general_unit(to), general_unit(from)),
+			writes: general_unit(to),
+		})
 		MovsdStore({ to, from }) => Ok({ reads: both(mem_units(to), xmm_unit(from)), writes: 0 })
 		Sse({ operation: _, to, from }) => Ok({
 			reads: both(xmm_unit(to), xmm_unit(from)),

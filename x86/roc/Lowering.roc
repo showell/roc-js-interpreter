@@ -614,15 +614,19 @@ code_walk = |context, heads| {
 					Ok(call) => $calls.append(call)
 					Err(NoCall) => $calls
 				}
-				joined = $pending.contains(at + 1) or looped_to.contains(at + 1)
-				fused = fused_jump(site, { instruction, joined, state: valued.state })
+				joined_at = |place| $pending.contains(place) or looped_to.contains(place)
+				joined = joined_at(at + 1)
+				ahead = [1, 2, 3, 4, 5].any(|step| joined_at(at + step))
+				fused = fused_jump(site, { instruction, joined, ahead, state: valued.state })
 				lowered =
 					if $fused.contains(at) {
 						LoweringBasics.falling([], valued.state)
 					} else {
 						match fused {
-							Fused(done) => {
-								$fused = $fused.append(at + 1)
+							Fused({ done, through }) => {
+								for step in 0..<through {
+									$fused = $fused.append(at + 1 + step)
+								}
 								done
 							}
 							Unfused =>
@@ -760,23 +764,87 @@ loop_targets = |code| {
 ## it, lowered as one (`OperatorLowering.ordered_jump_items`), when no other
 ## way reaches the `JumpIfFalse` (`joined` says whether one does): then the
 ## walk passes the `JumpIfFalse` by.
+##
+## **A SELECT OF TWO KNOWN NUMBERS HAS NO JUMP.** An ordering of two known
+## numbers that a conditional of two arms follows (`JumpIfFalse(2)`, one
+## arm, `Jump(1)`, the other), each arm a number literal or a variable of
+## the frame holding a known number, with no other way reaching any of the
+## five places from the `JumpIfFalse` to the instruction after the second
+## arm (`ahead` says whether one does), is lowered as one
+## (`OperatorLowering.selected_items`): both arms loaded, the `ucomisd`, and
+## a `cmov` that keeps the first arm's bits when the ordering holds. The
+## walk passes the four instructions after the ordering by, and the
+## conditional's value is a known number. `c ? 1 : 0` is such a select.
 fused_jump : LoweringBasics.Site,
 {
 	instruction : Bytecode.Op,
 	joined : Bool,
+	ahead : Bool,
 	state : LoweringBasics.State,
-} -> [Fused(LoweringBasics.Lowered), Unfused]
-fused_jump = |site, { instruction, joined, state }|
-	match (instruction, site.code.ops.get(site.at + 1)) {
+} -> [Fused({ done : LoweringBasics.Lowered, through : U64 }), Unfused]
+fused_jump = |site, { instruction, joined, ahead, state }| {
+	following = |step| site.code.ops.get(site.at + step)
+	match (instruction, following(1)) {
 		(Binary(operator, _), Ok(JumpIfFalse(skip))) if !joined and is_ordering(operator) => {
 			kinds = (LoweringBasics.kind_below(state, 1), LoweringBasics.kind_below(state, 0))
-			if LoweringBasics.are_numeric(kinds) {
-				Fused(OperatorLowering.ordered_jump_items(site, { state, operator, skip }))
-			} else {
-				Unfused
+			arms = match (
+				following(2),
+				following(3),
+				following(4),
+			) {
+				(
+					Ok(chosen),
+					Ok(Jump(1)),
+					Ok(other),
+				) if skip == 2 and !ahead and kinds == (Number, Number) =>
+					match (
+						number_arm(site, { arm: chosen, state }),
+						number_arm(site, { arm: other, state }),
+					) {
+						(Ok(held), Ok(otherwise)) => Ok({ held, otherwise })
+						_ => Err(NoSelect)
+					}
+				_ => Err(NoSelect)
+			}
+			match arms {
+				Ok({ held, otherwise }) => {
+					done = OperatorLowering.selected_items(
+						site,
+						{ state, operator, held, otherwise },
+					)
+					Fused({ done, through: 4 })
+				}
+				Err(NoSelect) =>
+					if LoweringBasics.are_numeric(kinds) {
+						done = OperatorLowering.ordered_jump_items(site, { state, operator, skip })
+						Fused({ done, through: 1 })
+					} else {
+						Unfused
+					}
 			}
 		}
 		_ => Unfused
+	}
+}
+
+## Where a select's arm (`fused_jump`) finds its known number: a literal's
+## bits, or a variable's slot of the frame that holds a known number and no
+## cell.
+number_arm : LoweringBasics.Site,
+{
+	arm : Bytecode.Op,
+	state : LoweringBasics.State,
+} -> Try(OperatorLowering.Arm, [NoArm])
+number_arm = |site, { arm, state }|
+	match arm {
+		PushNumber(number) => Ok(Bits(number.to_bits().to_i64_wrap()))
+		LoadLocal(slot) =>
+			if state.slots.get(slot) == Ok(Ready(Number)) and !site.context.cells.contains(slot) {
+				Ok(Place(LoweringBasics.slot_place(slot)))
+			} else {
+				Err(NoArm)
+			}
+		_ => Err(NoArm)
 	}
 
 ## Whether an operator is one of the four orderings.
