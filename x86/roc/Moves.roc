@@ -77,6 +77,10 @@ Moves :: [].{
 	## A general register's bit in an `Access`.
 	register_bit : X86.Register -> U32
 	register_bit = |register| general_unit(register)
+
+	## An xmm register's bit in an `Access`.
+	xmm_bit : X86.Xmm -> U32
+	xmm_bit = |xmm| xmm_unit(xmm)
 }
 
 ## The registers an instruction reads and writes, as bits: a general

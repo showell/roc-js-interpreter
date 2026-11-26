@@ -1,11 +1,13 @@
 ## This module takes out the loads a function's code makes of a value a
-## general register already holds. The lowering moves every value through the
+## register, general or xmm, already holds. The lowering moves every value through the
 ## frame, an instruction at a time: a value stored to a place on the stack is
 ## loaded back from it by the next instruction, and the load waits for the
 ## store to reach it. `forward_loads` walks the statements once, keeping which
 ## registers hold the value of which places of the frame, and turns such a
 ## load into a move from the register (or into nothing, when it is the same
-## register). The stores all stay, so the frame holds what it held before.
+## register): `mov` or `movsd` between two of one kind, `movq` across. A
+## holder of the load's own kind is preferred, so a value crosses between
+## the kinds only when no register of its kind holds it. The stores all stay, so the frame holds what it held before.
 ##
 ## It knows only the places at `rbp` and the four moves between registers,
 ## the frame and the xmm registers that read or write them. Any other
@@ -48,10 +50,15 @@ Forwarding :: [].{
 							if $holdings.any(|holding| holds(holding, { unit, offset })) {
 								{}
 							} else {
-								match holder($holdings, offset) {
-									Ok(register) => {
+								match holder($holdings, { offset, preferred: is_general }) {
+									Ok(General(register)) => {
 										$out = $out.append(
 											Instruction(MovRegReg({ to, from: register })),
+										)
+									}
+									Ok(Double(xmm)) => {
+										$out = $out.append(
+											Instruction(MovqFromXmm({ to, from: xmm })),
 										)
 									}
 									Err(NotHeld) => {
@@ -59,7 +66,7 @@ Forwarding :: [].{
 									}
 								}
 								$holdings = without_register($holdings, unit).append({
-									register: to,
+									holder: General(to),
 									unit,
 									offset,
 								})
@@ -75,7 +82,7 @@ Forwarding :: [].{
 						Ok(offset) => {
 							$out = $out.append(statement)
 							$holdings = without_place($holdings, offset).append({
-								register: from,
+								holder: General(from),
 								unit: Moves.register_bit(from),
 								offset,
 							})
@@ -86,19 +93,48 @@ Forwarding :: [].{
 						}
 					}
 				Instruction(MovsdLoad({ to, from })) =>
-					match frame_offset(from).map_ok(|offset| holder($holdings, offset)) {
-						Ok(Ok(register)) => {
-							$out = $out.append(Instruction(MovqToXmm({ to, from: register })))
+					match frame_offset(from) {
+						Ok(offset) => {
+							unit = Moves.xmm_bit(to)
+							if $holdings.any(|holding| holds(holding, { unit, offset })) {
+								{}
+							} else {
+								match holder($holdings, { offset, preferred: is_double }) {
+									Ok(Double(xmm)) => {
+										$out = $out.append(
+											Instruction(MovsdRegReg({ to, from: xmm })),
+										)
+									}
+									Ok(General(register)) => {
+										$out = $out.append(
+											Instruction(MovqToXmm({ to, from: register })),
+										)
+									}
+									Err(NotHeld) => {
+										$out = $out.append(statement)
+									}
+								}
+								$holdings = without_register($holdings, unit).append({
+									holder: Double(to),
+									unit,
+									offset,
+								})
+							}
 						}
-						_ => {
+						Err(Elsewhere) => {
 							$out = $out.append(statement)
+							$holdings = without_register($holdings, Moves.xmm_bit(to))
 						}
 					}
-				Instruction(MovsdStore({ to, from: _ })) =>
+				Instruction(MovsdStore({ to, from })) =>
 					match frame_offset(to) {
 						Ok(offset) => {
 							$out = $out.append(statement)
-							$holdings = without_place($holdings, offset)
+							$holdings = without_place($holdings, offset).append({
+								holder: Double(from),
+								unit: Moves.xmm_bit(from),
+								offset,
+							})
 						}
 						Err(Elsewhere) => {
 							$out = $out.append(statement)
@@ -122,12 +158,28 @@ Forwarding :: [].{
 	}
 }
 
-## A register known to hold the value of the frame's place at `offset`.
+## A register known to hold the value of the frame's place at `offset`, and
+## its bit in `Moves.accesses`' sets.
 Held : {
-	register : X86.Register,
+	holder : Holder,
 	unit : U32,
 	offset : I32,
 }
+
+## A general register or an xmm one: either may hold a place's 8 bytes.
+Holder : [General(X86.Register), Double(X86.Xmm)]
+
+## Whether a holder is a general register.
+is_general : Holder -> Bool
+is_general = |held|
+	match held {
+		General(_) => True
+		Double(_) => False
+	}
+
+## Whether a holder is an xmm register.
+is_double : Holder -> Bool
+is_double = |held| !is_general(held)
 
 ## A place's offset from `rbp`, when it is in the frame (at `rbp`, with no
 ## index).
@@ -184,13 +236,21 @@ stores_nothing = |instruction|
 holds : Held, { unit : U32, offset : I32 } -> Bool
 holds = |holding, { unit, offset }| holding.unit == unit and holding.offset == offset
 
-## A register known to hold the value at `offset`.
-holder : List(Held), I32 -> Try(X86.Register, [NotHeld])
-holder = |holdings, offset|
-	match holdings.find_first(|holding| holding.offset == offset) {
-		Ok(holding) => Ok(holding.register)
-		Err(_) => Err(NotHeld)
+## A register known to hold the value at `offset`: one `preferred` takes
+## (of the kind the load writes, so no value crosses between the two kinds
+## of register when it needn't), else any.
+holder : List(Held), { offset : I32, preferred : Holder -> Bool } -> Try(Holder, [NotHeld])
+holder = |holdings, { offset, preferred }| {
+	at = holdings.keep_if(|holding| holding.offset == offset)
+	match at.find_first(|holding| preferred(holding.holder)) {
+		Ok(holding) => Ok(holding.holder)
+		Err(_) =>
+			match at.first() {
+				Ok(holding) => Ok(holding.holder)
+				Err(_) => Err(NotHeld)
+			}
 	}
+}
 
 ## What is known with the register whose bit is `unit` written.
 without_register : List(Held), U32 -> List(Held)
@@ -259,12 +319,20 @@ expect {
 	forwards_to([stored, Mark("here"), loaded], [stored, Mark("here")])
 }
 
-# A store of a double to the place forgets the register that held it.
+# A store of a double to the place forgets the register that held it: the
+# xmm register it came from holds the place now.
 expect {
 	stored = Instruction(MovMemReg({ to: slot(-8), from: Rax }))
 	written = Instruction(MovsdStore({ to: slot(-8), from: Xmm0 }))
 	loaded = Instruction(MovRegMem({ to: Rcx, from: slot(-8) }))
-	forwards_to([stored, written, loaded], [stored, written, loaded])
+	forwards_to(
+		[stored, written, loaded],
+		[
+			stored,
+			written,
+			Instruction(MovqFromXmm({ to: Rcx, from: Xmm0 })),
+		],
+	)
 }
 
 # A register loaded again from elsewhere no longer holds the place.
@@ -369,4 +437,90 @@ expect {
 	pushed = Instruction(Push(Rcx))
 	loaded = Instruction(MovRegMem({ to: Rdi, from: slot(-8) }))
 	forwards_to([stored, pushed, loaded], [stored, pushed, loaded])
+}
+
+# A double stored from an xmm register feeds a load of it into another, and
+# a general load of it.
+expect {
+	stored = Instruction(MovsdStore({ to: slot(-8), from: Xmm1 }))
+	forwards_to(
+		[
+			stored,
+			Instruction(MovsdLoad({ to: Xmm0, from: slot(-8) })),
+			Instruction(MovRegMem({ to: Rax, from: slot(-8) })),
+		],
+		[
+			stored,
+			Instruction(MovsdRegReg({ to: Xmm0, from: Xmm1 })),
+			Instruction(MovqFromXmm({ to: Rax, from: Xmm1 })),
+		],
+	)
+}
+
+# A load into the xmm register that holds the place is taken out, and a
+# general register that holds it is preferred for a general load.
+expect {
+	stored = Instruction(MovMemReg({ to: slot(-8), from: Rcx }))
+	loaded = Instruction(MovsdLoad({ to: Xmm2, from: slot(-8) }))
+	forwards_to(
+		[
+			stored,
+			loaded,
+			Instruction(MovsdLoad({ to: Xmm2, from: slot(-8) })),
+			Instruction(MovRegMem({ to: Rdx, from: slot(-8) })),
+		],
+		[
+			stored,
+			Instruction(MovqToXmm({ to: Xmm2, from: Rcx })),
+			Instruction(MovRegReg({ to: Rdx, from: Rcx })),
+		],
+	)
+}
+
+# An operation on doubles into the holding xmm register forgets it.
+expect {
+	stored = Instruction(MovsdStore({ to: slot(-8), from: Xmm1 }))
+	added = Instruction(
+		Sse({
+			operation: Addsd,
+			to: Xmm1,
+			from: Xmm2,
+		}),
+	)
+	loaded = Instruction(MovsdLoad({ to: Xmm0, from: slot(-8) }))
+	forwards_to([stored, added, loaded], [stored, added, loaded])
+}
+
+# So does a double loaded into it from elsewhere.
+expect {
+	stored = Instruction(MovsdStore({ to: slot(-8), from: Xmm1 }))
+	other = Instruction(
+		MovsdLoad({
+			to: Xmm1,
+			from: Based({
+				base: Rax,
+				index: NoIndex,
+				displacement: 8,
+			}),
+		}),
+	)
+	loaded = Instruction(MovsdLoad({ to: Xmm0, from: slot(-8) }))
+	forwards_to([stored, other, loaded], [stored, other, loaded])
+}
+
+# A store of a double through another base register forgets.
+expect {
+	stored = Instruction(MovsdStore({ to: slot(-8), from: Xmm1 }))
+	elsewhere = Instruction(
+		MovsdStore({
+			to: Based({
+				base: Rax,
+				index: NoIndex,
+				displacement: 0,
+			}),
+			from: Xmm3,
+		}),
+	)
+	loaded = Instruction(MovsdLoad({ to: Xmm0, from: slot(-8) }))
+	forwards_to([stored, elsewhere, loaded], [stored, elsewhere, loaded])
 }

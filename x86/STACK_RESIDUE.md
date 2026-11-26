@@ -97,6 +97,20 @@ Two cheaper changes would get much of this without a new front form:
 
 The two larger costs in these loops come from neither the temporaries nor the front form. One is fourteen's walk index, a double carried through a slot (STEP_STUDY.md, recommendation 4). The other is the call spills and saves in bank.
 
+## After the first cheaper change (2026-11-26)
+
+Forwarding now forgets only the registers an instruction writes (everything still at a store elsewhere, a call, a `push`, a named label or anything `Moves.accesses` can't describe), keeps what it knows past a conditional jump, and forwards between xmm and general registers both ways (`movsd xmm, xmm`, `movq`). Read back with objdump, over each loop's whole body (every path, not the fall-through path counted above), master 9d5c475 against the branch:
+
+| loop | instructions | rbp loads / stores | reg-reg moves (xmm) |
+|---|---|---|---|
+| fib's `addInto`, first loop | 64 / 64 | 9 / 7 to 8 / 7 | 11 (6) to 11 (7) |
+| fourteen's `f` | 115 / 115 | 10 / 10 to 10 / 10 | 21 (12) to 21 (12) |
+| bank's `transfers` | 851 / 851 | 131 / 140 to 129 / 140 | 125 (18) to 125 (20) |
+
+Small sizes, CPU time, median of 5 alternated, niced, load 1.3 to 1.5 (other lanes running): fib F(100,000) 939 to 877 ms, bank 2,000,000 transfers 388 to 405 ms, fourteen 400 rounds 617 to 599 ms. That is within this box's noise.
+
+**It took out far less than this study guessed.** In fib only the array store's load of `s` became a `movq rax, xmm0`. The other pairs are not register-held at the load: `[rbp-0x60]` is stored from `rax` and `rax` is a `movabs` target before the load, and `[rbp-0x68]` is stored from `xmm0` and `xmm0` is reloaded first. The value is gone from every register by the time it is read, so no forwarding pass can take those loads out; what would is the lowering choosing another scratch register. Fourteen's `op` reloads stayed for the same reason. race/README.md's "kept across instructions" attempt found the same.
+
 ## Verdict
 
 **The residue is small where the post-passes run.** Store-then-load traffic of stack places is 4 pairs in fib's 64 instructions, about 2 in fourteen's ~57, and about 12 in bank's ~1,060. What survives is mostly register shuffles. On this CPU, the core removes many plain `mov`s between general registers at rename, so they cost issue slots, not latency. The one large residue is a function Registers declined, big daddy's `add`. There the whole stack machine is still in memory, on the loop's carried chain.
