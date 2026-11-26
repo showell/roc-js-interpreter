@@ -801,7 +801,39 @@ One-shot node, start-up included, is faster at the large sizes too: in the table
 
 ### The fib race
 
-`x86/race/` races the two for 20 seconds on iterative Fibonacci over arrays of base-10^7 limbs, each answer checked against BigInt's. Before the in-line paths, the executable reached F(129808) and node F(348552), about seven times the work, since the work grows as n squared; after them, F(179933) against F(358271), about four times (`x86/race/README.md`, one run each).
+These four programs are measured as they came. One program was tuned for: the fib race, which {{chapter Three compilers, one race}} follows.
+
+## Three compilers, one race
+
+`x86/race/fib_race.js` computes F(740000) with the ordinary iterative algorithm. Its numbers are arrays of base-10^7 limbs, added one into the other in place. Three contestants run it, one after another, each timed from outside as its whole process (`shale x86/race.shale`):
+
+- **js-x86**, this repository's compiler, writing every byte of the executable from Roc;
+- **node**, on the same source;
+- **Roc**, on `x86/race/fibonacci_race.roc`, the same algorithm line for line, with `U64` limbs, built with `--opt=speed`, which hands the code to LLVM.
+
+Each one's whole output, more than 150,000 digits, is held to a stored sha256 of the answer. The rules are fixed: the algorithm stays the ordinary one, node runs the same source, and any trick in the compiler has to be one that would help other programs too.
+
+### Where it stands
+
+One run each on 2026-11-26, at load 0.88 (`x86/race/README.md`, after `8989013`):
+
+| contestant | time | |
+|---|---|---|
+| js-x86 | 55.75 s | 0.74 of node's time |
+| Roc, LLVM | 56.42 s | js-x86 takes 0.99 of it |
+| node | 75.80 s | |
+
+Runs on this box move by about a tenth, so the honest reading is that js-x86 and LLVM's Roc are even, and both beat node by about a quarter. A day earlier, in the race's first form, node did seven times the compiled program's work.
+
+### What the loop costs
+
+The race lives in one loop, `addInto`'s, one limb a time round. Counted with `objdump`, Roc's loop runs 46 to 51 instructions a limb and js-x86's 71. About 25 of js-x86's come from the numbers being JavaScript doubles: moves between the general and the floating-point registers, conversions to whole numbers for indexing, and unboxing an array's address. Roc pays for its own representation in turn: its `U64` arithmetic is checked, three overflow branches a limb, and each list write tests the list's reference count first.
+
+What closed the gap were the fixes that `x86/race/README.md` numbers 1 to 19, every one a general rule with its own test. Among them: an array's length and items read in line, a comparison fused with its jump, a select of two numbers made with a conditional move, which ended the carry's mispredicted branch, and a loop's carried values kept in registers first.
+
+### What remains
+
+The largest lead is an integer loop counter, about 15 instructions a limb, which needs the compiler to carry whole numbers as integers through a loop. The other two races are where node still leads: the bank ledger, about five times, and the fourteen race, about 2.7 times. Both are object and call heavy, where node's hidden classes and inlining pay.
 
 ## What the compiler leaves to an optimizer
 
