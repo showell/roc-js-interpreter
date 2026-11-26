@@ -17,6 +17,7 @@ import BuiltinLowering
 import Emit
 import LoweringBasics
 import Runtime
+import RuntimeBuilders
 import X86
 
 CallLowering :: [].{
@@ -216,6 +217,97 @@ CallLowering :: [].{
 				LoweringBasics.with_top(LoweringBasics.without_top(state, taken), Value),
 			),
 		)
+	}
+
+	## A method call `o.key(...)` of a `Value` its lookup found: when that
+	## value is the closure of one of the codes a class's table may hold
+	## under `key` (`MethodTables`), taking the receiver and `count`
+	## arguments, a direct call of the code, the receiver its first argument
+	## and `rbx` its closure record; any other value, or a receiver that is
+	## no object, the call through the value, `value_call_items`. The test is
+	## exact: a closure's first word is the distance to its code's value
+	## entry, so the same entry is the same code, and the direct entry with
+	## every argument given does what the value entry does.
+	method_call_items : LoweringBasics.Site,
+	{
+		state : LoweringBasics.State,
+		count : U64,
+		key : Str,
+	} -> Try(LoweringBasics.Lowered, [Refused(Str)])
+	method_call_items = |site, { state, count, key }| {
+		slow = value_call_items(site, { state, count, taken: count + 2 })?
+		context = site.context
+		takes_count = |made|
+			match context.program.codes.get(made) {
+				Ok(callee) =>
+					callee.arguments == Each(count + 1) and context.escaped_codes.contains(made)
+				Err(_) => False
+			}
+		guessed = (context.methods.codes.get(key) ?? []).keep_if(takes_count)
+		receiver_kind = LoweringBasics.kind_below(state, count + 1)
+		if guessed.is_empty() or !(receiver_kind == Object or receiver_kind == Value) {
+			return Ok(slow)
+		}
+		depth = state.stack_kinds.len()
+		callee_place = LoweringBasics.stack_place(site.code, depth - count - 1)
+		receiver_place = LoweringBasics.stack_place(site.code, depth - count - 2)
+		slow_label = LoweringBasics.inner_label(site, "method_call_slow")
+		done_label = LoweringBasics.inner_label(site, "method_call_done")
+		direct_label = |made| LoweringBasics.inner_label(site, "method_call_${made.to_str()}")
+		pushed = arguments_pushed(site, { state, count })?
+		opened =
+			[Emit.load(Rax, callee_place)]
+				.concat(RuntimeBuilders.tag_load_items(Rax))
+				.concat([
+					Emit.cmp_imm(Rcx, Boxing.function_tag),
+					Emit.jcc(Ne, slow_label),
+					Emit.shl(Rax, 16),
+					Emit.shr(Rax, 16),
+					Emit.mov(Rbx, Rax),
+					Emit.load(Rax, Emit.mem(Rbx, 0)),
+					Emit.plus(Rax, Rbx),
+				])
+		# The first guess's direct call follows its test, which jumps away
+		# when it misses; each other guess's test jumps to its own.
+		(first, others) = match guessed {
+			[one, .. as rest] => (one, rest)
+			[] => crash "CallLowering.method_call_items: a guess, tested above"
+		}
+		entry_test = |made| [
+			Emit.address_of(Rcx, LoweringBasics.value_label(made)),
+			Emit.cmp(Rax, Rcx),
+		]
+		tests =
+			others
+				.map(|made| entry_test(made).append(Emit.jcc(E, direct_label(made))))
+				.join()
+				.concat(entry_test(first))
+				.append(Emit.jcc(Ne, slow_label))
+		directs =
+			[first]
+				.concat(others)
+				.map(
+					|made|
+						[Emit.mark(direct_label(made))]
+							.concat(pushed)
+							.concat([
+								Emit.load(Rax, receiver_place),
+								Emit.save(Rax),
+								CallTo(LoweringBasics.code_label(made)),
+								Emit.plus_imm(Rsp, (8 * (count + 1)).to_i64_wrap()),
+								Emit.store(receiver_place, Rax),
+								Emit.jmp(done_label),
+							]),
+				)
+				.join()
+		statements =
+			opened
+				.concat(tests)
+				.concat(directs)
+				.append(Emit.mark(slow_label))
+				.concat(slow.statements)
+				.append(Emit.mark(done_label))
+		Ok({ ..slow, statements })
 	}
 
 	## A closure made as the program runs: its record taken from the heap, the

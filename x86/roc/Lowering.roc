@@ -3324,13 +3324,13 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 					)
 				}
 			}
-		CallMethod({ name: _, site: { count, written: _, at: _ } }) =>
+		CallMethod({ name: key, site: { count, written: _, at: _ } }) =>
 			match LoweringBasics.kind_below(state, count) {
 				Log => BuiltinLowering.log_items(site, { state, count })
 				Method(name) => BuiltinLowering.array_method_items(site, { state, name, count })
 				StaticMethod({ owner, name }) =>
 					BuiltinLowering.static_call_items(site, { state, count, owner, name })
-				Value => CallLowering.value_call_items(site, { state, count, taken: count + 2 })
+				Value => CallLowering.method_call_items(site, { state, count, key })
 				kind => LoweringBasics.refusal(
 					site,
 					"a method call of ${LoweringBasics.kind_phrase(kind)} is not compiled yet",
