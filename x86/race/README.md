@@ -226,3 +226,13 @@ The 20-second race after 17, on master 2e75bb5's fib_race.js (its digitsOf joins
     node:             reached F(358413): 74904 digits, elapsed 19967 ms of 20000, PASS (exit 0)
 
 The branch's run reached further and then ran out of the 1 GiB heap in `join`, which is quadratic, while building the 88,888 digits. That is another lane's fix, in ArrayMethods.roc. So `x86/race.shale` couldn't check its whole number against BigInt, and this pair was run outside it. Its F(1000) and F(100) checks and its first and last digits were printed before the verdict. From master's F(401,572), about 1.12 times the work. This node run is among the slow ones (F(384,308) in the last section's pair); against it, the compiled program did about 1.4 times node's work.
+
+The same pair again, rebased on master ce5318a (`join` linear), through `x86/race.shale`, the branch's run first (load 0.84), then master's (load 1.07):
+
+    compiled: F(428596), 89571 digits, elapsed 19975 ms, PASS, verified; after the verdict 7 ms (wall 19982 ms)
+    node: F(373069), 77967 digits, elapsed 19955 ms, PASS, verified; after the verdict 53 ms (wall 20008 ms)
+
+    master, compiled: F(420284), 87834 digits, elapsed 19971 ms, PASS, verified; after the verdict 5 ms (wall 19976 ms)
+    master, node: F(372032), 77750 digits, elapsed 19972 ms, PASS, verified; after the verdict 77 ms (wall 20049 ms)
+
+About 1.04 times master's work, as the 1-second medians said, and about 1.32 times the work of the node run beside it. The whole number is now printed in 7 ms.
