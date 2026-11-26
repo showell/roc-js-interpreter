@@ -122,6 +122,7 @@ import MethodTables
 import ObjectTable
 import CallLowering
 import IndexLowering
+import Inlining
 import OperatorLowering
 import Registers
 import Runtime
@@ -135,26 +136,58 @@ Lowering :: [].{
 	## lowered yet.
 	program_items : Bytecode.Program -> Try(List(Assembly.Statement), [Refused(Str)])
 	program_items = |compiled| {
-		program = { ..compiled, codes: compiled.codes.map(threaded_skips) }
-		# Any refusal with arrays of numbers on may be one of an array of
-		# numbers escaping, or of whole numbers taking another, so the program
-		# is lowered again with fewer of them, and the last answer, a refusal
-		# or the code, is the program's.
-		rules =
-			if has_integer_items(program) {
-				[IntegerItems, NumberItems, AnyItems]
-			} else {
-				[NumberItems, AnyItems]
-			}
-		var $answer = Err(Refused("Lowering.program_items: no rule"))
-		for rule in rules {
-			$answer = items_with_numbers(program, rule)
-			if $answer.is_ok() {
-				return $answer
+		lowered = Lowering.program_lowering(compiled)?
+		Ok(lowered.statements)
+	}
+
+	## The program's machine code, and how many call sites `Inlining` put
+	## in line and the instructions their bodies placed: the inlined
+	## program's, or the program's as it was when the inlined one is refused,
+	## so inlining never refuses a program.
+	program_lowering : Bytecode.Program -> Try(
+		{ statements : List(Assembly.Statement), inlined : { sites : U64, instructions : U64 } },
+		[Refused(Str)],
+	)
+	program_lowering = |compiled| {
+		threaded = { ..compiled, codes: compiled.codes.map(threaded_skips) }
+		inlining = Inlining.inlined_program(threaded)
+		if inlining.sites > 0 {
+			match rules_items(inlining.program) {
+				Ok(statements) => return Ok({
+					statements,
+					inlined: { sites: inlining.sites, instructions: inlining.instructions },
+				})
+				Err(_) => {}
 			}
 		}
-		$answer
+		rules_items(threaded).map_ok(
+			|statements| { statements, inlined: { sites: 0, instructions: 0 } },
+		)
 	}
+}
+
+## The program's machine code under the first rule for arrays of numbers
+## that lowers it.
+rules_items : Bytecode.Program -> Try(List(Assembly.Statement), [Refused(Str)])
+rules_items = |program| {
+	# Any refusal with arrays of numbers on may be one of an array of
+	# numbers escaping, or of whole numbers taking another, so the program
+	# is lowered again with fewer of them, and the last answer, a refusal
+	# or the code, is the program's.
+	rules =
+		if has_integer_items(program) {
+			[IntegerItems, NumberItems, AnyItems]
+		} else {
+			[NumberItems, AnyItems]
+		}
+	var $answer = Err(Refused("Lowering.program_items: no rule"))
+	for rule in rules {
+		$answer = items_with_numbers(program, rule)
+		if $answer.is_ok() {
+			return $answer
+		}
+	}
+	$answer
 }
 
 ## A code with each `SkipIfFalsy` that comes to a `JumpIfFalse` made that

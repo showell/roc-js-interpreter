@@ -8,6 +8,11 @@
 --   - each program in x86/tests/ is compiled to a static executable under the
 --     build mount and run, and what it printed and its exit code must be
 --     node's for the same program, exactly;
+--   - the call sites x86/roc/Inlining.roc puts in line across x86/tests/, and
+--     the instructions their bodies place, must be INLINED exactly, so the
+--     code's growth can't creep unseen; a program whose first line is
+--     `// inlined: <sites> sites, <instructions> instructions` is held to
+--     its own count too;
 --   - each program in x86/tests/refused/ names in its first line what it must
 --     come to: `// refused: <text>`, a line js-x86 prints as it exits 1
 --     without writing an executable, or `// stops: <text>`, a line the
@@ -31,6 +36,9 @@ use("./executables.shale")
 const WHO = "x86/programs.shale"
 const CORPUS = "x86/corpus.txt"
 const REPORT = arg("corpus", "held") == "report"
+-- The sites and instructions inlined across x86/tests/: a commit that moves
+-- it says why.
+const INLINED = "inlined: 13 sites, 73 instructions"
 
 function js_files(dir)
   local out = {}
@@ -61,6 +69,19 @@ function held_to_node(exe, dir, js_path)
   if r.ended ~= "exit" or r.code ~= 0 then return "the executable ended " .. r.ended .. " " .. r.code .. ": " .. trim(r.out) end
   if r.out ~= n.out then return "it printed " .. json_write(r.out) .. ", node " .. json_write(n.out) end
   return nil
+end
+
+-- What the driver says it inlined in the program at `js_path`: `{sites,
+-- instructions}`, and why it differs from the count the program's first line holds,
+-- or nil.
+function inlined_count(exe, js_path)
+  local said = trim(driver_run(exe, read(js_path), "inlined").out)
+  local m = re_find(said, "^inlined: ([0-9]+) sites, ([0-9]+) instructions$")
+  if m == nil then return {sites = 0, instructions = 0, why = "js-x86 inlined said " .. json_write(said)} end
+  local counted = {sites = tonumber(m.groups[1]), instructions = tonumber(m.groups[2])}
+  local held = re_find(lines(read(js_path))[1], "^// (inlined: .+)$")
+  if held ~= nil and held.group ~= said then counted.why = "it inlined " .. json_write(said) .. ", its first line holds " .. json_write(held.group) end
+  return counted
 end
 
 -- Why the refused program at `js_path` failed, or nil.
@@ -147,11 +168,19 @@ function main()
   local wrong = {}
   local held = js_files("x86/tests")
   local refused = js_files("x86/tests/refused")
+  local sites = 0
+  local instructions = 0
   for p in held do
     local why = held_to_node(exe, dir, p)
     if why ~= nil then push(wrong, p .. ": " .. why) end
+    local counted = inlined_count(exe, p)
+    if has_key(counted, "why") then push(wrong, p .. ": " .. counted.why) end
+    sites = sites + counted.sites
+    instructions = instructions + counted.instructions
     yield()
   end
+  local inlined = "inlined: " .. sites .. " sites, " .. instructions .. " instructions"
+  if inlined ~= INLINED then push(wrong, "x86/tests/: " .. inlined .. ", and INLINED holds " .. json_write(INLINED)) end
   for p in refused do
     local why = held_to_refusal(exe, dir, p)
     if why ~= nil then push(wrong, p .. ": " .. why) end
@@ -160,6 +189,7 @@ function main()
   if #wrong > 0 then fail(WHO .. ": " .. #wrong .. " of " .. (#held + #refused) .. " programs failed:\n" .. join(wrong, "\n")) end
   local corpus = corpus_check(exe, dir)
   if #corpus.wrong > 0 and not REPORT then fail(WHO .. ": the corpus differs from " .. CORPUS .. ":\n" .. join(corpus.wrong, "\n")) end
+  print("x86/programs: " .. inlined .. " across x86/tests/")
   print("x86/programs: " .. #held .. " programs printed what node prints, " .. #refused .. " came to their refusals, and " .. corpus.matched .. " of the corpus's " .. corpus.all .. " match node, held exactly to " .. CORPUS)
 end
 

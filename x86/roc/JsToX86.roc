@@ -21,10 +21,11 @@ import Lowering
 import X86
 
 main! = |arguments| {
-	match arguments.get(0) {
-		Ok(src) => write_program!(src)
-		Err(_) => {
-			echo!("usage: js-x86 \"<program>\"\n")
+	match (arguments.get(0), arguments.get(1)) {
+		(Ok(src), Err(_)) => write_program!(src)
+		(Ok(src), Ok("inlined")) => write_inlined!(src)
+		_ => {
+			echo!("usage: js-x86 \"<program>\" [inlined]\n")
 			Err(Exit(2))
 		}
 	}
@@ -44,9 +45,43 @@ write_program! = |src| {
 	}
 }
 
+## The line `inlined: <sites> sites, <instructions> instructions` for a
+## program that lowers:
+## how many call sites Inlining put in line, and the instructions their
+## bodies placed, for x86/programs.shale's held count.
+write_inlined! : Str => Try({}, [Exit(I8)])
+write_inlined! = |src| {
+	match lowering_of(src) {
+		Ok(lowered) => {
+			sites = lowered.inlined.sites.to_str()
+			instructions = lowered.inlined.instructions.to_str()
+			echo!("inlined: ${sites} sites, ${instructions} instructions\n")
+			Ok({})
+		}
+		Err(why) => {
+			echo!("js-x86: ${why}\n")
+			Err(Exit(1))
+		}
+	}
+}
+
 ## The executable a program compiles to, or why it doesn't.
 executable_of : Str -> Try(List(U8), Str)
 executable_of = |src| {
+	lowered = lowering_of(src)?
+	match Assembly.assemble(lowered.statements) {
+		Ok(code) => Ok(Elf.executable(code))
+		Err(UnknownLabel(label)) => Err("no label ${label}")
+		Err(DuplicateLabel(label)) => Err("the label ${label} is marked twice")
+	}
+}
+
+## A program's lowering, or why it has none.
+lowering_of : Str -> Try(
+	{ statements : List(Assembly.Statement), inlined : { sites : U64, instructions : U64 } },
+	Str,
+)
+lowering_of = |src| {
 	tree = match Parser.program_of(src, Core) {
 		Ok(parsed) => parsed
 		Err(fault) => {
@@ -58,13 +93,8 @@ executable_of = |src| {
 		Ok(compiled) => compiled
 		Err(Unsupported(why)) => return Err(why)
 	}
-	items = match Lowering.program_items(program) {
-		Ok(lowered) => lowered
-		Err(Refused(why)) => return Err("refused: ${why}")
-	}
-	match Assembly.assemble(items) {
-		Ok(code) => Ok(Elf.executable(code))
-		Err(UnknownLabel(label)) => Err("no label ${label}")
-		Err(DuplicateLabel(label)) => Err("the label ${label} is marked twice")
+	match Lowering.program_lowering(program) {
+		Ok(lowered) => Ok(lowered)
+		Err(Refused(why)) => Err("refused: ${why}")
 	}
 }

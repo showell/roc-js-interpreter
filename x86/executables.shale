@@ -53,9 +53,12 @@ function expects_passed(who, root)
 end
 
 -- What a driver run printed and how it ended: `{code, out}`, the code -1
--- when it didn't exit.
-function driver_run(exe, argument)
-  local r = run({exe, argument}, {timeout_ms = 60000, whole = 4000000, want = WANT_DRIVER})
+-- when it didn't exit. `mode`, when given, is the driver's second argument
+-- (js-x86's `inlined`).
+function driver_run(exe, argument, mode?)
+  local argv = {exe, argument}
+  if mode ~= nil then push(argv, mode) end
+  local r = run(argv, {timeout_ms = 60000, whole = 4000000, want = WANT_DRIVER})
   if r.ended ~= "exit" then return {code = -1, out = r.out} end
   return {code = r.code, out = r.out}
 end
