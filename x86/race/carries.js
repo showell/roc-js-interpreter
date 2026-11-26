@@ -6,7 +6,7 @@
 // times is what mispredicting the branch costs, for js-x86's executable and
 // for node; x86/race/README.md has the numbers. It prints only times, so no
 // gate runs it.
-onst BASE = 10000000;
+const BASE = 10000000;
 function addInto(a, b) {
   const aLength = a.length;
   let carry = 0;
