@@ -4,17 +4,24 @@ A small book about [roc-js-interpreter](https://github.com/showell/roc-js-interp
 
 ## Introduction
 
-roc-js-interpreter holds two programs that run one subset of JavaScript, both written in [Roc](https://www.roc-lang.org/). `js-x86`, in `x86/`, is an ahead-of-time compiler: it turns a program into a static Linux x86-64 executable. `js-vm`, in `js/`, is an interpreter: it turns the program into bytecode and runs that on a virtual machine. The two share a front end, the lexer, the parser, the resolver and the bytecode compiler, so they read a program's text the same way.
+roc-js-interpreter holds two programs that run one subset of JavaScript, and [Roc](https://www.roc-lang.org/) is the language of both. `js-x86`, in `x86/`, is an ahead-of-time compiler: it turns a program into a static Linux x86-64 executable. `js-vm`, in `js/`, is an interpreter: it turns the program into bytecode and runs that on a virtual machine. The two share a front end (the lexer, the parser, the resolver and the bytecode compiler), so they read a program's text the same way.
 
-This book is for a reader who knows programming and is new to this codebase, and above all for one curious about writing a language's tools in a language that has only values. AI coding agents (Claude) wrote the code, with human supervision, starting on 2026-11-23 (`30837f8e`).
+AI coding agents (Claude) wrote the code, with human supervision, starting on 2026-11-23 (`30837f8e`). This book is the record of that work and a reference for whoever guides it next. Every claim in it names the commit or file that backs it. Its central finding is about Roc itself: Roc writes a list in place only while one owner holds it, and a second owner turns each write into a copy of the whole list. Both programs were shaped around that rule, and a reader steering either one needs to know where it bites.
+
+The book is written for a reader who knows programming and is new to this codebase, and above all for one curious about writing a language's tools in a language that has only values.
 
 ### What it runs
 
 The subset is real JavaScript: numbers, strings, arrays, objects, closures, `let` and `const`, `try` and `finally`, `switch`, destructuring, optional chains, spread, Maps and Sets, and the timers. Classes run too, as syntax sugar the parser writes as plain functions (`0b6d8deb`). `this` outside a class's code, `new` on a program's own function and prototypes stay outside it, and `js/README.md` says why: each would make every call carry a receiver or every property read walk a prototype chain.
 
-The interpreter runs all 63 programs of the corpus in `js/tests/`, and the compiler 51 of them (`x86/README.md`, "The corpus", 2026-11-27).
+Where the two programs stood on 2026-11-27, on the 63 programs of the corpus in `js/tests/`:
 
-### Who judges it
+| program | folder | corpus programs it runs as node does | held there by | source |
+|---|---|---|---|---|
+| `js-vm`, the interpreter | `js/` | 63 of 63 | `js/oracle.shale` | `js/README.md` |
+| `js-x86`, the compiler | `x86/` | 51 of 63 | `x86/programs.shale` | `x86/README.md`, "The corpus" |
+
+### Node as the oracle
 
 Every program in the subset is real JavaScript, so node is a free oracle, and it judges both programs.
 
@@ -37,7 +44,14 @@ digraph {
 }
 ```
 
-`js/oracle.shale` runs each program in `js/tests/` through node 22 and through `js-vm`, and the two transcripts, exit codes included, must match byte for byte; `x86/programs.shale` holds each executable's output and exit code to node's the same way. A program outside the subset gets an error that names what it used: each program in `js/tests/refused/` names, on its first line, the message `js-vm` must end with. The corpus grew from 32 programs and 25 refusals on the first day (`278631d8`) to 63 and 79 by 2026-11-27 (`js/README.md`, its status line). Program 54, `54-big-daddy.js`, is a day in a small city that uses every feature of the subset, and it is also the playground's "all features" sample (`7d6a472f`, `cc904c2a`).
+`js/oracle.shale` runs each program in `js/tests/` through node 22 and through `js-vm`, and the two transcripts, exit codes included, must match byte for byte. `x86/programs.shale` holds each executable's output and exit code to node's the same way. A program outside the subset gets an error that names what it used: each program in `js/tests/refused/` names, on its first line, the message `js-vm` must end with. The corpus grew over the five days:
+
+| when | corpus programs | refused programs | source |
+|---|---|---|---|
+| the first day | 32 | 25 | `278631d8` |
+| 2026-11-27 | 63 | 79 | `js/README.md`, its status line |
+
+Program 54, `54-big-daddy.js`, is a day in a small city that uses every feature of the subset, and it is also the playground's "all features" sample (`7d6a472f`, `cc904c2a`).
 
 ### The playground
 
@@ -55,15 +69,24 @@ The project began as a folder of [roc-apps](https://github.com/showell/roc-apps)
 
 ### The order of the book
 
-{{chapter How it got here}} is the project's short history. Part I is the machinery the two programs share: {{chapter The front end}}, and {{chapter Roc's copy rule}}, which both lean on. Part II is the compiler, from {{chapter The compiler to x86-64}} on. For Roc it is the simpler program, one pure function from a program's text to an executable's bytes, so it comes first. Part III is the interpreter, from {{chapter The interpreter}} on, which carries what the compiler hands to the processor: the program's effects, a heap, a collector and a page. Part IV, from {{chapter Why a compiler suits Roc}} on, is what building the two taught about Roc.
+{{chapter How it got here}} is the project's short history. Four parts follow it:
+
+| part | starts at | what it covers |
+|---|---|---|
+| I: Shared machinery | {{chapter The front end}} | the front end, and {{chapter Roc's copy rule}}, which both programs lean on |
+| II: The compiler | {{chapter The compiler to x86-64}} | one pure function from a program's text to an executable's bytes, the simpler program for Roc, so it comes first |
+| III: The interpreter | {{chapter The interpreter}} | what the compiler hands to the processor: the program's effects, a heap, a collector and a page |
+| IV: What Roc taught | {{chapter Why a compiler suits Roc}} | the lessons about Roc, its two builds and its build times |
+
+A reader who came for the copy cliff can read four chapters in order: {{chapter Roc's copy rule}}, {{chapter Memory strategy}}, {{chapter The garbage collector}} and {{chapter Handing the machine on}}.
 
 ## Motivation
 
-The main reason is to push Roc on performance. An interpreter is a hard workload for a language of values: its heap must stay unique to be written in place, its machine record is handed on at every step, and it allocates all the time. The compiler pushes from the other side: Roc writes every byte of its executables, which race node and Roc's own LLVM build ({{chapter Three compilers, one race}}).
+The main reason is to push Roc on performance. An interpreter is a hard workload for a language of values. Its heap must keep a single owner to be written in place ({{chapter Roc's copy rule}}), its machine record is handed on at every step, and it allocates all the time. The compiler pushes from the other side: Roc writes every byte of its executables, which race node and Roc's own LLVM build ({{chapter The fib race}}).
 
-It stress-tests Roc's toolchain too. RC1's release builds are slow, the work turned up list-copy bugs that went upstream, and compile-time evaluation can run a program during `roc check`.
+It stress-tests Roc's toolchain too. The project builds with RC1, a release candidate of Roc, whose release builds are slow. The work turned up list-copy bugs that went upstream, and compile-time evaluation can run a program during `roc check`.
 
-It teaches what copies. {{chapter Roc's copy rule}} and the habits of {{chapter Handing the machine on}} are meant for any Roc user's code.
+It teaches what copies. {{chapter Roc's copy rule}} and the habits of {{chapter Handing the machine on}} apply to any Roc user's code.
 
 A pure functional language hosting a mutable, effectful one is a consequence of the project, not its goal. An underlying goal is to see how far AI coding agents, with human supervision, can take a Roc project. And it is fun to build things in Roc.
 
@@ -73,15 +96,47 @@ The book is written for the Roc community first.
 
 ## How it got here
 
-This chapter is the history, a section a day. The interpreter came first, and the compiler was built on its front end.
+The whole project took five days, 2026-11-23 to 2026-11-27, and this chapter gives one section to each. The interpreter came first, and the compiler was built on its front end. Every step names its commit, so a reader can check out the code as it stood that day.
+
+The five days
+```dot
+digraph {
+  rankdir=TB;
+  node [shape=box, style=rounded];
+  d23 [label="11-23: a tree-walker"];
+  d24 [label="11-24: the VM;\nthe first executable"];
+  d25 [label="11-25: the compiler\non the corpus"];
+  d26 [label="11-26: method tables;\nRoc joins the race"];
+  d27 [label="11-27: a collector for\nthe compiled programs"];
+  d23 -> d24 -> d25 -> d26 -> d27;
+}
+```
 
 ### 2026-11-23: a tree-walker
 
-The first interpreter walked the tree (`30837f8e`), its whole state one value threaded through the walk: the heap, the scopes, the output and the step count. The same day it gained the node oracle, a wasm page with an editor and a Run button (`6a0ea512`), exact allocation counts (`84263a4b`), variables resolved to slots before the run (`920cda0c`), a canvas behind a host of effects (`65a8d71a`), and timers and clicks on one queue with a virtual clock (`941e9e67`). By the end of the day the walker passed 50 of 50 corpus programs and 44 of 44 refusals.
+The first interpreter walked the tree (`30837f8e`). Its whole state was one value threaded through the walk: the heap, the scopes, the output and the step count. It grew fast that day:
+
+| what the walker gained on its first day | commit |
+|---|---|
+| the node oracle, and a wasm page with an editor and a Run button | `6a0ea512` |
+| exact allocation counts | `84263a4b` |
+| variables resolved to slots before the run | `920cda0c` |
+| a canvas behind a host of effects | `65a8d71a` |
+| timers and clicks on one queue, with a virtual clock | `941e9e67` |
+
+By the end of the day the walker passed 50 of 50 corpus programs and 44 of 44 refusals.
 
 ### 2026-11-24: the VM, and the compiler's first programs
 
-The bytecode VM was built beside the walker in three rounds. The first (`fe85d386`) matched node on 37 of 50 programs and refused the other 13; the second (`60466bc7`, `b69660c4`) added exceptions, `switch`, destructuring, Maps and Sets and the timers, and reached 50 of 50; the third (`abb4fc0a`) added a mark-sweep collector, which took the heap programs' peaks of 40 to 164 MB down to about 4 MB (`62110109`). The playground moved onto the VM (`fd9fb4e4`), and the walker was deleted (`aef0658b`). The page gained a memory view (`668c52ca`), a speed fix brought the VM's machine record under 256 bytes (`3aba5cf7`), and classes came as syntax sugar (`0b6d8deb`). The project moved from roc-apps to its own repository the same day.
+The bytecode VM was built beside the walker in three rounds:
+
+| round | commits | what it added | where it stood after |
+|---|---|---|---|
+| first | `fe85d386` | the VM itself | matched node on 37 of 50 programs, refused the other 13 |
+| second | `60466bc7`, `b69660c4` | exceptions, `switch`, destructuring, Maps and Sets, the timers | 50 of 50 |
+| third | `abb4fc0a` | a mark-sweep collector | the heap programs' peaks of 40 to 164 MB down to about 4 MB (`62110109`) |
+
+The playground moved onto the VM (`fd9fb4e4`), and the walker was deleted (`aef0658b`). The page gained a memory view (`668c52ca`), a speed fix brought the VM's machine record under 256 bytes (`3aba5cf7`), and classes came as syntax sugar (`0b6d8deb`). The project moved from roc-apps to its own repository the same day.
 
 At 20:39 UTC the compiler made its first executable, a hello world (`c3ff721`), and 47 minutes later it compiled a recursive `fib` to node's answer (`0c5ea7e`).
 
@@ -91,7 +146,7 @@ By 01:21 UTC the compiler ran 45 of the 61 programs the corpus then held exactly
 
 ### 2026-11-26: method tables, and a third contestant
 
-The methods moved off the instances (`e4834f9`): each class got one table of its methods, each method one function whose first parameter is the receiver, so that the compiler can call a method directly once it knows the receiver's class (`555b245`). Roc's own build of the fib race joined as a third contestant (`ee99278`), and the compiler came out even with it ({{chapter Three compilers, one race}}). The same day the compiler gained an integer kind for whole numbers proved in range (`81b5809`) and put small leaf functions in line at their calls inside loops (`7810da3`).
+The methods moved off the instances (`e4834f9`): each class got one table of its methods, each method one function whose first parameter is the receiver, so that the compiler can call a method directly once it knows the receiver's class (`555b245`). Roc's own build of the fib race joined as a third contestant (`ee99278`), and the compiler came out even with it ({{chapter The fib race}}). The same day the compiler gained an integer kind for whole numbers proved in range (`81b5809`) and put small leaf functions in line at their calls inside loops (`7810da3`).
 
 ### 2026-11-27: a collector for the compiled programs
 
@@ -99,7 +154,7 @@ The compiled programs' heap gained a header on every block and pages of one bloc
 
 ## The front end
 
-Both programs start from one front end: four stages, each a module in `js/roc/`, that turn a program's text into bytecode. This chapter follows a program through them, to the point where the two programs part.
+Both programs start from one front end: four stages, each a module in `js/roc/`, that turn a program's text into bytecode. A new piece of the language lands here first, and both programs see it at once. This chapter follows a program through the four stages, to the point where the two programs part.
 
 ### Four stages, two back ends
 
@@ -122,10 +177,14 @@ digraph {
 }
 ```
 
-- **`Lexer.roc`** makes tokens, each with its line and column.
-- **`Parser.roc`** reads them into `Ast.roc`'s tree by recursive descent, and lays out each scope's names as it goes. It also writes each class as plain functions, through `ClassDesugaring.roc`.
-- **`Resolve.roc`** places every name before the run: each read, write and declaration learns how many scopes out its variable lives and where it sits there. Each back end then reads a variable by its place, and only `Resolve` compares variables' names.
-- **`Compile.roc`** lays out each function's frame and makes each function, and the program itself, a flat list of `Bytecode.roc`'s instructions. Every jump is relative to the instruction after it, so a piece of compiled code means the same wherever it lands.
+| stage | what it does |
+|---|---|
+| `Lexer.roc` | makes tokens, each with its line and column |
+| `Parser.roc` | reads them into `Ast.roc`'s tree by recursive descent, and lays out each scope's names as it goes; it also writes each class as plain functions, through `ClassDesugaring.roc` |
+| `Resolve.roc` | places every name before the run: each read, write and declaration learns how many scopes out its variable lives and where it sits there |
+| `Compile.roc` | lays out each function's frame, and makes each function, and the program itself, a flat list of `Bytecode.roc`'s instructions |
+
+Each technique is a standard one. Recursive descent is the classic hand-written parser. Resolving names to a scope depth and an index before the run is the lexical addressing of Scheme compilers (Abelson and Sussman, *Structure and Interpretation of Computer Programs*, second edition, 1996, section 5.5.6). After it, each back end reads a variable by its place, and only `Resolve` compares variables' names. Every jump in the bytecode is relative to the instruction after it, so a piece of compiled code means the same wherever it lands.
 
 From there the bytecode goes one of two ways. In `js-vm`, `Vm.roc` runs it on a stack machine ({{chapter The interpreter}}). In `js-x86`, `x86/roc/Lowering.roc` turns it into machine code ({{chapter The compiler to x86-64}}).
 
@@ -145,13 +204,42 @@ A method is one function for the whole class, made once, and its first parameter
 
 ## Roc's copy rule
 
-Both programs lean on one rule of Roc's. The interpreter keeps a JavaScript program's heap in one Roc list, which many of its instructions write; the compiler builds an executable's bytes by appending to one list. Each is fast only while Roc writes its list in place, and this chapter states when Roc does. {{chapter Handing the machine on}} gives the three habits the interpreter took from it.
+Roc has only values, yet it writes a list in place whenever it safely can. Both programs depend on that. The interpreter keeps a JavaScript program's heap in one Roc list, which many of its instructions write; the compiler builds an executable's bytes by appending to one list. Each is fast only while Roc writes its list in place. This chapter states when Roc does, and when it quietly copies the list first. Every later chapter that weighs a cost comes back to it, and {{chapter Handing the machine on}} gives the three habits the interpreter took from it.
 
 ### When a write copies
 
 Roc writes a list in place only while the list has a single owner, and a copy is silent. On RC1 every copy is a use after a consume: a write (`List.set`, `append`, `Dict.insert`) takes the value, and something still reads the old one after it. The copy allocates the whole list again on every such write, so its cost grows with the list.
 
-Each shape below is a loop in roc-apps' `tools/copy_shapes/CopyShapes.roc`, held to its count of allocations a write in the release and dev builds (`expected.txt` and `expected-dev.txt` beside it, measured on RC1). The listings are lines of those loops, each loop's call of itself written on one line; each copying shape sits beside its twin that writes in place.
+This book calls that drop the copy cliff. A loop that writes in place pays O(1) a write; the same loop with a second owner pays O(n) a write, and the code reads the same either way.
+
+One write, two outcomes
+```dot
+digraph {
+  rankdir=LR;
+  node [shape=box, style=rounded];
+  one [label="xs: one owner"];
+  two [label="xs: two owners"];
+  place [label="written in place\nO(1)"];
+  copy [label="copied whole,\nthen written: O(n)"];
+  one -> place [label="xs.set(j, i)"];
+  two -> copy [label="xs.set(j, i)"];
+}
+```
+
+The technique behind the rule is reference counting with in-place update of a value held once, as in Lean 4 (Ullrich and de Moura, "Counting Immutable Beans", 2019) and Koka's Perceus (Reinking, Xie, de Moura and Leijen, 2021).
+
+Each shape below is a loop in roc-apps' `tools/copy_shapes/CopyShapes.roc`, held to its count of allocations a write in the release and dev builds (`expected.txt` and `expected-dev.txt` beside it, measured on RC1). The listings are lines of those loops, each loop's call of itself written on one line; each copying shape sits beside its twin that writes in place. In brief:
+
+| the shape that copies | it copies in | its twin, written in place |
+|---|---|---|
+| `get-after-set` | every build | `set-restored` |
+| `closure-called-after` | every build | `closure-called-before` |
+| `nested-get-then-set` | every build | `nested-update` |
+| `dict-length-after-insert` | every build | - |
+| `dict-get-then-insert` | every build | `dict-take-then-insert` |
+| `helper-length-after-set` | the dev build | `helper-length-before-set` |
+| `helper-reads-record` | the dev build | `index-bound-before` |
+| `str-list-restored` | the dev build | `str-list-or-crash` |
 
 ### Shapes that copy in every build
 
@@ -216,7 +304,7 @@ dict_take_then_insert(i + 1, steps, size, d0.insert(0, l.set(j, i) ?? l), sum + 
 
 ### Shapes that copy in the dev build only
 
-In the dev build a helper stays a call that owns its arguments; the release build specializes it first, and writes in place.
+In the dev build a helper stays a call that owns its arguments. The release build specializes the helper first, and writes in place. These shapes still matter: a dev-only copy often becomes a release copy once the code around it changes ({{chapter Dev and release builds disagree}}).
 
 **A helper that reads its list after writing it:**
 
@@ -256,7 +344,7 @@ A record update copies the record around the field it writes, inline sub-records
 
 ## The compiler to x86-64
 
-The `x86/` folder holds `js-x86`, an ahead-of-time compiler that turns a program into a static Linux x86-64 executable. Roc writes every byte of that file. The instruction encoder (`X86.roc`), the assembler (`Assembly.roc`) and the ELF writer (`Elf.roc`) are Roc modules, and the executable talks to the kernel directly, by the `syscall` instruction. The product holds no assembler, linker, LLVM or libc, and the executable needs none of them to run (`x86/README.md`).
+`js-x86`, in `x86/`, turns a program into a static Linux x86-64 executable, and Roc writes every byte of that file. The instruction encoder (`X86.roc`), the assembler (`Assembly.roc`) and the ELF writer (`Elf.roc`) are Roc modules, and the executable talks to the kernel directly, by the `syscall` instruction. The product holds no assembler, linker, LLVM or libc, and the executable needs none of them to run (`x86/README.md`). So any byte the processor runs traces back to the Roc module that wrote it.
 
 ### The pipeline
 
@@ -277,15 +365,17 @@ digraph {
 }
 ```
 
-- **The front end is shared.** `JsToX86.roc` imports `Parser` and `Compile` from `js/roc/` as a package, so the compiler starts from the same `Bytecode` the interpreter runs ({{chapter The front end}}).
-- **`Lowering.roc`** turns each function's bytecode into `Assembly` statements, one instruction's machine code after another, and hands each family of instructions to a module of its own: `OperatorLowering`, `BuiltinLowering`, `CallLowering` and `IndexLowering`. `Inlining` and four later passes are in {{chapter What the compiler leaves to an optimizer}}.
-- **`Assembly.roc`** lays the statements out as bytes. A jump or a call that names a label gets a placeholder, patched once every label's place is known.
-- **`Elf.roc`** wraps the code as an executable: an ELF header, one program header and one segment, read and execute, mapped at 0x400000.
-- **The last step only carries.** Roc's default platform writes text alone to stdout, so `js-x86` prints the executable as hex, and `x86/executables.shale` turns each pair of digits back into its byte.
+| stage | what it does |
+|---|---|
+| the front end, shared | `JsToX86.roc` imports `Parser` and `Compile` from `js/roc/` as a package, so the compiler starts from the same `Bytecode` the interpreter runs ({{chapter The front end}}) |
+| `Lowering.roc` | turns each function's bytecode into `Assembly` statements, one instruction's machine code after another; `OperatorLowering`, `BuiltinLowering`, `CallLowering` and `IndexLowering` each take a family of instructions, and `Inlining` and four later passes are in {{chapter What the compiler leaves to an optimizer}} |
+| `Assembly.roc` | lays the statements out as bytes; a jump or a call that names a label gets a placeholder, patched once every label's place is known: backpatching, as in a one-pass assembler |
+| `Elf.roc` | wraps the code as an executable: an ELF header, one program header and one segment, read and execute, mapped at 0x400000 |
+| `x86/executables.shale` | Roc's default platform writes text alone to stdout, so `js-x86` prints the executable as hex, and this script turns each pair of digits back into its byte |
 
 ### A value in 8 bytes
 
-A slot of the frame that `Compile` lays out has to hold any JavaScript value. The compiler fits every value into the 8 bytes of a double, by NaN-boxing, as LuaJIT and SpiderMonkey do. A double has about 2^53 bit patterns that all mean NaN, and x86-64's arithmetic makes only two of them. So a number is its own double, and every other value is one of the spare NaNs: its top 16 bits are a tag, and its low 48 bits are an address or a constant (`x86/roc/Boxing.roc`):
+A slot of the frame that `Compile` lays out has to hold any JavaScript value. The compiler fits every value into the 8 bytes of a double by NaN-boxing, the representation LuaJIT and SpiderMonkey use. A double has about 2^53 bit patterns that all mean NaN, and x86-64's arithmetic makes only two of them. So a number is its own double, and every other value is one of the spare NaNs: its top 16 bits are a tag, and its low 48 bits are an address or a constant (`x86/roc/Boxing.roc`):
 
 | top 16 bits | value | low 48 bits |
 |---|---|---|
@@ -303,13 +393,28 @@ The two NaNs the processor makes lie below every tag, so a value is a number exa
 
 ### The runtime
 
-Every executable carries the runtime, about 24 KB of machine code (`let x = 1;` compiles to 24,407 bytes, 2026-11-27, `x86/README.md`): the start, the allocator, buffered output, `console.log`'s writing of values as node writes them, the array methods, the Maps and Sets, and the timers. It is written in Roc too, as lists of `Assembly` statements, one instruction a line through the short builders of `Emit.roc`. Here is the allocator, from `Heap.roc`:
+Every executable carries the runtime, about 24 KB of machine code: the start, the allocator, buffered output, `console.log`'s writing of values as node writes them, the array methods, the Maps and Sets, and the timers. It is written in Roc too, as lists of `Assembly` statements, one instruction a line through the short builders of `Emit.roc`. Here is the allocator, from `Heap.roc`:
 
 {{function x86/roc/Heap.roc allocate_items}}
 
-Four registers belong to the runtime for the whole run: `r12` the stack's limit, `r13` the runtime's state, `r14` the heap's end and `r15` the heap's state, in a mapping of 3 GiB: a heap of 2 GiB, then the collector's mark stack. The heap is 64 KiB pages of one block size each, every block behind a header word of its kind and size (`x86/COLLECTOR.md`). The allocator pops its size's free list or bumps through a page, and past a threshold it collects first ({{chapter The garbage collector}}).
+Four registers belong to the runtime for the whole run:
 
-`x86/fib.js`'s executable was 24,837 bytes the same day; milestone 2's fib(22), before the runtime, was 1,010 bytes (`0c5ea7e`).
+| register | holds |
+|---|---|
+| `r12` | the stack's limit |
+| `r13` | the runtime's state |
+| `r14` | the heap's end |
+| `r15` | the heap's state |
+
+They live in a mapping of 3 GiB: a heap of 2 GiB, then the collector's mark stack. The heap is 64 KiB pages of one block size each, every block behind a header word of its kind and size (`x86/COLLECTOR.md`). The allocator pops its size's free list or bumps through a page, and past a threshold it collects first ({{chapter The garbage collector}}).
+
+The runtime dominates a small program's size:
+
+| executable | size |
+|---|---|
+| `let x = 1;`, 2026-11-27 | 24,407 bytes (`x86/README.md`) |
+| `x86/fib.js`, the same day | 24,837 bytes |
+| fib(22) at milestone 2 of `x86/README.md`, before the runtime | 1,010 bytes (`0c5ea7e`) |
 
 ### What it compiles, as of 2026-11-27
 
@@ -321,7 +426,7 @@ Four registers belong to the runtime for the whole run: `r12` the stack's limit,
 | 4 | a number `console.log` can write only once number printing is written: three fractions, and an integer past 2^53 |
 | 5 | one each: `Math.sin`, an array of more than 100 items printed, a string beyond ASCII, a call of a number, and an array's `at` |
 
-The compiler refuses what it has yet to compile by name, before it writes a byte. What only a value can decide stops the executable as it runs, with a line `x86: ... is not compiled yet` on stderr and exit 1.
+{{chapter Limitations}} says how the compiler refuses the rest.
 
 ## The compiler against node
 
@@ -329,16 +434,29 @@ The executables beat `node file.js` on small programs, and most of that win is n
 
 ### Where the numbers come from
 
-Every number in this chapter is from `x86/BENCH.md` (`68f420b`), which `shale x86/bench.shale` measures; the one from `x86/README.md` says so. The timings stay outside `check.shale`, since the box is too noisy to gate on. They are one sample from one day, 2026-11-25, on the 2-core development box with node v22.23.2, and the book quotes them as recorded there. They were taken before the in-line paths of {{chapter What the compiler leaves to an optimizer}} (`17cb2b0`, `d6ecebd`), the integer kind and the register passes, and the four programs are unmeasured since. A rerun on a quiet box will replace the table; until then it is the record of 2026-11-25, and speaks for that day's compiler alone.
+Every number in this chapter is from `x86/BENCH.md` (`68f420b`), which `shale x86/bench.shale` measures; the one from `x86/README.md` says so. The timings stay outside `check.shale`, since the box is too noisy to gate on. They are one sample from one day, 2026-11-25, on the 2-core development box with node v22.23.2.
+
+That day came before the in-line paths of {{chapter What the compiler leaves to an optimizer}} (`17cb2b0`, `d6ecebd`), the integer kind and the register passes, and the four programs are unmeasured since. So the table speaks for that day's compiler alone, and a rerun on a quiet box will replace it.
 
 Each program in `x86/bench/` defines `work(n)`:
 
-- **fib**: a recursive `fib(n)`, so the cost is mostly calls.
-- **loops**: nested loops over local variables and an array of 100 numbers, with a `%` in the inner body.
-- **sieve**: the sieve of Eratosthenes over an array of `n + 1` flags built by `push`, mostly array reads and writes.
-- **collatz**: the sum of the Collatz steps for every start from 1 to `n`, using `%`, `/` and `*` on doubles in a `while` loop.
+| program | what `work(n)` does |
+|---|---|
+| fib | a recursive `fib(n)`, so the cost is mostly calls |
+| loops | nested loops over local variables and an array of 100 numbers, with a `%` in the inner body |
+| sieve | the sieve of Eratosthenes over an array of `n + 1` flags built by `push`, mostly array reads and writes |
+| collatz | the sum of the Collatz steps for every start from 1 to `n`, using `%`, `/` and `*` on doubles in a `while` loop |
 
-The script checks that each executable prints exactly what node prints before it times anything, and each time is the median of 3 niced runs. **executable** is the compiled file's wall time, process start included. **node** is `node file.js`, start-up included. **warmed** runs `work(n)` in a loop inside one node process, throws away the first runs (200 at the small size, 3 at the large), and takes the median of the next 50 or 5; **first run** is that process's very first call. **vm** is the interpreter's release build, at the small sizes alone. The **ratio** is the executable's time over node warmed's, so above 1 means node is faster.
+The script checks that each executable prints exactly what node prints before it times anything, and each time is the median of 3 niced runs. The table's columns:
+
+| column | what it measures |
+|---|---|
+| executable | the compiled file's wall time, process start included |
+| node | `node file.js`, start-up included |
+| warmed | `work(n)` in a loop inside one node process: the first runs thrown away (200 at the small size, 3 at the large), then the median of the next 50 or 5 |
+| first run | that process's very first call |
+| vm | the interpreter's release build, at the small sizes alone |
+| ratio | the executable's time over node warmed's, so above 1 means node is faster |
 
 ### The table, as of 2026-11-25
 
@@ -382,17 +500,19 @@ One-shot node, start-up included, is faster at the large sizes too: in the table
 
 **Most of V8's warm-up happens inside the first call.** At the large sizes the first run is already close to the steady time, because V8 optimizes a hot loop while it is still running (on-stack replacement). collatz's steady time came out slower than its first run in both runs, about 475 ms against about 370; `x86/BENCH.md` leaves the cause unexplored.
 
-### The fib race
+### The one tuned program
 
-These four programs are measured as they came. One program was tuned for: the fib race, which {{chapter Three compilers, one race}} follows.
+These four programs are measured as they came. One program was tuned for: the fib race, which {{chapter The fib race}} follows.
 
-## Three compilers, one race
+## The fib race
 
-`x86/race/fib_race.js` computes F(740000) with the ordinary iterative algorithm. Its numbers are arrays of base-10^7 limbs, added one into the other in place. Three contestants run it, one after another, each timed from outside as its whole process (`shale x86/race.shale`):
+`x86/race/fib_race.js` computes F(740000) with the ordinary iterative algorithm. Its numbers are arrays of base-10^7 limbs, added one into the other in place. This race is where the compiler was tuned, so its record shows which changes paid and by how much. Three contestants run it, one after another, each timed from outside as its whole process (`shale x86/race.shale`):
 
-- **js-x86**, this repository's compiler, writing every byte of the executable from Roc;
-- **node**, on the same source;
-- **Roc**, on `x86/race/fibonacci_race.roc`, the same algorithm line for line, with `U64` limbs, built with `--opt=speed`, which hands the code to LLVM.
+| contestant | what runs |
+|---|---|
+| js-x86 | this repository's compiler, writing every byte of the executable from Roc |
+| node | the same source |
+| Roc | `x86/race/fibonacci_race.roc`, the same algorithm line for line, with `U64` limbs, built with `--opt=speed`, which hands the code to LLVM |
 
 Each one's whole output, more than 150,000 digits, is held to a stored sha256 of the answer. The rules are fixed: the algorithm stays the ordinary one, node runs the same source, and any trick in the compiler has to be one that would help other programs too.
 
@@ -440,21 +560,22 @@ The bank and fourteen races are object and call heavy, where node's hidden class
 
 ## What the compiler leaves to an optimizer
 
-The compiler's code is plain, and {{chapter The compiler against node}} measures what that costs against V8. This chapter says what the compiler does to make code cheaper, what it leaves undone, and what comes next.
+The compiler's code is plain, and {{chapter The compiler against node}} measures what that costs against V8. This chapter is the map for anyone making the code faster: what the compiler already does to make code cheaper, what it leaves undone, and what comes next.
 
 ### What makes code cheaper
 
-The compiler makes code cheaper in these ways (`x86/roc/Lowering.roc`'s header, `x86/README.md`):
+Each optimization the compiler makes is a standard technique (`x86/roc/Lowering.roc`'s header, `x86/README.md`):
 
-- a known kind skips the tag's test, so two known numbers add with one `addsd`; a whole number proved in range is an `Integer`, so a loop's counter steps with `add` and indexes an array as it is (`x86/README.md`, "An integer kind");
-- a function known by its code is called directly, and keeps the parameter kinds its calls give it;
-- a function known before the program runs takes zero bytes in a slot, and becomes a closure record only where it is used as a value;
-- a class's field is read at the place its constructor gives it, and a method from its class's table, each tested in line (`FieldSlots.roc`, `MethodTables.roc`);
-- for what is unknown, the commonest cases are tested in line, and the runtime's routine is called only when the test fails: `+` and the comparisons of two numbers, a number's tag test, and an array's `length`, item read and item write (`OperatorLowering.roc`, `IndexLowering.roc`; `17cb2b0`, `d6ecebd`);
-- a small leaf function called inside a loop is put in line in the bytecode, within a budget of instructions (`Inlining.roc`);
-- after the lowering, a looping function's four busiest frame places live in registers (`Registers.roc`), and three passes take out loads of what a register already holds, dead register moves, and jumps to jumps (`Forwarding.roc`, `Moves.roc`, `Jumps.roc`).
-
-Each is a standard technique. A test in line before a call to the general routine is an inline cache (Deutsch and Schiffman, 1984, for Smalltalk-80), and guessing a field's place from its class follows Self's maps (Chambers, Ungar and Lee, 1989), which V8 calls hidden classes. Inlining, jump threading and the passes over moves are textbook optimizations, and choosing registers by counting uses is the plainest register allocation, short of graph coloring (Chaitin, 1982).
+| what the compiler does | where | the technique |
+|---|---|---|
+| a known kind skips the tag's test, so two known numbers add with one `addsd`; a whole number proved in range is an `Integer`, so a loop's counter steps with `add` and indexes an array as it is | `Lowering.roc`; `x86/README.md`, "An integer kind" | kinds found by iterating to a fixed point, as in dataflow analysis (Kildall, 1973) |
+| a function known by its code is called directly, and keeps the parameter kinds its calls give it | `Lowering.roc` | a direct call of a known function |
+| a function known before the program runs takes zero bytes in a slot, and becomes a closure record only where it is used as a value | `Lowering.roc` | a closure made only where it escapes |
+| a class's field is read at the place its constructor gives it, and a method from its class's table, each tested in line | `FieldSlots.roc`, `MethodTables.roc` | Self's maps (Chambers, Ungar and Lee, 1989), which V8 calls hidden classes |
+| for what is unknown, the commonest cases are tested in line, and the runtime's routine is called only when the test fails: `+` and the comparisons of two numbers, a number's tag test, and an array's `length`, item read and item write | `OperatorLowering.roc`, `IndexLowering.roc`; `17cb2b0`, `d6ecebd` | an inline cache (Deutsch and Schiffman, 1984, for Smalltalk-80) |
+| a small leaf function called inside a loop is put in line in the bytecode, within a budget of instructions | `Inlining.roc` | inlining, a textbook optimization |
+| after the lowering, a looping function's four busiest frame places live in registers | `Registers.roc` | register allocation by usage counts (Freiburghouse, 1974), the plainest kind, short of graph coloring (Chaitin, 1982) |
+| three passes take out loads of what a register already holds, dead register moves, and jumps to jumps | `Forwarding.roc`, `Moves.roc`, `Jumps.roc` | peephole optimization (McKeeman, 1965) and jump threading |
 
 ### The plain parts
 
@@ -462,17 +583,31 @@ Everything else is done the plainest way. Each function's frame is fixed: every 
 
 ### Where an optimizer would pay
 
-An optimizer would pay most on loops. The loops program has the widest gap, 6 to 8 times. A guess, unmeasured, as `x86/BENCH.md` gives it: a tight loop over a local array is where V8's registers and small integers help most, and where the executable's trips through memory cost most. A second guess, also unmeasured: loops and collatz both use `%`, which the executable lowers to `idiv`, one of the processor's slower instructions. The README's milestone 6, type specialization for long numeric loops, is aimed at the first. In the fib race the cost was measured, by reading the machine code: eleven calls into the runtime for each limb, since an array's items are of unknown kind, which the in-line paths cut (`x86/race/README.md`).
+An optimizer would pay most on loops. The loops program has the widest gap, 6 to 8 times. `x86/BENCH.md` offers an unmeasured guess: a tight loop over a local array is where V8's registers and small integers help most, and where the executable's trips through memory cost most. A second guess, also unmeasured, is that loops and collatz both use `%`, which the executable lowers to `idiv`, one of the processor's slower instructions. The README's milestone 6, type specialization for long numeric loops, is aimed at the first. In the fib race the cost was measured, by reading the machine code: eleven calls into the runtime for each limb, since an array's items are of unknown kind, which the in-line paths cut (`x86/race/README.md`).
 
 ### What comes next
 
-The compiler's own milestones say what follows (`x86/README.md`). Classes came first, and compile since `6ec8068`: the parser already writes each class as plain functions, so the work was the `NewInstance` and `InstanceOf` instructions of the bytecode. Since 2026-11-26 an instance holds its class's table of methods, and a method takes its receiver as its first parameter, passed in `rdx` by every call through a value. Next is milestone 4, the runtime in the subset: `console.log`'s formatting, Map and Set, and number printing, which four corpus programs wait on (02, 30, 58 and 54), written in the JavaScript subset and compiled by this compiler. Milestone 5, the collector of `x86/COLLECTOR.md` ({{chapter The garbage collector}}), is in (`a328636`, `460b606`). Then milestone 6, the type specialization the loops above ask for.
+The compiler's own milestones say what follows (`x86/README.md`):
+
+| work | state |
+|---|---|
+| classes | compiled since `6ec8068`; the parser already writes each class as plain functions, so the work was the `NewInstance` and `InstanceOf` instructions of the bytecode |
+| milestone 4, the runtime in the subset: `console.log`'s formatting, Map and Set, and number printing, written in the JavaScript subset and compiled by this compiler | next; four corpus programs wait on its number printing (02, 30, 58 and 54) |
+| milestone 5, the collector of `x86/COLLECTOR.md` ({{chapter The garbage collector}}) | in (`a328636`, `460b606`) |
+| milestone 6, the type specialization the loops above ask for | after milestone 4 |
+
+Since 2026-11-26 an instance holds its class's table of methods, and a method takes its receiver as its first parameter, passed in `rdx` by every call through a value.
 
 ## The interpreter
 
-The interpreter, js-vm, is the other way to run the subset, and the first one built ({{chapter How it got here}}). Where the compiler turns a program into an executable, the interpreter runs it directly: the front end's bytecode ({{chapter The front end}}) goes to `Vm.roc`, a stack machine written in Roc. It runs in two places. From the command line, `js/roc/JsVm.roc` runs a file, and `js/oracle.shale` holds every corpus program's output to node's. In the browser, the same VM compiled to wasm is the engine of [the playground](https://roc.lynrummy.com/js/), where a program draws on a canvas ({{chapter A canvas in the browser}}).
+The interpreter, js-vm, is the other way to run the subset, and the first one built ({{chapter How it got here}}). Where the compiler turns a program into an executable, the interpreter runs it directly: the front end's bytecode ({{chapter The front end}}) goes to `Vm.roc`, a stack machine written in Roc. It runs all 63 corpus programs as node does, so it is also the project's reference for what the subset means. It runs in two places:
 
-Because the interpreter keeps a whole run in Roc values, it needs its own memory, its own collector and its own care with copies, the subjects of {{chapter Memory strategy}}, {{chapter The garbage collector}} and {{chapter Handing the machine on}}. This chapter looks at the VM's loop, then at the one value the run works on: the machine.
+| where | what runs | held by |
+|---|---|---|
+| the command line | `js/roc/JsVm.roc`, on a file | `js/oracle.shale`, which holds every corpus program's output to node's |
+| the browser | the same VM compiled to wasm, the engine of [the playground](https://roc.lynrummy.com/js/), where a program draws on a canvas ({{chapter A canvas in the browser}}) | `js/page_check.mjs` ({{chapter How it is tested}}) |
+
+The interpreter keeps a whole run in Roc values, so it needs its own memory, its own collector and its own care with copies, the subjects of {{chapter Memory strategy}}, {{chapter The garbage collector}} and {{chapter Handing the machine on}}. This chapter looks at the VM's loop, then at the one value the run works on: the machine.
 
 Beside it, `Inspect.roc` formats `console.log`'s output as node's `util.inspect` does, function for function, and `NumberText.roc` writes a number as `String(n)` does.
 
@@ -506,16 +641,20 @@ Measuring further is left for later. `perf` is closed to an unprivileged user on
 
 ## A canvas in the browser
 
+The playground at [roc.lynrummy.com/js/](https://roc.lynrummy.com/js/) runs the interpreter in a browser, where a program draws as it runs. It is also the one place where the VM's effects reach a screen, so it shows most plainly how a pure Roc program hands effects to a host. This chapter covers what a program may call, how the page runs it, and how each effect travels.
+
 ### What a program sees
 
-In [the playground](https://roc.lynrummy.com/js/), a program is JavaScript from the subset plus a deliberately small API for one 400 by 400 canvas. It is a toy's API, sized for sketches, games of one screen and demonstrations:
+In the playground, a program is JavaScript from the subset plus a deliberately small API for one 400 by 400 canvas. It is a toy's API, sized for sketches, games of one screen and demonstrations:
 
-- **Drawing:** `background`, `fill`, `noFill`, `stroke`, `noStroke`, `line`, `rect`, `circle`, `ellipse`, `polygon` and `text`, named after p5.js's but a small set of their own, with colors as CSS strings.
-- **A turtle:** `forward`, `back`, `turn`, `penUp`, `penDown` and `goto`.
-- **Input:** `mouseX()`, `mouseY()` and `keyIsDown(key)`, read when called, and `onClick(handler)`.
-- **Time:** `setTimeout`, `setInterval` and their clears, and a `function frame(t)`, which the page calls 30 times a second.
-- **The memory view's hook:** `onCollect(handler)`, which hears each garbage collection.
-- **`console.log`,** which writes under the canvas.
+| kind | the names |
+|---|---|
+| drawing | `background`, `fill`, `noFill`, `stroke`, `noStroke`, `line`, `rect`, `circle`, `ellipse`, `polygon` and `text`, named after p5.js's but a small set of their own, with colors as CSS strings |
+| a turtle | `forward`, `back`, `turn`, `penUp`, `penDown` and `goto` |
+| input | `mouseX()`, `mouseY()` and `keyIsDown(key)`, read when called, and `onClick(handler)` |
+| time | `setTimeout`, `setInterval` and their clears, and a `function frame(t)`, which the page calls 30 times a second |
+| the memory view's hook | `onCollect(handler)`, which hears each garbage collection |
+| output | `console.log`, which writes under the canvas |
 
 That is the whole of it: a program draws, listens and waits, and the page's DOM, the network and other files stay out of its reach. The playground's "click dots" sample uses most of it:
 
@@ -576,9 +715,11 @@ digraph {
 }
 ```
 
-- **The page's** host (`JsApp.roc`, on the platform in `js/wasm/`) calls into the page's JavaScript while the Roc call runs.
-- **The recording host,** `js-canvas` (`JsCanvas.roc`), writes every effect and every read as a line, for the golden logs.
-- **`js-vm`'s** host prints each log as it is made.
+| host | module | what it does with an effect |
+|---|---|---|
+| the page's | `JsApp.roc`, on the platform in `js/wasm/` | calls into the page's JavaScript while the Roc call runs |
+| the recording host, `js-canvas` | `JsCanvas.roc` | writes every effect and every read as a line, for the golden logs |
+| `js-vm`'s | `JsVm.roc` | prints each log as it is made |
 
 ### The queue and its clock
 
@@ -602,7 +743,7 @@ console.log("x");
 
 ## Memory strategy
 
-Everything a JavaScript program shares lives in one Roc list, and every operation is shaped so that Roc writes that list in place. This chapter lays out the types, states what each operation costs and how that is checked, and follows one line of JavaScript through the machine.
+Everything a JavaScript program shares lives in one Roc list, and every operation is shaped so that Roc writes that list in place. A change that gives the list a second owner turns each write into a copy of the heap. This chapter lays out the types, the cost of each operation and its check, and one line of JavaScript traced through the machine.
 
 ### A reference is an index
 
@@ -621,8 +762,6 @@ An `Instance` is an object marked with the names of its class and of each class 
 A freed cell stays in its place as `Freed(next)`, a link to the next free cell, and the machine's `free` names the first, `FreeAt(id)` or `NoneFree`. An allocation reads the link out of the first free cell and writes the new cell into its place with one `set`; only an empty free list appends:
 
 {{lines js/roc/Heap.roc from "allocated : List(Heap.Cell), Heap.Free" to "{ cells: cells.set(id, cell)"}}
-
-Garbage collection is what refills the free list; {{chapter The garbage collector}} says how.
 
 Two references into the heap, and its free list
 ```dot
@@ -655,7 +794,7 @@ A variable a closure may capture lives in a box, a `Variable` cell the frame and
 
 ### What each operation costs
 
-A control's count is what one more pass allocates, run at 1,000 and 10,000 passes ({{chapter Dev and release builds disagree}}). A write that copies its list allocates once a pass, so a flat count rules the copy out. A count is a count of allocations; the probes time a write at three sizes on the dev build (`js/README.md`, "What the probes say", 2026-11-24).
+A control is a small program of `js/controls/`, a loop of one kind of write, and its count is what one more pass allocates, run at 1,000 and 10,000 passes ({{chapter Dev and release builds disagree}}). A write that copies its list allocates once a pass, so a flat count rules the copy out. A probe times a write at three sizes on the dev build (`js/README.md`, "What the probes say", 2026-11-24).
 
 | operation | cost | how it is checked |
 |---|---|---|
@@ -675,7 +814,7 @@ A control's count is what one more pass allocates, run at 1,000 and 10,000 passe
 
 ### One line of JavaScript
 
-The line `o.total = o.total + a[i];` runs in a loop whose frame holds `o` in slot 0, `a` in 1 and `i` in 2. These are the instructions `Compile.program` makes for it, printed for this chapter by a scratch program that runs `Parser.program_of` and `Compile.program` and writes each instruction with `Str.inspect`:
+The line `o.total = o.total + a[i];` runs in a loop whose frame holds `o` in slot 0, `a` in 1 and `i` in 2. These are the instructions `Compile.program` makes for it, printed for this chapter by a scratch program (`Parser.program_of`, `Compile.program`, then `Str.inspect` of each):
 
 | instruction | the stack after | what it does |
 |---|---|---|
@@ -723,9 +862,26 @@ That holds while the cells have one owner. `js/README.md`, "Why the heap is one 
 
 ## The garbage collector
 
+The interpreter's collector visits every cell of the heap in one pass, so it is where a second owner of the cells would cost the most, and its design follows from that.
+
 ### What it does
 
-`Collector.roc` is the VM's garbage collector, a precise mark and sweep. The VM names its roots, `marked` follows every reference from them through the cells, and `swept` turns each unmarked cell into a `Freed` cell on the free list. A live cell keeps its index, so every reference stays valid across a collection.
+`Collector.roc` is the VM's garbage collector, a precise mark and sweep, the technique of McCarthy's Lisp (1960). The VM names its roots, `marked` follows every reference from them through the cells, and `swept` turns each unmarked cell into a `Freed` cell on the free list. A live cell keeps its index, so every reference stays valid across a collection.
+
+One collection
+```dot
+digraph {
+  rankdir=LR;
+  node [shape=box, style=rounded];
+  roots [label="Machine.roots"];
+  marked [label="marked\nits own list of marks"];
+  swept [label="swept\nthe lent cells"];
+  free [label="the free list"];
+  roots -> marked [label="follow"];
+  marked -> swept [label="unmarked"];
+  swept -> free [label="Freed"];
+}
+```
 
 The sweep is where memory comes back:
 
@@ -733,7 +889,7 @@ The sweep is where memory comes back:
 
 Writing `Freed` over a garbage cell drops the cell that was there, and Roc's reference counting returns what it held (an object's properties, an array's items, a closure's boxes) to the allocator at that write. The heap's list keeps its length, and {{chapter Memory strategy}} shows an allocation taking a freed place. That is how the programs in `js/heaps/` went from peaks of 40 to 164 MB to about 4 MB each (`62110109`).
 
-### Around the copy cliff
+### Shaped around the copy cliff
 
 The collector is shaped around Roc's copy cliff, where a write to a list that something else still refers to copies the whole list first ({{chapter Roc's copy rule}} lists the shapes):
 
@@ -758,22 +914,33 @@ A collection is due when the free list is empty and the heap has reached its thr
 
 Between two instructions every value the program holds is in the machine. The one exception is a builtin that runs a callback, such as `filter` or `sort`: what it keeps across the callback waits on the stack, where the collections inside the callback see it. A live value that names a freed cell stops the run, since it means a root was missed.
 
-### Garbage you can watch
+### The collector on the page
 
 Two samples show the collector at work. `js/tests/55-garbage.js` makes 1,800 short-lived pieces, an object, an array and a closure each, in 12 rounds, so the memory view's sawtooth shows its teeth; node holds it like every corpus program, and the page lists it third (`a57db770`). Here is the memory view's top chart after one run on the page: the cells in use climb as the program allocates and drop at each collection, a dashed line, and the dots are what each collection kept.
 
 ```shot garbage-memory
 The memory view's chart of the cells in use over one run of the garbage sample (js-book/canvas_shots.mjs, 2026-11-27).
 ```
- `onCollect(fn)` is a playground extra, like `onClick` and outside JavaScript: its handler hears each collection after the sweep, as an event that runs between instructions, as a timer does. Node keeps its own collector hidden from a program, so the canvas log `9-garbage-heard` holds that sample, in `js-canvas` and on the page (`aa391df8`). The handler sits in the boxed event queue, so a program that ignores `onCollect` pays one match inside each collection and runs every instruction as before.
 
-### Two collectors, two worlds
+`onCollect(fn)` is a playground extra, like `onClick` and outside JavaScript: its handler hears each collection after the sweep, as an event that runs between instructions, as a timer does. Node keeps its own collector hidden from a program, so the canvas log `9-garbage-heard` holds that sample, in `js-canvas` and on the page (`aa391df8`). The handler sits in the boxed event queue, so a program that ignores `onCollect` pays one match inside each collection and runs every instruction as before.
 
-The compiled programs have a collector of their own, a separate codebase in the same family: a non-moving mark and sweep that collects at twice the last live size, and at least every 8 MiB. `Collector.roc` works on a Roc list of cells: a reference is an index, the VM names its roots exactly, and Roc's reference counting frees what a `Freed` cell held. The compiler's, designed in `x86/COLLECTOR.md`, works on raw memory: each heap block carries a header word of its kind and size, blocks sit in pages of one size class, and the roots are found conservatively, in every word of the machine stack and the registers that looks like a heap address, as Boehm and Weiser's collector for C finds them (1988). The headers and pages came first (`a328636`), then the mark, the sweep and a torture tier that collects at every allocation (`460b606`). A floor of 8 MiB held big daddy at 8.8 MB, about a twelfth of node's peak on the same run; floors from 2 to 64 MiB kept its CPU time within 8% (`x86/COLLECTOR.md`, "Lane 3").
+### The compiled programs' collector
+
+The compiled programs have a separate collector of their own, designed in `x86/COLLECTOR.md`:
+
+| | `Collector.roc`, in the VM | the compiled programs' |
+|---|---|---|
+| kind | a precise mark and sweep | a non-moving mark and sweep |
+| works on | a Roc list of cells | raw memory: each heap block carries a header word of its kind and size, and blocks sit in pages of one size class |
+| a reference | an index | an address |
+| its roots | named exactly by the VM | found conservatively, in every word of the machine stack and the registers that looks like a heap address, as Boehm and Weiser's collector for C finds them (1988) |
+| when it collects | once the free list is empty and the heap reaches twice what the last collection kept, at least 1,024 cells | at twice the last live size, and at least every 8 MiB |
+
+The headers and pages came first (`a328636`), then the mark, the sweep and a torture tier that collects at every allocation (`460b606`). A floor of 8 MiB held big daddy at 8.8 MB, about a twelfth of node's peak on the same run; floors from 2 to 64 MiB kept its CPU time within 8% (`x86/COLLECTOR.md`, "Lane 3").
 
 ## JavaScript's rules for values
 
-The compiler's runtime gives values their JavaScript meanings in machine code (`runtime_add` and its kin, {{chapter The compiler to x86-64}}). This chapter is about the interpreter, which gives them the same meanings in Roc.
+The compiler's runtime gives values their JavaScript meanings in machine code (`runtime_add` and its kin, {{chapter The compiler to x86-64}}). The interpreter gives them the same meanings in Roc, and this chapter shows how, with the hand-off of the heap that keeps those rules off the copy cliff.
 
 In JavaScript, one operator means different things for different values. `1 + 2` adds, and gives `3`. `"a" + 1` turns the number into text, and gives `"a1"`. `"5" * 2` asks for a string to become a number. A property read varies too: with `o` holding `{ x: 1 }`, `o.x` gives `1`, `o.y` gives `undefined`, and `[1, 2].length` reads a property every array has.
 
@@ -809,7 +976,7 @@ The eight names of `Object.prototype` in `ValueRules.is_prototype_name`, such as
 
 ### The cells are lent
 
-In Roc, every value stays as it was made: `List.set(list, i, x)` returns a list with the new item, and any other holder of the old list keeps the old items. Roc keeps this fast: when the list has one holder, Roc writes into that list's own memory; when it has two, Roc first copies the whole list. That copy is the copy cliff of {{chapter Roc's copy rule}}.
+`List.set(list, i, x)` writes the list's own memory while the list has one holder; with two, Roc first copies the whole list, the copy cliff of {{chapter Roc's copy rule}}.
 
 The heap is one list of cells, and the VM's machine record holds it ({{chapter Memory strategy}}). Some rules write it: `a.push(1)` reaches `ArrayRules.array_method`, which writes the array's cell, and a method that makes a new array allocates a cell.
 
@@ -838,24 +1005,50 @@ digraph {
 ```
 
 The allocation controls check it ({{chapter Dev and release builds disagree}}). 05-array-push pushes through this path, and the release build is held to exactly one allocation a pass, its list of arguments (`js/controls/expected.txt`); a copy of the heap at each push would be a second.
+
 ### The four modules on it
 
 `ValueRules` holds the operators, the property reads and writes, and the patterns. Four modules hold the rest, one kind of value each, and each takes the lent cells and answers a `Got`:
 
-- **`StringRules`**: the methods of strings (`text_method`), those that count by position on ASCII text alone.
-- **`ArrayRules`**: `push`, `pop`, `splice` and the other array methods that take only values. `map`, `filter`, `sort` and the others that call the program back run the VM's loop, so the VM runs them.
-- **`CollectionRules`**: the walks that a spread, a pattern and `for ... of` make, and the methods of Maps and Sets.
-- **`BuiltinRules`**: the starting globals, what `new` makes, and the builtins that give a value alone.
+| module | what it holds |
+|---|---|
+| `StringRules` | the methods of strings (`text_method`), those that count by position on ASCII text alone |
+| `ArrayRules` | `push`, `pop`, `splice` and the other array methods that take only values; `map`, `filter`, `sort` and the others that call the program back run the VM's loop, so the VM runs them |
+| `CollectionRules` | the walks that a spread, a pattern and `for ... of` make, and the methods of Maps and Sets |
+| `BuiltinRules` | the starting globals, what `new` makes, and the builtins that give a value alone |
 
 `console.log`, the canvas, the timers, the program's own functions and the host stay with the VM.
 
 ## Handing the machine on
 
-The interpreter's performance work came down to {{chapter Roc's copy rule}} and three habits that follow from it, each about the machine record of {{chapter The interpreter}}.
+The interpreter's performance work came down to {{chapter Roc's copy rule}} and three habits that follow from it, each about the machine record of {{chapter The interpreter}}. They apply to any Roc program that threads one large record through a loop:
+
+| habit | why | what it bought |
+|---|---|---|
+| know that a value is copied when it is handed on | each instruction copies the whole inline record once | - |
+| box what is rarely written | a boxed part is one pointer in that copy | fib(22) from 123 ms to 82 (`15686d94`) |
+| stay under 256 bytes | LLVM copies a record of up to 256 bytes with vector moves, and calls `memcpy` past it | fib(22) from 110 ms to 99 (`3aba5cf7`) |
 
 ### A value is copied when it is handed on
 
 Every VM instruction takes the machine and hands it back: `dispatch!` passes it to the instruction's handler, which answers an update of it, `{ ..machine, pc: ... }` or the like. A record update copies the record around the field it writes, so each instruction copies the whole inline record once, however little it changes. That cost is the record's size, paid at every instruction, and the next two habits keep the size down.
+
+One instruction's copy of the machine
+```dot
+digraph {
+  rankdir=TB;
+  node [shape=box, style=rounded];
+  dispatch [label="dispatch!"];
+  handler [label="the handler"];
+  update [label="{ ..machine, pc: ... }\nthe inline record copied"];
+  vec [label="eight vector moves"];
+  memcpy [label="a memcpy call"];
+  dispatch -> handler [label="the machine"];
+  handler -> update;
+  update -> vec [label="up to 256 bytes"];
+  update -> memcpy [label="past 256 bytes"];
+}
+```
 
 ### Box what is rarely written
 
@@ -893,7 +1086,7 @@ The lesson in `js/README.md` is that a field added inline counts against the 256
 
 ## Why a compiler suits Roc
 
-In one respect the compiler is the simpler of the two programs for Roc. An interpreter has to perform the program's effects while it runs. A compiler reads a text and gives back bytes, one transformation from start to end, and the effects wait for the executable.
+In one respect the compiler is the simpler of the two programs for Roc. An interpreter has to perform the program's effects while it runs. A compiler reads a text and gives back bytes, one transformation from start to end, and the effects wait for the executable. That difference decides where the copy rule bites, and so where a change to either program is risky.
 
 ### The interpreter has effects of its own
 
@@ -907,7 +1100,14 @@ The compiler's whole work is `executable_of`, from the program's text to the exe
 
 {{function x86/roc/JsToX86.roc executable_of}}
 
-Its type, `Str -> Try(List(U8), Str)`, has Roc's thin arrow: a pure function. Each stage it calls, through `lowering_of`, is pure too: `Parser.program_of`, `Compile.program`, `Lowering.program_lowering`, `Assembly.assemble` and `Elf.executable`. Across the 25,708 lines of `x86/roc/`, seven definitions carry the `!` of an effect: `main!` and `write_program!` in each of the two drivers, `JsToX86.roc` and `Hello.roc`, which print the bytes, and three more in `JsToX86.roc` that print what a developer asks for: `write_inlined!` the count of inlined calls, `write_stopped!` a compile stopped at one phase, for timing it, and `write_labels!` each label's offset, for reading the code back (counted for this chapter on 2026-11-27).
+Its type, `Str -> Try(List(U8), Str)`, has Roc's thin arrow: a pure function. Each stage it calls, through `lowering_of`, is pure too: `Parser.program_of`, `Compile.program`, `Lowering.program_lowering`, `Assembly.assemble` and `Elf.executable`. Across the 25,708 lines of `x86/roc/`, seven definitions carry the `!` of an effect (counted for this chapter on 2026-11-27):
+
+| definitions | where | what they print |
+|---|---|---|
+| `main!` and `write_program!` | each of the two drivers, `JsToX86.roc` and `Hello.roc` | the bytes |
+| `write_inlined!` | `JsToX86.roc` | the count of inlined calls |
+| `write_stopped!` | `JsToX86.roc` | a compile stopped at one phase, for timing it |
+| `write_labels!` | `JsToX86.roc` | each label's offset, for reading the code back |
 
 Who does the program's effects
 ```dot
@@ -929,7 +1129,7 @@ digraph {
 }
 ```
 
-### The ultimate delegation
+### The processor performs the effects
 
 The program's effects still happen, later, and the processor does them. `console.log` ends in the runtime's `runtime_write`, which fills the output buffer, and the buffer goes out by a `syscall` instruction for `write`. The timers become `runtime_run_timers`, a loop in the executable over a virtual clock. The compiler writes each effect down as instructions, and the processor and the kernel perform them when the executable runs.
 
@@ -945,7 +1145,7 @@ The work moved, and some of it moved into the runtime. A routine that the interp
 
 ## Dev and release builds disagree
 
-Roc has two backends. The dev backend (`--opt=dev`) compiles in about a second and emits code that is mostly stack moves. The release build (`--opt=speed`) goes through LLVM, compiles slowly, and runs the VM's fib(22) about nine times faster: 99 ms of CPU against about 860 (`js/README.md`, 2026-11-24). Three findings about the pair have lasted.
+Roc has two backends. The dev backend (`--opt=dev`) compiles in about a second and emits code that is mostly stack moves. The release build (`--opt=speed`) goes through LLVM, compiles slowly, and runs the VM's fib(22) about nine times faster: 99 ms of CPU against about 860 (`js/README.md`, 2026-11-24). Three findings about the pair have lasted, and each tells a reader which build answers which question.
 
 ### A dev timing says little
 
@@ -966,9 +1166,25 @@ At a helper's boundary the dev build keeps a call that owns its arguments, where
 
 `js/controls/` holds nine small programs, each a loop that does one kind of write. `js/controls.shale` runs each at 1,000 and 10,000 passes and holds what one more pass allocates, exactly, in both builds: `expected.txt` for release and `expected-dev.txt` for dev, where each line explains its allocation. Counts are deterministic, so a change that moves one shows on the dev ladder in seconds, and most trials end there. Times are taken on the release build, once a round, from one shared build (`tools/roc_build.shale` keys each build by its inputs), as roc-apps' `CLAUDE.md` (section 9) and `js/README.md` say.
 
+One round of a change
+```dot
+digraph {
+  rankdir=LR;
+  node [shape=box, style=rounded];
+  change [label="a change"];
+  dev [label="the dev ladder\ncounts, in seconds"];
+  release [label="one shared\nrelease build"];
+  time [label="the timing"];
+  change -> dev;
+  dev -> change [label="a count moved"];
+  dev -> release [label="counts held"];
+  release -> time;
+}
+```
+
 ## Build times
 
-This chapter is about two kinds of build: Roc building the two programs, and js-x86 building a JavaScript program.
+A build's time sets the pace of every change, and RC1's release builds were the slowest step in the project's loop. This chapter is about two kinds of build: Roc building the two programs, and js-x86 building a JavaScript program.
 
 ### Roc building the interpreter
 
@@ -1032,26 +1248,36 @@ A check is trusted once it has been seen to fail. Each check below holds the cod
 
 `js/canvas.shale` holds each of the 9 canvas samples to its log of effects for scripted frames, keys and clicks, and a log moves only by an explicit freeze.
 
-### page_check
+### The page check
 
 `js/page_check.mjs` drives the page's own JavaScript under node. It holds the wasm to node on every corpus program and refusal, holds the samples to their golden logs, and checks the memory view. The page is replaced only after it passes.
 
 ### Planted faults
 
-The interpreter's record lists five plants, each reverted:
+A planted fault is a deliberate bug, committed to show that a check catches it, then reverted. The interpreter's record lists five:
 
-- a line width of 72 instead of 80 turned one program red (`278631d8`);
-- the event queue left out of the roots turned 52 red, and `filter`'s item left off the stack turned 53 red (`b623437d`);
-- a wrong expected count turned 00-loop red by name (`80b5e681`);
-- a memory view with its collection marks taken out turned page_check red (`668c52ca`).
+| the fault planted | what turned red | commit |
+|---|---|---|
+| a line width of 72 instead of 80 | one program | `278631d8` |
+| the event queue left out of the roots | program 52 | `b623437d` |
+| `filter`'s item left off the stack | program 53 | `b623437d` |
+| a wrong expected count | 00-loop, by name | `80b5e681` |
+| a memory view with its collection marks taken out | page_check | `668c52ca` |
 
-The compiler's commits list their own, each reverted too: a wrong expected byte of `lea`'s encoding and a wrong hello-world text (`c3ff721`), `<` lowered with the wrong condition (`0c5ea7e`), each rule of the inliner's budget (`22361e1`), and three faults in the heap's headers and pages (`a328636`). `tools/machine_size.shale`'s header records one more: the machine's size held at 247 went red naming 248.
+`tools/machine_size.shale`'s header records one more: the machine's size held at 247 went red naming 248. The compiler's commits list their own, each reverted too:
+
+| the fault planted | commit |
+|---|---|
+| a wrong expected byte of `lea`'s encoding, and a wrong hello-world text | `c3ff721` |
+| `<` lowered with the wrong condition | `0c5ea7e` |
+| each rule of the inliner's budget | `22361e1` |
+| three faults in the heap's headers and pages | `a328636` |
 
 ## Limitations
 
 The subset covers a part of JavaScript on purpose, and it will never cover every corner of the language. A program that steps outside it is refused with a message naming what it used; it never gets a wrong answer.
 
-The limits fall in three groups: the runtime is small on purpose, the language is fairly complete, and a few limits come from the tools.
+This chapter is the list a reader starts from before extending either program. The limits fall in four groups: the runtime, small on purpose; the language, fairly complete; the compiler, which runs less of it; and a few that come from the tools.
 
 ### Runtime
 
@@ -1086,7 +1312,7 @@ The compiler runs the same subset less completely, and says where. A program it 
 - A recursion goes deeper than node's: node throws between 9,000 and 10,000 calls of a one-line recursion, the executable between 80,000 and 90,000, so a program between the two runs here and throws in node.
 - The heap is 2 GiB; past it the program stops with a line saying the heap is full.
 
-### Other
+### The tools
 
 - `js-vm` takes the program as one command-line argument, limited to 128 KiB (`js/README.md`, "Pitfalls").
 - `onCollect` and the other canvas builtins are this project's own, so logs of effects judge them in place of node.
@@ -1110,3 +1336,25 @@ Each program prints what node prints, and `js/oracle.shale` holds the VM to it. 
 The VM refuses each program with the message under its name, which the program's first line gives.
 
 {{listing refused}}
+## Appendix C: The tools
+
+The project leans on these outside tools for its builds, its checks, its measurements and this book. Each row names a tool, what the project uses it for, and the files that run it, as of 2026-11-27.
+
+| tool | what it is used for | where |
+|---|---|---|
+| Roc, pinned at 0.1.0_RC1 | builds both programs, `js-vm` and `js-x86`, the playground's wasm and the book's app | `roc-version`; `.shale/prelude.shale`'s `pinned_roc` |
+| node 22 | the oracle: what node prints for a program is what both programs must print; the opponent in the races; it also runs the page check and the Chromium tools | `js/oracle.shale`, `x86/programs.shale`, `x86/race.shale`, `js/page_check.mjs` |
+| headless Chromium | drives the staged book pages and the playground for their checks and pictures, over its DevTools protocol | `tools/chromium.mjs`; roc-apps' `book_builder/tools/book_check.mjs`; `js/page_shots.mjs`; `js-book/canvas_shots.mjs` |
+| clang | compiles the playground's wasm host, `js/wasm/platform/host.c` | `js/build.shale` |
+| objdump (binutils) | disassembles js-x86's executables at the addresses the code runs at; it also checked the encoder's expected bytes | `x86/profile.shale`, `x86/cost.shale`, `x86/README.md` |
+| llvm-mca 18 | models what a compiled block costs on the box's CPU, Cascade Lake: micro-ops, port pressure, throughput and one pass's latency | `x86/cost.shale`, `x86/COST.md` |
+| Graphviz | draws the book's diagrams when the book is built | roc-apps' `book_builder/tools/draw_diagrams.shale`, run by `js-book/book.shale` |
+| the book builder | turns `js-book/book.md` into the book's pages, with roc-markdown for the text and roc-syntax-color for the code, and runs the negatives lint | roc-apps' `book_builder/`; `js-book/app/main.roc` |
+| roc-alloc-trace | counts a Roc program's allocations for the controls of {{chapter Dev and release builds disagree}} | `tools/alloc_trace.shale`, `js/controls.shale` |
+| Shale | runs every script here: the checks, the builds, the races and this book's build | `check.shale` and every other `.shale` file |
+
+### llvm-mca and the cost tier
+
+The races run on a shared two-core VM, and their timings move with its load. `x86/cost.shale` measures what the bytes alone decide: it compiles each race, disassembles the executable with objdump, and hands llvm-mca the fast path of a range of bytecode instructions. Run twice, it prints the same tables byte for byte (`x86/COST.md`, "How to run it"). LLVM stays outside the compiler: llvm-mca reads only the disassembly of the bytes js-x86 writes (`07e599b`).
+
+Its first table explained a result the timings left open. Lane 3 of milestone 6 (branch `x86-kinds6-l3`) cut the SAT race's watch loop from 353 instructions to 229 on its fast path, and the race ran at about the same speed. Over that fast path, the stores grew from 42 to 67, 65 of them to the frame. Cascade Lake retires one store a cycle, so the store port set lane 3's block throughput at 67.0 cycles a pass, against master's 63.8 (`x86/COST.md`, "What it says about lane 3", `1623197`).
