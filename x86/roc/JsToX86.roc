@@ -52,7 +52,8 @@ main! = |arguments| {
 
 		(Ok(src), Ok(phase)) => write_stopped!(src, phase)
 		_ => {
-			modes = "inlined | versioned | guardsflip | labels | posts | counted | countmap | stop=<phase>"
+			lowerings = "inlined | versioned | guardsflip | labels | posts"
+			modes = "${lowerings} | counted | countmap | stop=<phase>"
 			echo!("usage: js-x86 \"<program>\" [${modes}]\n")
 			Err(Exit(2))
 		}
