@@ -1,5 +1,5 @@
-## This app builds the JavaScript book, JavaScript in Roc: A Compiler and an
-## Interpreter, on the book platform with roc-apps' book builder, from the
+## This app builds the JavaScript book, Compiling JavaScript in Roc, on the
+## book platform with roc-apps' book builder, from the
 ## roc-apps checkout beside this one. Its folder is the roc-js-interpreter checkout's root, so an include quotes the interpreter's code in js/ by its
 ## path in the repository. Its pre-step, book.shale, draws the diagrams with
 ## Graphviz into `js-book/build/prepared/`, and this app reads the drawings
@@ -102,29 +102,24 @@ settings = {
 	look: { ..Builder.default_settings.look, dividers: parts },
 }
 
-## The book's four parts, each named above its first chapter in the contents.
+## The book's three parts, each named above its first chapter in the contents.
 ## A part's title lives here alone.
 parts : List(Pages.Divider)
 parts = [
 	{
 		before: "The front end",
 		level: Part,
-		title: "Part I: Shared machinery",
+		title: "Part I: The compiler",
 	},
 	{
-		before: "The compiler to x86-64",
+		before: "Roc's copy rule",
 		level: Part,
-		title: "Part II: The compiler",
+		title: "Part II: The interpreter",
 	},
 	{
-		before: "The interpreter",
+		before: "Roc's two builds",
 		level: Part,
-		title: "Part III: The interpreter",
-	},
-	{
-		before: "Why a compiler suits Roc",
-		level: Part,
-		title: "Part IV: What Roc taught",
+		title: "Part III: What Roc taught",
 	},
 ]
 
