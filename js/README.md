@@ -99,7 +99,9 @@ what node prints for it is what the interpreter must print.
   the order they were set. The clock is virtual: it reads 0 while the
   program runs and moves to each callback's time as it runs, so a
   program's output is the same on every run, and the same as node's
-  (`js/tests/36-timeouts.js` to `38-nested-timeouts.js`). js-vm runs
+  (`js/tests/36-timeouts.js` to `38-nested-timeouts.js`). node's own
+  clock is real, so on a busy box its order moves; the oracles run node
+  with `js/node_clock.cjs`, its timers on the same virtual clock. js-vm runs
   callbacks until none is left; an interval never cleared, which node runs
   for good, stops at 100,000 callbacks with a message saying so.
 - **Out of it:** `this` outside a class's code, `new` on a function of the

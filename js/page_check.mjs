@@ -10,8 +10,8 @@
 // js_runner.js and:
 //
 // - runs every program in <tests-dir> through it, each held to what node
-//   itself prints for it (the program run by node, its timers waited for
-//   until none is left), node's report of a throw nothing caught written as
+//   itself prints for it (the program run by node, its timers run on
+//   node_clock.cjs's virtual clock until none is left), node's report of a throw nothing caught written as
 //   the one line js-vm writes, as js/oracle.shale writes it;
 // - holds each program in <tests-dir>/refused to the message its first line
 //   names, but for one js-vm stops on its budget of timer callbacks: the
@@ -38,7 +38,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const [dir, tests, canvasDir] = process.argv.slice(2);
 if (!dir || !tests || !canvasDir) {
@@ -78,13 +78,16 @@ const { loadRunner, transcriptOf } = await import(pathToFileURL(join(dir, runner
 const runner = await loadRunner(readFileSync(join(dir, wasmFile)));
 
 // What node prints for a program, run as node runs a file, its timers on
-// node's own clock until none is left. Its report of a throw nothing caught,
+// a virtual clock until none is left (node_clock.cjs: on node's own clock the
+// order of 37-interval.js's and 38-nested-timeouts.js's timers moved with the
+// box's load). Its report of a throw nothing caught,
 // on stderr (`<path>:<n>`, the line, a caret, then what was thrown past a
 // blank line when it is an error, and the stack), is the one line js-vm
 // writes: `Uncaught <the first line of what was thrown> (line <n>)`.
+const NODE_CLOCK = fileURLToPath(new URL("./node_clock.cjs", import.meta.url));
 function nodeOutput(file) {
   const path = resolve(file);
-  const r = spawnSync(process.execPath, [path], { encoding: "utf8" });
+  const r = spawnSync(process.execPath, ["--require", NODE_CLOCK, path], { encoding: "utf8" });
   const report = r.stderr.split("\n");
   const start = report.findIndex((l) => l.startsWith(`${path}:`) && /^\d+$/.test(l.slice(path.length + 1)));
   if (start < 0) return r.stdout;

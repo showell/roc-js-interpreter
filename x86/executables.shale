@@ -117,8 +117,10 @@ function executable_run(path, argument?)
   return {ended = r.ended, code = get(r, "code", -1), out = r.out, ms = r.ms, cpu_ms = r.cpu_ms}
 end
 
--- node's run of the program at `path`, the oracle: `{code, out, ms, cpu_ms}`.
+-- node's run of the program at `path`, the oracle: `{code, out, ms, cpu_ms}`,
+-- its timers on a virtual clock (js/node_clock.cjs), so their order can't
+-- move with the box's load.
 function node_run(path)
-  local r = run({"node", real(path)}, {timeout_ms = 60000, whole = 1000000, want = WANT_NODE})
+  local r = run({"node", "--require", real("js/node_clock.cjs"), real(path)}, {timeout_ms = 60000, whole = 1000000, want = WANT_NODE})
   return {code = get(r, "code", -1), out = r.out, ms = r.ms, cpu_ms = r.cpu_ms}
 end

@@ -29,6 +29,9 @@
 
 const WANT_RUN = "js-vm: the interpreter under test, built here"
 const WANT_NODE = "js-oracle: node is the subset's oracle"
+-- node runs each program with its timers on a virtual clock (the file's
+-- header says why): on its own clock their order moves with the box's load.
+const NODE_CLOCK = "js/node_clock.cjs"
 -- Each program, under node and under js-vm, may use RUN_CPU_MS of CPU: a
 -- budget of CPU, not of wall time, holds on a busy box, where a program's
 -- wall time grows with the load. One over it stops the run, naming the
@@ -126,7 +129,7 @@ function grade_oracle(exe)
   for f in glob("js/tests/*.js") do
     if ONLY == "" or starts_with(basename(f), ONLY) then
       n = n + 1
-      local node = run({"node", real(f)}, {timeout_ms = RUN_MS, cpu_budget_ms = RUN_CPU_MS, stage = "node " .. basename(f), whole = 4000000, want = WANT_NODE})
+      local node = run({"node", "--require", real(NODE_CLOCK), real(f)}, {timeout_ms = RUN_MS, cpu_budget_ms = RUN_CPU_MS, stage = "node " .. basename(f), whole = 4000000, want = WANT_NODE})
       local mine = js_run(exe, read(f), basename(f))
       node.out = uncaught_as_one_line(node.out, real(f))
       local want = transcript(node)
