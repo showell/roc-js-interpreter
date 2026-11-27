@@ -5,9 +5,9 @@
 ## the fib race's 45, x86/buildrace/PROFILE.md).
 ##
 ## **WHAT IS COMPILED IS THE SAME, BYTE FOR BYTE**, as the passes make of
-## the whole (`posts_of_whole`): the program's own statements (`program`:
-## the start and the functions), then the runtime's (`RuntimeCode.items`),
-## then `tail` (the texts and the closure records).
+## the whole (`posts_of_whole`): the program's own statements
+## (`program_statements`: the start and the functions), then the runtime's
+## (`RuntimeCode.items`), then `tail_statements` (the texts and the closure records).
 ##
 ## **THE RUNTIME IN UNITS.** The runtime is cut after every `jmp` and `ret`,
 ## so no way falls into a unit: each is entered only at its labels. Jumps
@@ -41,9 +41,9 @@
 ## through the passes with the program's, in its place in the whole's
 ## order, and the compile is run again with it so (`posts_beside`), until
 ## every unit done once fits. The units that most programs pass are found
-## when js-x86 is built (`seed`), so most compiles fit at the first try. The allocator's kind entries are such units:
-## each ends with a jump to the shared path, and the last one a program
-## keeps runs into it. The program's code must end with a `ret` or a `jmp`,
+## when js-x86 is built (`seed`), so most compiles fit at the first try.
+## The allocator's kind entries are such units: each ends with a jump to
+## the shared path, and the last one a program keeps runs into it. The program's code must end with a `ret` or a `jmp`,
 ## and the tail must be labels, data and distances; where either isn't so,
 ## or the units passed keep growing, the whole is passed as before.
 ##
@@ -60,23 +60,25 @@ import RuntimeCode
 
 RuntimePosts :: [].{
 
-	## The post-passes of `program`, then the runtime's statements, then
-	## `tail`, as `posts_of_whole` makes them, and how they were run (`way`):
+	## The post-passes of `program_statements`, then the runtime's
+	## statements, then `tail_statements`, as `posts_of_whole` makes them, and how they were run (`way`):
 	## `beside` when the runtime's were taken as done, else why the whole
 	## was passed.
 	posts : {
-		program : List(Assembly.Statement),
-		tail : List(Assembly.Statement),
+		program_statements : List(Assembly.Statement),
+		tail_statements : List(Assembly.Statement),
 	} -> { statements : List(Assembly.Statement), way : Str }
-	posts = |{ program, tail }|
-		match posts_beside({ program, tail }) {
+	posts = |{ program_statements, tail_statements }|
+		match posts_beside({ program_statements, tail_statements }) {
 			Ok({ statements, tries, passed }) => {
-				statements,
-				way: "beside (${tries.to_str()} tries, ${passed.to_str()} units passed with the program, ${seed.len().to_str()} from the start)",
+				tries_text = "${tries.to_str()} tries"
+				passed_text = "${passed.to_str()} units passed with the program"
+				seed_text = "${seed.len().to_str()} from the start"
+				{ statements, way: "beside (${tries_text}, ${passed_text}, ${seed_text})" }
 			}
 			Err(Apart(why)) => {
-				statements: RuntimePosts.posts_of_whole(program.concat(RuntimeCode.items).concat(tail)),
-				way: why,
+				whole = program_statements.concat(RuntimeCode.items).concat(tail_statements)
+				{ statements: RuntimePosts.posts_of_whole(whole), way: why }
 			}
 		}
 
@@ -85,8 +87,11 @@ RuntimePosts :: [].{
 	## longer end Forwarding's and Moves' straight runs; then again, for the
 	## jumps Moves leaves next to their labels.
 	posts_of_whole : List(Assembly.Statement) -> List(Assembly.Statement)
-	posts_of_whole = |statements|
-		Jumps.thread_jumps(Moves.trim_moves(Forwarding.forward_loads(Jumps.thread_jumps(statements))))
+	posts_of_whole = |statements| {
+		jumped = Jumps.thread_jumps(statements)
+		moved = Moves.trim_moves(Forwarding.forward_loads(jumped))
+		Jumps.thread_jumps(moved)
+	}
 
 }
 
@@ -130,8 +135,8 @@ pieces = {
 }
 
 ## The pieces with the seam between each two.
-seamed : List(List(Assembly.Statement)) -> List(Assembly.Statement)
-seamed = |parts| {
+join_with_seams : List(List(Assembly.Statement)) -> List(Assembly.Statement)
+join_with_seams = |parts| {
 	var $out = []
 	for part in parts {
 		if !$out.is_empty() {
@@ -143,8 +148,8 @@ seamed = |parts| {
 }
 
 ## Statements cut at each seam, the seams left out.
-unseamed : List(Assembly.Statement) -> List(List(Assembly.Statement))
-unseamed = |statements| {
+cut_at_seams : List(Assembly.Statement) -> List(List(Assembly.Statement))
+cut_at_seams = |statements| {
 	var $out = []
 	var $now = []
 	for statement in statements {
@@ -299,7 +304,7 @@ first_jumps : {
 	rounds : U64,
 	settled : Bool,
 }
-first_jumps = Jumps.thread_jumps_beside(seamed(pieces), { named: first_labels, hops: Dict.empty() })
+first_jumps = Jumps.thread_jumps_beside(join_with_seams(pieces), { named: first_labels, hops: Dict.empty() })
 
 ## The labels named while the runtime's Forwarding and Moves run alone.
 alone_named : Set(Str)
@@ -371,7 +376,7 @@ Segment : {
 	reached : List({ label : Str, addressed : Bool }),
 
 	## Whose address it takes before Moves.
-	addressing : List(Str),
+	addressed_labels : List(Str),
 
 	## Its statements after every pass.
 	done : List(Assembly.Statement),
@@ -386,7 +391,7 @@ Unit : {
 	## The numbers of the labels it marks before its first code, in order
 	## (for a unit of data, whose unnamed labels Jumps drops before its first
 	## named one).
-	opening : List(U64),
+	opening_numbers : List(U64),
 
 	## Its count of statements before the passes.
 	piece_length : U64,
@@ -423,10 +428,10 @@ segments_of = |statements| {
 ## The runtime's units, in its order.
 units : List(Unit)
 units = {
-	firsts = unseamed(first_jumps.threaded)
-	befores = unseamed(forwarded)
-	thirds = unseamed(trimmed.trimmed)
-	seconds = unseamed(second_jumps.threaded)
+	firsts = cut_at_seams(first_jumps.threaded)
+	befores = cut_at_seams(forwarded)
+	thirds = cut_at_seams(trimmed.trimmed)
+	seconds = cut_at_seams(second_jumps.threaded)
 	var $out = []
 	for at in 0..<pieces.len() {
 		piece = pieces.get(at) ?? crash "RuntimePosts.units: a piece"
@@ -459,7 +464,7 @@ units = {
 				reached: jumped_of(was.statements).map(
 					|label| { label, addressed: alone_addressed.contains(label) },
 				),
-				addressing: addressed_of(was.statements).to_list(),
+				addressed_labels: addressed_of(was.statements).to_list(),
 				done: done.statements,
 			})
 		}
@@ -468,7 +473,8 @@ units = {
 		var $first_rest = 0
 		var $trimmed_rest = 0
 		for back in 0..<$segments.len() {
-			segment = $segments.get($segments.len() - 1 - back) ?? crash "RuntimePosts.units: a segment"
+			index = $segments.len() - 1 - back
+			segment = $segments.get(index) ?? crash "RuntimePosts.units: a segment"
 			$first_rest = $first_rest + segment.first_length
 			$trimmed_rest = $trimmed_rest + segment.trimmed_length
 			$rested = $rested.append({
@@ -479,12 +485,14 @@ units = {
 		}
 		var $forward = []
 		for back in 0..<$rested.len() {
-			$forward = $forward.append($rested.get($rested.len() - 1 - back) ?? crash "RuntimePosts.units: a segment")
+			index = $rested.len() - 1 - back
+			segment = $rested.get(index) ?? crash "RuntimePosts.units: a segment"
+			$forward = $forward.append(segment)
 		}
 		$out = $out.append({
 			code: holds_code(piece),
 			segments: $forward,
-			opening: numbers_of(opening_marks(piece)),
+			opening_numbers: numbers_of(opening_marks(piece)),
 			piece_length: piece.len(),
 			first_last: last_jump(first),
 			second_last: last_jump(second),
@@ -497,7 +505,7 @@ units = {
 ## before the passes: no pass took a label out or added one.
 labels_kept : Bool
 labels_kept = {
-	forms = [first_jumps.threaded, forwarded, trimmed.trimmed, second_jumps.threaded].map(unseamed)
+	forms = [first_jumps.threaded, forwarded, trimmed.trimmed, second_jumps.threaded].map(cut_at_seams)
 	List.map_with_index(
 		pieces,
 		|piece, at| {
@@ -519,7 +527,7 @@ labels_kept = {
 closed : Bool
 closed = {
 	counts = [first_jumps.threaded, forwarded, trimmed.trimmed, second_jumps.threaded].all(
-		|statements| unseamed(statements).len() == pieces.len(),
+		|statements| cut_at_seams(statements).len() == pieces.len(),
 	)
 	settles = |jumps| {
 		again = Jumps.thread_jumps_beside(
@@ -537,14 +545,14 @@ expect closed
 ## (a round only drops statements, so none was dropped) and every jump to
 ## the same label (the threading changes nothing else).
 same_jumps : List(Assembly.Statement), List(Assembly.Statement) -> Bool
-same_jumps = |after, before|
-	after.len() == before.len() and List.map2(
-		after,
-		before,
+same_jumps = |later, earlier|
+	later.len() == earlier.len() and List.map2(
+		later,
+		earlier,
 		|one, other|
 			match (one, other) {
-				(JmpTo(a), JmpTo(b)) => a == b
-				(JccTo({ condition: _, label: a }), JccTo({ condition: _, label: b })) => a == b
+				(JmpTo(late), JmpTo(early)) => late == early
+				(JccTo(late), JccTo(early)) => late.label == early.label
 				_ => True
 			},
 	).all(|same| same)
@@ -555,7 +563,7 @@ same_jumps = |after, before|
 opening_dropped : Unit, List(Bool) -> U64
 opening_dropped = |unit, named| {
 	var $count = 0
-	for number in unit.opening {
+	for number in unit.opening_numbers {
 		if is_named(named, number) {
 			return $count
 		}
@@ -583,9 +591,17 @@ segments_from : Unit, U64 -> List(Segment)
 segments_from = |unit, from| unit.segments.drop_first(from)
 
 ## Where each unit stands in a phase: a code unit kept from a segment on
-## (`from`, past the last when dropped or passed with the program), and how
+## (`places`, past the last when dropped or passed with the program), and how
 ## many opening labels of a unit of data were taken out (`dropped`).
-Standing : { from : List(U64), dropped : List(U64) }
+Standing : { places : List(U64), dropped : List(U64) }
+
+## Where a unit stands kept from in a phase (`Standing.places`).
+place_of : Standing, U64 -> U64
+place_of = |standing, at| standing.places.get(at) ?? crash "RuntimePosts.place_of: a unit"
+
+## How many opening labels of a unit of data a phase took out.
+dropped_of : Standing, U64 -> U64
+dropped_of = |standing, at| standing.dropped.get(at) ?? crash "RuntimePosts.dropped_of: a unit"
 
 ## The units' count of statements as they stand, by `rest`, a segment's
 ## count with those after it in its unit, in this phase.
@@ -595,7 +611,7 @@ standing_length = |standing, rest| {
 	for at in 0..<units.len() {
 		unit = units.get(at) ?? crash "RuntimePosts.standing_length: a unit"
 		from = if unit.code {
-			standing.from.get(at) ?? 0
+			place_of(standing, at)
 		} else {
 			0
 		}
@@ -605,7 +621,7 @@ standing_length = |standing, rest| {
 					if unit.code {
 						0
 					} else {
-						standing.dropped.get(at) ?? 0
+						dropped_of(standing, at)
 					}
 				)
 			}
@@ -623,7 +639,7 @@ standing_named = |standing, names| {
 	for at in 0..<units.len() {
 		unit = units.get(at) ?? crash "RuntimePosts.standing_named: a unit"
 		from = if unit.code {
-			standing.from.get(at) ?? 0
+			place_of(standing, at)
 		} else {
 			0
 		}
@@ -687,7 +703,7 @@ marks_named = |named, marks| {
 ## `rest` a segment's count with those after it, after its rounds. `marks`
 ## are the labels of the units passed with the program.
 phase : {
-	own : List(Assembly.Statement),
+	own_statements : List(Assembly.Statement),
 	hops : Dict(Str, Str),
 	standing : Standing,
 	first : U64,
@@ -695,14 +711,14 @@ phase : {
 	rest : Segment -> U64,
 	marks : List({ label : Str, number : U64 }),
 } -> {
-	own : List(Assembly.Statement),
+	own_statements : List(Assembly.Statement),
 	standing : Standing,
 	named : Set(Str),
 	named_numbers : List(Bool),
 }
 phase = |
 	{
-		own,
+		own_statements,
 		hops,
 		standing,
 		first,
@@ -711,9 +727,9 @@ phase = |
 		marks,
 	},
 | {
-	var $own = own
+	var $own = own_statements
 	var $standing = standing
-	var $length = own_length(own) + first
+	var $length = own_length(own_statements) + first
 	for _ in 0..<Jumps.most_rounds {
 		units_named = standing_named($standing, names)
 		threaded = Jumps.round_threaded($own, hops)
@@ -722,7 +738,7 @@ phase = |
 		beside = marks_named(units_named, marks)
 		# The tail follows the runtime's last unit: reached past it when
 		# that unit is data with a label named, as `tail_mark` stands for.
-		reached = tail_opening.any(|number| is_named(named, number))
+		reached = tail_opening_numbers.any(|number| is_named(named, number))
 		after = Jumps.round_dropped(
 			threaded,
 			{
@@ -739,10 +755,10 @@ phase = |
 		for at in 0..<units.len() {
 			unit = units.get(at) ?? crash "RuntimePosts.phase: a unit"
 			if unit.code {
-				$from = $from.append(kept_from(unit, { from: $standing.from.get(at) ?? 0, named }))
+				$from = $from.append(kept_from(unit, { from: place_of($standing, at), named }))
 				$dropped = $dropped.append(0)
 			} else {
-				was_dropped = $standing.dropped.get(at) ?? 0
+				was_dropped = dropped_of($standing, at)
 				now_dropped = opening_dropped(unit, named)
 				$from = $from.append(0)
 				$dropped = $dropped.append(
@@ -755,11 +771,11 @@ phase = |
 			}
 		}
 		$own = after
-		$standing = { from: $from, dropped: $dropped }
+		$standing = { places: $from, dropped: $dropped }
 		whole = own_length($own) + standing_length($standing, rest)
 		if whole == $length {
 			return phase_left({
-				own: $own,
+				own_statements: $own,
 				standing: $standing,
 				names,
 				marks,
@@ -768,7 +784,7 @@ phase = |
 		$length = whole
 	}
 	phase_left({
-		own: $own,
+		own_statements: $own,
 		standing: $standing,
 		names,
 		marks,
@@ -777,16 +793,16 @@ phase = |
 
 ## The labels of the runtime's last unit when it is data, by their numbers,
 ## any of which named leaves the tail after it reached.
-tail_opening : List(U64)
-tail_opening =
+tail_opening_numbers : List(U64)
+tail_opening_numbers =
 	match units.last() {
-		Ok(unit) if !unit.code => unit.opening
+		Ok(unit) if !unit.code => unit.opening_numbers
 		_ => []
 	}
 
 ## The own statements' count, `tail_mark` left out: the whole has none.
 own_length : List(Assembly.Statement) -> U64
-own_length = |own| own.len() - own.count_if(|statement| is_tail_mark(statement))
+own_length = |statements| statements.len() - statements.count_if(is_tail_mark)
 
 ## A label before the tail, named in a round of Jumps when the runtime's
 ## last unit leaves the tail reached (`phase`), so the tail's labels that
@@ -809,21 +825,21 @@ is_tail_mark = |statement|
 ## (`named`; no other label of the whole's reaches the own statements'
 ## walks), and the runtime's labels named, by their numbers.
 phase_left : {
-	own : List(Assembly.Statement),
+	own_statements : List(Assembly.Statement),
 	standing : Standing,
 	names : Segment -> List(U64),
 	marks : List({ label : Str, number : U64 }),
 } -> {
-	own : List(Assembly.Statement),
+	own_statements : List(Assembly.Statement),
 	standing : Standing,
 	named : Set(Str),
 	named_numbers : List(Bool),
 }
-phase_left = |{ own, standing, names, marks }| {
+phase_left = |{ own_statements, standing, names, marks }| {
 	units_named = standing_named(standing, names)
-	own_named = Assembly.named_labels(own)
+	own_named = Assembly.named_labels(own_statements)
 	{
-		own,
+		own_statements,
 		standing,
 		named: with_labels(own_named, marks_named(units_named, marks)),
 		named_numbers: with_named(units_named, own_named),
@@ -878,9 +894,9 @@ unit_of = {
 ## with it (by its labels: Jumps keeps a kept unit's first named label, and
 ## no pass drops a label it keeps) and the tail.
 Own : {
-	code : List(Assembly.Statement),
+	code_statements : List(Assembly.Statement),
 	passed : Dict(U64, List(Assembly.Statement)),
-	tail : List(Assembly.Statement),
+	tail_statements : List(Assembly.Statement),
 }
 
 own_cut : List(Assembly.Statement) -> Own
@@ -918,9 +934,9 @@ own_cut = |statements| {
 		}
 	}
 	{
-		code: $code,
+		code_statements: $code,
 		passed: $passed,
-		tail: $tail,
+		tail_statements: $tail,
 	}
 }
 
@@ -938,7 +954,10 @@ passed_list = |passed| {
 
 ## What a compile's checks found: the post-passes, or units to pass with
 ## the program instead (`Grow`), or a rule no unit's passing would meet.
-posts_beside : { program : List(Assembly.Statement), tail : List(Assembly.Statement) } -> Try(
+posts_beside : {
+	program_statements : List(Assembly.Statement),
+	tail_statements : List(Assembly.Statement),
+} -> Try(
 	{
 		statements : List(Assembly.Statement),
 		tries : U64,
@@ -946,8 +965,8 @@ posts_beside : { program : List(Assembly.Statement), tail : List(Assembly.Statem
 	},
 	[Apart(Str)],
 )
-posts_beside = |{ program, tail }| {
-	tail_ok = tail.all(
+posts_beside = |{ program_statements, tail_statements }| {
+	tail_ok = tail_statements.all(
 		|statement|
 			match statement {
 				Mark(_) | Data(_) | Distance(_) => True
@@ -959,7 +978,7 @@ posts_beside = |{ program, tail }| {
 	}
 	var $passed = seed
 	for try in 0..<most_tries {
-		match posts_passing({ program, tail, passed: $passed }) {
+		match trial_posts({ program_statements, tail_statements, passed: $passed }) {
 			Ok(done) => return Ok({
 				statements: done,
 				tries: try + 1,
@@ -971,7 +990,8 @@ posts_beside = |{ program, tail }| {
 			Err(Apart(why)) => return Err(Apart(why))
 		}
 	}
-	Err(Apart("the units passed with the program grew for too long: ${$passed.len().to_str()} of ${units.len().to_str()}"))
+	counts = "${$passed.len().to_str()} of ${units.len().to_str()}"
+	Err(Apart("the units passed with the program grew for too long: ${counts}"))
 }
 
 ## The units passed with the program from a compile's first try: those a
@@ -1025,10 +1045,10 @@ seed_over = |programs, first| {
 ## The units passed with `program`, from `passed`, or `passed` when its
 ## passes don't go beside the runtime's.
 seed_of : List(Assembly.Statement), Set(U64) -> Set(U64)
-seed_of = |program, passed| {
+seed_of = |program_statements, passed| {
 	var $passed = passed
 	for _ in 0..<most_tries {
-		match posts_passing({ program, tail: [], passed: $passed }) {
+		match trial_posts({ program_statements, tail_statements: [], passed: $passed }) {
 			Ok(_) => return $passed
 			Err(Grow(more)) => {
 				$passed = with_units($passed, more)
@@ -1049,9 +1069,9 @@ most_tries = 6
 
 ## The units of both.
 with_units : Set(U64), List(U64) -> Set(U64)
-with_units = |one, more| {
+with_units = |one, more_units| {
 	var $all = one
-	for at in more {
+	for at in more_units {
 		$all = $all.insert(at)
 	}
 	$all
@@ -1060,24 +1080,24 @@ with_units = |one, more| {
 ## The post-passes with every unit but `passed` done already, those passed
 ## with the program; or the units whose passes done once don't fit beside
 ## this program (`Grow`), or `Apart` naming the rule above it doesn't meet.
-posts_passing : {
-	program : List(Assembly.Statement),
-	tail : List(Assembly.Statement),
+trial_posts : {
+	program_statements : List(Assembly.Statement),
+	tail_statements : List(Assembly.Statement),
 	passed : Set(U64),
 } -> Try(List(Assembly.Statement), [Apart(Str), Grow(List(U64))])
-posts_passing = |{ program, tail, passed }| {
+trial_posts = |{ program_statements, tail_statements, passed }| {
 	order = passed_list(passed)
-	var $own = program
+	var $own = program_statements
 	var $passed_length = 0
 	for at in order {
-		piece = pieces.get(at) ?? crash "RuntimePosts.posts_passing: a piece"
+		piece = pieces.get(at) ?? crash "RuntimePosts.trial_posts: a piece"
 		$own = $own.concat(piece)
 		$passed_length = $passed_length + piece.len()
 	}
-	own = $own.append(seam).append(tail_mark).concat(tail)
+	own = $own.append(seam).append(tail_mark).concat(tail_statements)
 	var $marks = []
 	for at in order {
-		piece = pieces.get(at) ?? crash "RuntimePosts.posts_passing: a piece"
+		piece = pieces.get(at) ?? crash "RuntimePosts.trial_posts: a piece"
 		for label in marks_of(piece) {
 			$marks = $marks.append({ label, number: label_numbers.get(label) ?? label_count })
 		}
@@ -1088,20 +1108,21 @@ posts_passing = |{ program, tail, passed }| {
 		$pieces_length = $pieces_length + piece.len()
 	}
 	start = {
-		from: List.map_with_index(
+		places: List.map_with_index(
 			units,
-			|unit, at| if passed.contains(at) {
-				unit.segments.len()
-			} else {
-				0
-			},
+			|unit, at|
+				if passed.contains(at) {
+					unit.segments.len()
+				} else {
+					0
+				},
 		),
 		dropped: units.map(|_| 0),
 	}
 
 	# The first Jumps.
 	first = phase({
-		own,
+		own_statements: own,
 		hops: first_hops,
 		standing: start,
 		first: $pieces_length - $passed_length,
@@ -1109,10 +1130,10 @@ posts_passing = |{ program, tail, passed }| {
 		rest: |segment| segment.first_rest,
 		marks,
 	})
-	first_cut = own_cut(first.own)
+	first_cut = own_cut(first.own_statements)
 	# Every unit the first Jumps finds that doesn't fit, found at once, so
 	# that a compile tries again as few times as it can.
-	apart = grown(
+	apart = units_to_grow(
 		ends_apart(
 			first_cut,
 			{
@@ -1123,19 +1144,19 @@ posts_passing = |{ program, tail, passed }| {
 			},
 		),
 	)?
-	inner = grown(inner_named(first.standing, first.named_numbers))?
+	inner = units_to_grow(inner_named(first.standing, first.named_numbers))?
 
 	# Whose address is taken: no pass but Jumps' dropping changes that.
-	var $addressed = addressed_of(first.own)
+	var $addressed = addressed_of(first.own_statements)
 	for at in 0..<units.len() {
-		unit = units.get(at) ?? crash "RuntimePosts.posts_passing: a unit"
+		unit = units.get(at) ?? crash "RuntimePosts.trial_posts: a unit"
 		from = if unit.code {
-			first.standing.from.get(at) ?? 0
+			place_of(first.standing, at)
 		} else {
 			0
 		}
 		for segment in segments_from(unit, from) {
-			for label in segment.addressing {
+			for label in segment.addressed_labels {
 				$addressed = $addressed.insert(label)
 			}
 		}
@@ -1143,9 +1164,9 @@ posts_passing = |{ program, tail, passed }| {
 	addressed = $addressed
 	var $grow = []
 	for at in 0..<units.len() {
-		unit = units.get(at) ?? crash "RuntimePosts.posts_passing: a unit"
+		unit = units.get(at) ?? crash "RuntimePosts.trial_posts: a unit"
 		if unit.code {
-			fits = segments_from(unit, first.standing.from.get(at) ?? 0).all(
+			fits = segments_from(unit, place_of(first.standing, at)).all(
 				|segment| segment.reached.all(
 					|
 						{ label, addressed: was },
@@ -1159,7 +1180,7 @@ posts_passing = |{ program, tail, passed }| {
 	}
 	# What the runtime alone found read at a label whose address it took
 	# was never walked for: that label's unit is passed with the program.
-	for label in jumped_of(first.own) {
+	for label in jumped_of(first.own_statements) {
 		if alone_addressed.contains(label) and !addressed.contains(label) {
 			match unit_of.get(label) {
 				Ok(at) if !passed.contains(at) => {
@@ -1175,7 +1196,7 @@ posts_passing = |{ program, tail, passed }| {
 	}
 
 	# Forwarding and Moves.
-	own_forwarded = Forwarding.forward_loads_named(first.own, first.named)
+	own_forwarded = Forwarding.forward_loads_named(first.own_statements, first.named)
 	own_moved = Moves.trim_moves_beside(
 		own_forwarded,
 		{ named: first.named, beside: { addressed, reads: trimmed.reads } },
@@ -1185,7 +1206,7 @@ posts_passing = |{ program, tail, passed }| {
 
 	# The second Jumps.
 	second = phase({
-		own: own_moved.trimmed,
+		own_statements: own_moved.trimmed,
 		hops: second_hops,
 		standing: first.standing,
 		first: standing_length(first.standing, |segment| segment.trimmed_rest),
@@ -1193,7 +1214,7 @@ posts_passing = |{ program, tail, passed }| {
 		rest: |segment| segment.trimmed_rest,
 		marks,
 	})
-	second_cut = own_cut(second.own)
+	second_cut = own_cut(second.own_statements)
 	ends_apart(
 		second_cut,
 		{
@@ -1206,14 +1227,14 @@ posts_passing = |{ program, tail, passed }| {
 
 	# The program's code, the units as they stand or as they were passed
 	# with it, then the tail.
-	var $out = second_cut.code
+	var $out = second_cut.code_statements
 	for at in 0..<units.len() {
-		unit = units.get(at) ?? crash "RuntimePosts.posts_passing: a unit"
+		unit = units.get(at) ?? crash "RuntimePosts.trial_posts: a unit"
 		if passed.contains(at) {
 			$out = $out.concat(second_cut.passed.get(at) ?? [])
 		} else {
 			from = if unit.code {
-				second.standing.from.get(at) ?? 0
+				place_of(second.standing, at)
 			} else {
 				0
 			}
@@ -1222,7 +1243,7 @@ posts_passing = |{ program, tail, passed }| {
 			}
 		}
 	}
-	Ok($out.concat(second_cut.tail.drop_if(is_tail_mark)))
+	Ok($out.concat(second_cut.tail_statements.drop_if(is_tail_mark)))
 }
 
 ## Whether what the own statements' walks found read at the labels of the
@@ -1239,7 +1260,7 @@ reads_held = |reads, { standing, passed, addressed }| {
 	for at in 0..<units.len() {
 		unit = units.get(at) ?? crash "RuntimePosts.reads_held: a unit"
 		if unit.code and !passed.contains(at) {
-			for segment in segments_from(unit, standing.from.get(at) ?? 0) {
+			for segment in segments_from(unit, place_of(standing, at)) {
 				for { label, addressed: _ } in segment.reached {
 					passed_to = match unit_of.get(label) {
 						Ok(target) => passed.contains(target)
@@ -1268,8 +1289,8 @@ reads_held = |reads, { standing, passed, addressed }| {
 
 ## The units a check found that don't fit, or none; a rule no unit's
 ## passing would meet stays `Apart`.
-grown : Try({}, [Apart(Str), Grow(List(U64))]) -> Try(List(U64), [Apart(Str), Grow(List(U64))])
-grown = |checked|
+units_to_grow : Try({}, [Apart(Str), Grow(List(U64))]) -> Try(List(U64), [Apart(Str), Grow(List(U64))])
+units_to_grow = |checked|
 	match checked {
 		Ok({}) => Ok([])
 		Err(Grow(more)) => Ok(more)
@@ -1288,13 +1309,14 @@ hops_held = |hops, { standing, passed }| {
 	for at in 0..<units.len() {
 		unit = units.get(at) ?? crash "RuntimePosts.hops_held: a unit"
 		if unit.code and !passed.contains(at) {
-			for segment in segments_from(unit, standing.from.get(at) ?? 0) {
+			for segment in segments_from(unit, place_of(standing, at)) {
 				for { label, addressed: _ } in segment.reached {
 					passed_to = match unit_of.get(label) {
 						Ok(target) => passed.contains(target)
 						Err(_) => False
 					}
-					if passed_to and hops.get(label) != second_hops.get(label) and !$grow.contains(at) {
+					hop_moved = hops.get(label) != second_hops.get(label)
+					if passed_to and hop_moved and !$grow.contains(at) {
 						$grow = $grow.append(at)
 					}
 				}
@@ -1342,7 +1364,7 @@ ends_apart : Own,
 	length : Segment -> U64,
 } -> Try({}, [Apart(Str), Grow(List(U64))])
 ends_apart = |cut, { standing, passed, last, length }| {
-	match cut.code.last() {
+	match cut.code_statements.last() {
 		Ok(JmpTo(_)) | Ok(Instruction(Ret)) => {}
 		_ => return Err(Apart("the program's code doesn't end with a ret or a jmp"))
 	}
@@ -1351,7 +1373,7 @@ ends_apart = |cut, { standing, passed, last, length }| {
 	var $kept = [
 		{
 			piece: Code,
-			ending: last_jump(cut.code),
+			ending: last_jump(cut.code_statements),
 			starting: [],
 		},
 	]
@@ -1367,7 +1389,7 @@ ends_apart = |cut, { standing, passed, last, length }| {
 				})
 			}
 		} else if unit.code {
-			from = standing.from.get(at) ?? 0
+			from = place_of(standing, at)
 			if from < unit.segments.len() {
 				$kept = $kept.append({
 					piece: Done(at),
@@ -1448,7 +1470,7 @@ inner_named = |standing, named| {
 	var $grow = []
 	for at in 0..<units.len() {
 		unit = units.get(at) ?? crash "RuntimePosts.inner_named: a unit"
-		from = standing.from.get(at) ?? 0
+		from = place_of(standing, at)
 		if unit.code and from < unit.segments.len() {
 			fits = segments_from(unit, from).all(
 				|segment| segment.leading or segment.named == is_named(named, segment.number),

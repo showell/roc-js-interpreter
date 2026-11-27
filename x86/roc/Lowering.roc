@@ -416,8 +416,8 @@ items_with_numbers = |program, arrays| {
 					# closure records, through the post-passes, the runtime's done
 					# once when js-x86 is built where they may be (RuntimePosts).
 					posted = RuntimePosts.posts({
-						program: $items,
-						tail: literal_statements(literals).concat(closures),
+						program_statements: $items,
+						tail_statements: literal_statements(literals).concat(closures),
 					})
 					Ok({ statements: posted.statements, posts: posted.way })
 				}

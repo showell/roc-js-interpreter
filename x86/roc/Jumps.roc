@@ -39,7 +39,7 @@ Jumps :: [].{
 	## rounds it ran and whether the last changed nothing (`settled`; at most
 	## 8 rounds run, as `thread_jumps` runs).
 	thread_jumps_beside : List(Assembly.Statement),
-	Jumps.Beside -> {
+	Jumps.Others -> {
 		threaded : List(Assembly.Statement),
 		rounds : U64,
 		settled : Bool,
@@ -47,7 +47,7 @@ Jumps :: [].{
 	thread_jumps_beside = |statements, beside| {
 		var $now = statements
 		for round in 0..<most_rounds {
-			once = Jumps.round_beside($now, beside).after
+			once = Jumps.round_beside($now, beside).statements
 			if once.len() == $now.len() {
 				return {
 					threaded: once,
@@ -68,15 +68,15 @@ Jumps :: [].{
 	## labels named once its threading was done, before anything was taken
 	## out.
 	round_beside : List(Assembly.Statement),
-	Jumps.Beside -> {
-		after : List(Assembly.Statement),
+	Jumps.Others -> {
+		statements : List(Assembly.Statement),
 		threaded_named : Set(Str),
 	}
 	round_beside = |statements, beside| {
 		threaded = Jumps.round_threaded(statements, beside.hops)
 		named = Assembly.named_labels(threaded)
 		{
-			after: Jumps.round_dropped(threaded, { named, beside: beside.named }),
+			statements: Jumps.round_dropped(threaded, { named, beside: beside.named }),
 			threaded_named: named,
 		}
 	}
@@ -101,7 +101,7 @@ Jumps :: [].{
 	most_rounds = 8
 
 	## What `thread_jumps_beside` takes of the labels beside.
-	Beside : { named : Set(Str), hops : Dict(Str, Str) }
+	Others : { named : Set(Str), hops : Dict(Str, Str) }
 
 	## Each label's first instruction that is an unconditional jump to a
 	## label, by the label.
@@ -110,7 +110,7 @@ Jumps :: [].{
 }
 
 ## Nothing beside.
-alone : Jumps.Beside
+alone : Jumps.Others
 alone = { named: Set.empty(), hops: Dict.empty() }
 
 ## Each label's first instruction that is an unconditional jump to a label,
@@ -141,8 +141,8 @@ jump_labels = |statements| {
 
 ## Where a jump to `label` ends up, following jumps to jumps, at most
 ## eight of them, so a cycle of jumps ends.
-final_target : Dict(Str, Str), Dict(Str, Str), Str -> Str
-final_target = |hops, outside, label| {
+final_target : { hops : Dict(Str, Str), outside : Dict(Str, Str) }, Str -> Str
+final_target = |{ hops, outside }, label| {
 	var $at = label
 	for _ in 0..<8 {
 		hop = match hops.get($at) {
@@ -166,9 +166,9 @@ thread_each_jump = |statements, outside| {
 	statements.map(
 		|statement|
 			match statement {
-				JmpTo(label) => JmpTo(final_target(hops, outside, label))
+				JmpTo(label) => JmpTo(final_target({ hops, outside }, label))
 				JccTo({ condition, label }) => {
-					landing = final_target(hops, outside, label)
+					landing = final_target({ hops, outside }, label)
 					JccTo({ condition, label: landing })
 				}
 				_ => statement
