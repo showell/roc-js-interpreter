@@ -26,4 +26,8 @@ Everything runs niced, one program at a time. Each table prints the load average
   - Big daddy has no Roc port, so only js-x86 builds it, and while js-x86 refuses it the row is the refusal.
 - **speed:** each Roc race's `--opt=speed` executable, run with the race scripts' small sizes (fib 100,000, bank 2,000,000 transfers, fourteen 300 rounds). The compilers take turns, `runs` times each, and the table gives each one's median wall time, and the last compiler's median over the first's. The outputs of the different compilers' executables must be the same, and a difference is printed.
 
+- **Every run ends with** each Roc-built executable (js-x86, and each race's dev and speed builds the run made or found) held byte for byte to the first compiler's. When two compilers write the same bytes, any gap in their run times is the box's noise.
+
+The Roc dev builds (`--opt=dev`) are about 2.3 MB each and run 10 to 25 times slower than the speed builds. Their size and speed suggest that the dev backend at RC1 and RC2 carries the program with an interpreter rather than compiling it to machine code, but nothing here checks that. So js-x86's real rival on build time is `--opt=speed`, which also makes an executable at full speed.
+
 Everything is written under `scratch=` (`build:scratch/buildrace`), in one folder for each compiler, named after what its `roc version` prints.

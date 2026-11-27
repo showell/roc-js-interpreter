@@ -327,6 +327,40 @@ function part_speed(compilers, runs)
   return nil
 end
 
+-- Each executable a Roc built here (js-x86 and the races' dev and speed
+-- builds), held byte for byte to the first compiler's: when two compilers
+-- write the same bytes, their run times differ only by the box's noise.
+function part_same(compilers)
+  if #compilers < 2 then return nil end
+  print("")
+  print("## The Roc-built executables, byte for byte against " .. compilers[1].label)
+  print("")
+  local names = {"js-x86"}
+  for race in RACES do
+    if race.exe ~= "" then
+      push(names, race.exe .. "-dev")
+      push(names, race.exe .. "-speed")
+    end
+  end
+  for n in names do
+    local first = compilers[1].dir .. "/" .. n
+    if exists(first) then
+      local want = sub(must(run({"sha256sum", real(first)}, {timeout_ms = 30000, whole = 1000})).out, 1, 64)
+      for i = 2, #compilers do
+        local other = compilers[i].dir .. "/" .. n
+        local said = "missing"
+        if exists(other) then
+          local got = sub(must(run({"sha256sum", real(other)}, {timeout_ms = 30000, whole = 1000})).out, 1, 64)
+          said = "DIFFERS"
+          if got == want then said = "identical" end
+        end
+        print("- " .. n .. " (" .. stat(first).size .. " bytes): " .. compilers[i].label .. "'s " .. said)
+      end
+    end
+  end
+  return nil
+end
+
 function main()
   local scratch = arg("scratch", "build:scratch/buildrace")
   local rocs = arg("rocs", "")
@@ -349,6 +383,7 @@ function main()
   if has_key(parts, "bytes") then part_bytes(compilers) end
   if has_key(parts, "build") then part_build(compilers, runs) end
   if has_key(parts, "speed") then part_speed(compilers, runs) end
+  part_same(compilers)
   return nil
 end
 
