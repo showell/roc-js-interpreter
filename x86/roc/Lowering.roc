@@ -222,9 +222,12 @@ versions_tried = |program, { lowered, inlined }| {
 	if versioning.loops == 0 {
 		return unversioned
 	}
+	# The versioned program has the codes and parameters of the program as
+	# it was, so its passes start from that lowering's settled kinds: most
+	# settle at the first pass.
 	match items_with_numbers(
 		versioning.program,
-		{ arrays: lowered.rule, versions: versioning.versions },
+		{ arrays: lowered.rule, versions: versioning.versions, seed: Seeded(lowered.settled) },
 	) {
 		Ok(again) => {
 			statements: again.statements,
@@ -243,6 +246,15 @@ RulesLowered : {
 	posts : Str,
 	heads : List(Dict(U64, LoweringBasics.State)),
 	rule : LoweringBasics.ArrayRule,
+	settled : Settled,
+}
+
+## The kinds a lowering's passes settled at: each function's result, its
+## parameters', and the functions a value may hold.
+Settled : {
+	returns : Dict(U64, LoweringBasics.Kind),
+	parameters : Dict(U64, List(LoweringBasics.Kind)),
+	escaped : List(U64),
 }
 
 ## The program's machine code under the first rule for arrays of numbers
@@ -261,12 +273,16 @@ rules_items = |program| {
 		}
 	var $answer = Err(Refused("Lowering.program_items: no rule"))
 	for rule in rules {
-		match items_with_numbers(program, { arrays: rule, versions: plain_versions_of(program) }) {
+		match items_with_numbers(
+			program,
+			{ arrays: rule, versions: plain_versions_of(program), seed: Unseeded },
+		) {
 			Ok(lowered) => return Ok({
 				statements: lowered.statements,
 				posts: lowered.posts,
 				heads: lowered.heads,
 				rule,
+				settled: lowered.settled,
 			})
 			Err(refused) => {
 				$answer = Err(refused)
@@ -322,20 +338,24 @@ threaded_skips = |code| {
 
 ## The program's machine code, with array literals of numbers made
 ## `Numbers` or `Integers` as `arrays` says and each code's loops placed
-## twice as `versions` says, and the kinds at each code's loops' heads.
+## twice as `versions` says, and the kinds at each code's loops' heads and
+## those its passes settled at. The passes start from `seed`'s kinds when it
+## has some (`Seeded`), else from every result and parameter a number.
 items_with_numbers : Bytecode.Program,
 {
 	arrays : LoweringBasics.ArrayRule,
 	versions : List(LoweringBasics.Versions),
+	seed : [Unseeded, Seeded(Settled)],
 } -> Try(
 	{
 		statements : List(Assembly.Statement),
 		posts : Str,
 		heads : List(Dict(U64, LoweringBasics.State)),
+		settled : Settled,
 	},
 	[Refused(Str)],
 )
-items_with_numbers = |program, { arrays, versions }| {
+items_with_numbers = |program, { arrays, versions, seed }| {
 	makers = KnownFunctions.makers_of(program)?
 	literals = literals_of(program)?
 	field_slots = FieldSlots.with_literal_slots(FieldSlots.field_slots(program, makers), program)
@@ -352,6 +372,14 @@ items_with_numbers = |program, { arrays, versions }| {
 	var $parameters = Dict.empty()
 	for (code, index) in program.codes.map_with_index(|code, index| (code, index)) {
 		$parameters = $parameters.insert(index, List.repeat(Number, parameter_count(code)))
+	}
+	match seed {
+		Seeded(settled) => {
+			$returns = settled.returns
+			$parameters = settled.parameters
+			$escaped_codes = settled.escaped
+		}
+		Unseeded => {}
 	}
 	known = { program, makers, statics }
 	methods = MethodTables.method_tables(known)
@@ -510,6 +538,11 @@ items_with_numbers = |program, { arrays, versions }| {
 						statements: posted.statements,
 						posts: posted.way,
 						heads: $heads,
+						settled: {
+							returns: $returns,
+							parameters: $parameters,
+							escaped: $escaped_codes,
+						},
 					})
 				}
 				Err(refused) => Err(refused)
@@ -4027,11 +4060,11 @@ keeps_numbers = |source_lines| {
 	}
 	plain = items_with_numbers(
 		program,
-		{ arrays: AnyItems, versions: plain_versions_of(program) },
+		{ arrays: AnyItems, versions: plain_versions_of(program), seed: Unseeded },
 	) ?? crash "Lowering.keeps_numbers: it lowers"
 	match items_with_numbers(
 		program,
-		{ arrays: NumberItems, versions: plain_versions_of(program) },
+		{ arrays: NumberItems, versions: plain_versions_of(program), seed: Unseeded },
 	) {
 		Ok(items) => items.statements.len() != plain.statements.len()
 		Err(_) => False
@@ -4112,11 +4145,11 @@ keeps_integers = |source_lines| {
 	}
 	doubles = items_with_numbers(
 		program,
-		{ arrays: NumberItems, versions: plain_versions_of(program) },
+		{ arrays: NumberItems, versions: plain_versions_of(program), seed: Unseeded },
 	) ?? crash "Lowering.keeps_integers: it lowers"
 	match items_with_numbers(
 		program,
-		{ arrays: IntegerItems, versions: plain_versions_of(program) },
+		{ arrays: IntegerItems, versions: plain_versions_of(program), seed: Unseeded },
 	) {
 		Ok(items) => items.statements.len() != doubles.statements.len()
 		Err(_) => False
