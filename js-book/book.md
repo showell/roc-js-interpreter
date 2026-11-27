@@ -149,23 +149,110 @@ Both programs lean on one rule of Roc's. The interpreter keeps a JavaScript prog
 
 ### When a write copies
 
-Roc writes a list in place only while the list has a single owner, and a copy is silent. On RC1 every copy is a use after a consume: a write (`List.set`, `append`, `Dict.insert`) takes the value, and something still reads the old one after it. The copy allocates the whole list again on every such write, so its cost grows with the list. roc-apps holds each shape below as a loop in its `tools/copy_shapes/`, checked in the release and dev builds.
+Roc writes a list in place only while the list has a single owner, and a copy is silent. On RC1 every copy is a use after a consume: a write (`List.set`, `append`, `Dict.insert`) takes the value, and something still reads the old one after it. The copy allocates the whole list again on every such write, so its cost grows with the list.
 
-Shapes that copy in every build:
+Each shape below is a loop in roc-apps' `tools/copy_shapes/CopyShapes.roc`, held to its count of allocations a write in the release and dev builds (`expected.txt` and `expected-dev.txt` beside it, measured on RC1). The listings are lines of those loops, each loop's call of itself written on one line; each copying shape sits beside its twin that writes in place.
 
-1. The old list read after its write: `ys = xs.set(j, v) ?? xs`, then `xs.get(j)`. Reading first is free.
-2. A closure over the list called after the write.
-3. An inner list got, written and set back while the outer list still holds it. `List.update` hands the element over unshared and is free.
-4. The old dict read after an insert, even its length.
-5. A value got from a dict, written and inserted back while the dict still holds it.
+### Shapes that copy in every build
 
-Shapes that copy in the dev build only, where a helper stays a call that owns its arguments and the release build specializes it first:
+**The old list read after its write.** The write takes the list only while it is the list's one reader:
 
-6. A helper that reads its list after writing it.
-7. A helper that reads the whole record inside the write of one of its fields.
-8. `?? xs` on a list whose entries hold a reference count, such as a list of strings. `?? crash` is free.
+```roc get-after-set: a copy a write
+ys = xs.set(j, i) ?? xs
+v = xs.get(j) ?? crash "get_after_set: in range"
+```
 
-A record update copies the record around the field it writes, inline sub-records included. A `Box` carried untouched is free, but every write re-boxes it, one allocation a write.
+Reading first is free:
+
+```roc set-restored: in place
+v = xs.get(j) ?? crash "set_restored: in range"
+ys = xs.set(j, v + 1) ?? xs
+```
+
+**A closure over the list, called after the write.** The closure holds the old list:
+
+```roc closure-called-after: a copy a write
+at = |k| xs.get(k) ?? crash "closure_called_after: in range"
+ys = xs.set(j, i) ?? xs
+closure_called_after(i + 1, steps, size, ys, sum + at(j))
+```
+
+Called inside the write's own arguments, the same closure is free (`closure-called-before`): `ys = xs.set(j, at(j) + 1) ?? xs`.
+
+**An inner list got, written and set back while the outer list still holds it:**
+
+```roc nested-get-then-set: a copy a write
+inner = rows.get(0) ?? crash "nested_get_then_set: outer in range"
+written = rows.set(0, inner.set(j, i) ?? crash "nested_get_then_set: inner in range") ?? crash "nested_get_then_set: outer in range"
+```
+
+`List.update` hands the element over unshared, and is free:
+
+```roc nested-update: in place
+written = rows.update(0, |inner| inner.set(j, i) ?? crash "nested_update: inner in range") ?? crash "nested_update: outer in range"
+```
+
+**The old dict read after an insert, even its length:**
+
+```roc dict-length-after-insert: a copy a write
+d2 = d.insert(j, i)
+dict_length_after_insert(i + 1, steps, size, d2, sum + d.len())
+```
+
+**A value got from a dict, written and inserted back while the dict still holds it:**
+
+```roc dict-get-then-insert: a copy a write
+l = d.get(0) ?? crash "dict_get_then_insert: key 0 is there"
+dict_get_then_insert(i + 1, steps, size, d.insert(0, l.set(j, i) ?? l), sum + j)
+```
+
+Taking the value out of the dict first is free:
+
+```roc dict-take-then-insert: in place
+l = d.get(0) ?? crash "dict_take_then_insert: key 0 is there"
+d0 = d.remove(0)
+dict_take_then_insert(i + 1, steps, size, d0.insert(0, l.set(j, i) ?? l), sum + j)
+```
+
+### Shapes that copy in the dev build only
+
+In the dev build a helper stays a call that owns its arguments; the release build specializes it first, and writes in place.
+
+**A helper that reads its list after writing it:**
+
+```roc helper-length-after-set: a copy a write, dev only
+bump_length_after = |xs, j, v| (xs.set(j, v) ?? xs, xs.len())
+```
+
+Reading the length first is free in both builds (`helper-length-before-set`):
+
+```roc helper-length-before-set: in place
+bump_length_first = |xs, j, v| {
+	length = xs.len()
+	(xs.set(j, v) ?? xs, length)
+}
+```
+
+**A helper that reads the whole record inside the write of one of its fields:**
+
+```roc helper-reads-record: a copy a write, dev only
+kept = |d, a| (a + d.base) % d.cells.len()
+helper_reads_record(i + 1, steps, size, { ..d, cells: d.cells.set(kept(d, j), i) ?? crash "helper_reads_record: in range" })
+```
+
+Bound on the line before, the same index is free (`index-bound-before`): `k = kept(d, j)`, then `d.cells.set(k, i)`.
+
+**`?? xs` on a list whose entries hold a reference count,** such as a list of strings:
+
+```roc str-list-restored: a copy a write, dev only
+ys = xs.set(j, "x") ?? xs
+```
+
+`?? crash "..."` in its place is free in every build (`str-list-or-crash`).
+
+### Records and boxes
+
+A record update copies the record around the field it writes, inline sub-records included. A `Box` carried untouched is free, but every write re-boxes it, one allocation a write. {{chapter Handing the machine on}} shows both at work on the interpreter's machine record.
 
 ## The compiler to x86-64
 
@@ -719,11 +806,29 @@ The interpreter's performance work came down to {{chapter Roc's copy rule}} and 
 
 ### A value is copied when it is handed on
 
-Every VM instruction takes the machine and hands it back, and a handler copies the machine record on the way in, by the copy rule's record rule.
+Every VM instruction takes the machine and hands it back: `dispatch!` passes it to the instruction's handler, which answers an update of it, `{ ..machine, pc: ... }` or the like. A record update copies the record around the field it writes, so each instruction copies the whole inline record once, however little it changes. That cost is the record's size, paid at every instruction, and the next two habits keep the size down.
 
 ### Box what is rarely written
 
-A part of the machine that most instructions leave alone costs a copy on every instruction if it sits inline. The event queue was the first example: only timers and clicks touch it, yet inline it made the release build's fib(22) take 123 ms; boxed, 82 ms (`15686d94`). Since every write re-boxes, a box suits a part that is rarely written after it is made.
+A part of the machine that most instructions leave alone still adds its bytes to that copy on every instruction while it sits inline. Behind a `Box` it is one pointer. The event queue was the first example: only timers and clicks touch it. Before `15686d94` it sat inline, and a timer's clear wrote it so:
+
+```roc Vm.roc before 15686d94: the queue inline
+events : Events.Queue,
+
+Timer(number) => { ..machine, events: Events.without_timer(machine.events, number) }
+```
+
+After it, the field is boxed, and each of its few writers unboxes it, writes, and boxes the result:
+
+```roc Vm.roc at 15686d94: the queue boxed
+events : Box(Events.Queue),
+
+Timer(number) => { ..machine, events: Box.box(Events.without_timer(Box.unbox(machine.events), number)) }
+```
+
+The release build's fib(22) went from 123 ms to 82, and the loops from 441 ms to 350, with every allocation count as it was (`15686d94`'s message). Since every write re-boxes, a box suits a part that is rarely written after it is made.
+
+**Finding a field worth boxing.** List each field of the record beside the handlers that write it. A field that only a few rare instructions write is a candidate: the event queue (the timer builtins and the event loop), the turtle (the turtle's builtins), the collector's schedule (a collection). A field that most instructions write, such as the program counter or the stack's top, stays inline, since boxing it would add an allocation to most instructions. Then weigh the record's size against the line below; `tools/machine_size.shale` holds the machine's size exactly, so a change that moves it fails the gate until the commit says why.
 
 ### Stay under 256 bytes
 
