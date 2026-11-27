@@ -115,6 +115,11 @@ Runtime :: [].{
 	new_int32_array : Str
 	new_int32_array = "runtime_new_int32_array"
 
+	## The same for an array of the element kind Numbers, whose caller fills
+	## its items with numbers alone.
+	new_numbers_array : Str
+	new_numbers_array = "runtime_new_numbers_array"
+
 	## The routine that makes an empty object, in `rax`.
 	new_object : Str
 	new_object = "runtime_new_object"
@@ -1421,9 +1426,11 @@ container_items = {
 		]
 			.concat(RuntimeBuilders.boxed_items(Boxing.array_tag))
 			.append(Emit.ret)
-	new_array = new_array_of({ label: Runtime.new_array, kind: Array }).concat(
+	new_array = [
+		new_array_of({ label: Runtime.new_array, kind: Array }),
 		new_array_of({ label: Runtime.new_int32_array, kind: Int32Array }),
-	)
+		new_array_of({ label: Runtime.new_numbers_array, kind: NumbersArray }),
+	].join()
 	new_object = [
 		Emit.mark(Runtime.new_object),
 		Emit.imm(Rdi, 40 + 4 * 16),
@@ -1704,41 +1711,43 @@ container_items = {
 	# The element kind is kept before the item is stored, so a collection
 	# while the items grow, which walks the heap under `gcalways`, finds it
 	# true.
-	push_item = [
-		Emit.mark("runtime_push_item"),
-		Emit.byte_load(Rcx, Heap.element_kind_place),
-		Emit.cmp_imm(Rcx, Heap.element_code(Values)),
-		Emit.jcc(E, "runtime_push_item_kept"),
-		Emit.call(Heap.keep_item_kind),
-		Emit.mark("runtime_push_item_kept"),
-		Emit.load(Rcx, Emit.mem(Rdi, 0)),
-		Emit.load(R8, Emit.mem(Rdi, 8)),
-		Emit.cmp(Rcx, R8),
-		Emit.jcc(B, "runtime_push_item_room"),
-		Emit.save(Rdi),
-		Emit.save(Rsi),
-		Emit.mov(Rdi, R8),
-		Emit.shl(Rdi, 4),
-		Emit.call(Heap.allocate(Items)),
-		Emit.restore(Rsi),
-		Emit.restore(Rdi),
-		Emit.load(R8, Emit.mem(Rdi, 8)),
-		Emit.plus(R8, R8),
-		Emit.store(Emit.mem(Rdi, 8), R8),
-		Emit.save(Rsi),
-		Emit.load(Rcx, Emit.mem(Rdi, 0)),
-		Emit.shl(Rcx, 3),
-		Emit.load(Rsi, Emit.mem(Rdi, 16)),
-		Emit.mov(R9, Rdi),
-		Emit.mov(Rdi, Rax),
-		Instruction(RepMovsb),
-		Emit.store(Emit.mem(R9, 16), Rax),
-		Emit.mov(Rdi, R9),
-		Emit.restore(Rsi),
-		Emit.mark("runtime_push_item_room"),
-		Emit.load(Rcx, Emit.mem(Rdi, 0)),
-		Emit.mov(R9, Rcx),
-	]
+	push_item = [Emit.mark("runtime_push_item")]
+		.concat(
+			Heap.kind_kept_items({
+				bits: Rsi,
+				stored: Value,
+				label: "runtime_push_item",
+			}),
+		)
+		.concat([
+			Emit.load(Rcx, Emit.mem(Rdi, 0)),
+			Emit.load(R8, Emit.mem(Rdi, 8)),
+			Emit.cmp(Rcx, R8),
+			Emit.jcc(B, "runtime_push_item_room"),
+			Emit.save(Rdi),
+			Emit.save(Rsi),
+			Emit.mov(Rdi, R8),
+			Emit.shl(Rdi, 4),
+			Emit.call(Heap.allocate(Items)),
+			Emit.restore(Rsi),
+			Emit.restore(Rdi),
+			Emit.load(R8, Emit.mem(Rdi, 8)),
+			Emit.plus(R8, R8),
+			Emit.store(Emit.mem(Rdi, 8), R8),
+			Emit.save(Rsi),
+			Emit.load(Rcx, Emit.mem(Rdi, 0)),
+			Emit.shl(Rcx, 3),
+			Emit.load(Rsi, Emit.mem(Rdi, 16)),
+			Emit.mov(R9, Rdi),
+			Emit.mov(Rdi, Rax),
+			Instruction(RepMovsb),
+			Emit.store(Emit.mem(R9, 16), Rax),
+			Emit.mov(Rdi, R9),
+			Emit.restore(Rsi),
+			Emit.mark("runtime_push_item_room"),
+			Emit.load(Rcx, Emit.mem(Rdi, 0)),
+			Emit.mov(R9, Rcx),
+		])
 		.concat(item_address_items)
 		.concat([
 			Emit.store(Emit.mem(R8, 0), Rsi),

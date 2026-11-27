@@ -239,6 +239,7 @@ stores_nothing = |instruction|
 		Setcc(_) | MovzxByte(_) | Pop(_) | Cmov(_) => True
 		MovsdRegReg(_) | MovsdLoad(_) | Sse(_) | Ucomisd(_) => True
 		Cvtsi2sd(_) | Cvttsd2si(_) | MovqToXmm(_) | MovqFromXmm(_) => True
+		Cvtsi2sd32(_) | Cvttsd2si32(_) => True
 		_ => False
 	}
 

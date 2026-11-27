@@ -2444,15 +2444,22 @@ literal_array_kind = |site, { item_kinds, unconverted }| {
 	}
 }
 
-## The element kind an array literal's items hold, as far as their kinds
-## say (`Heap.ElementKind`): Int32 when each was an `Integer` within 32 bits
-## before it was made a double (`unconverted`), or there are none; Values
-## when one is known to be no number; else `Found`, as the program runs.
+## The element kind an array literal starts at (`Heap.ElementKind`): Numbers
+## for an array of numbers the lowering knows (`made_kind`, `Numbers` or
+## `Integers`), so every store into one, of a number, keeps it with no code
+## (`item_stored`); else as far as its items' kinds say, Int32 when each was
+## an `Integer` within 32 bits before it was made a double (`unconverted`),
+## or there are none, Values when one is known to be no number, and else
+## `Found`, as the program runs.
 literal_element : {
+	made_kind : LoweringBasics.Kind,
 	item_kinds : List(LoweringBasics.Kind),
 	unconverted : List(LoweringBasics.Kind),
-} -> [Int32, Values, Found]
-literal_element = |{ item_kinds, unconverted }| {
+} -> [Int32, Numbers, Values, Found]
+literal_element = |{ made_kind, item_kinds, unconverted }| {
+	if LoweringBasics.holds_numbers(made_kind) {
+		return Numbers
+	}
 	is_int32 = |kind|
 		match kind {
 			Integer(range) => range.low >= -2147483648 and range.high <= 2147483647
@@ -2529,16 +2536,17 @@ array_kind = |kind|
 		kind
 	}
 
-## What an item written into an array of the kind `array`, of the kind
-## `stored`, is known to be,
-## for the code that keeps the array's element kind true
-## (`Heap.ItemStored`): an item of an array of whole numbers within 32 bits
-## is one (the walk widens the array's kind before it would store another,
-## `integer_items_widened`), so every element kind holds it.
+## What an item of the kind `stored`, written into an array of the kind
+## `array`, is known to be, for the code that keeps the array's element kind
+## true (`Heap.ItemStored`). An array of numbers the lowering knows
+## (`Numbers` or `Integers`) starts at Numbers (`literal_element`), and only
+## numbers are written into one (the walk widens the program's kinds before
+## it would store another, `numbers_escape` and `integer_items_widened`), so
+## its kind, Numbers or lower, holds each of them.
 item_stored : { array : LoweringBasics.Kind, stored : LoweringBasics.Kind } -> Heap.ItemStored
 item_stored = |{ array, stored }|
 	match (array, stored) {
-		(Integers(range), _) if range.low >= -2147483648 and range.high <= 2147483647 => InKind
+		(Numbers, _) | (Integers(_), _) => InKind
 		(_, Number) | (_, Integer(_)) => Number
 		(_, Value) => Value
 		_ => NotNumber
@@ -2790,13 +2798,18 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 			base = depth - count
 			item_kinds = state.stack_kinds.drop_first(base)
 			made_of = { item_kinds, unconverted: unconverted.drop_first(base) }
+			made_kind = literal_array_kind(site, made_of)
 			# The array starts at the element kind its items hold (`Heap`'s
 			# header): known here, or found from them as the program runs.
 			kinded =
-				match literal_element(made_of) {
+				match literal_element({ made_kind, item_kinds, unconverted: made_of.unconverted }) {
 					Int32 => LoweringBasics.array_made_items(
 						site,
 						{ base, count, made_by: Runtime.new_int32_array },
+					)
+					Numbers => LoweringBasics.array_made_items(
+						site,
+						{ base, count, made_by: Runtime.new_numbers_array },
 					)
 					Values => LoweringBasics.arguments_array_items(site, { base, count })
 					Found => LoweringBasics.arguments_array_items(site, { base, count }).append(
@@ -2807,10 +2820,7 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 			Ok(
 				LoweringBasics.falling(
 					made,
-					LoweringBasics.with_top(
-						LoweringBasics.without_top(state, count),
-						literal_array_kind(site, made_of),
-					),
+					LoweringBasics.with_top(LoweringBasics.without_top(state, count), made_kind),
 				),
 			)
 		}

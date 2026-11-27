@@ -252,6 +252,11 @@ register_accesses = |instruction|
 			writes: xmm_unit(to),
 		})
 		Cvttsd2si({ to, from }) => Ok({ reads: xmm_unit(from), writes: general_unit(to) })
+		Cvtsi2sd32({ to, from }) => Ok({
+			reads: both(general_unit(from), xmm_unit(to)),
+			writes: xmm_unit(to),
+		})
+		Cvttsd2si32({ to, from }) => Ok({ reads: xmm_unit(from), writes: general_unit(to) })
 		MovqToXmm({ to, from }) => Ok({ reads: general_unit(from), writes: xmm_unit(to) })
 		MovqFromXmm({ to, from }) => Ok({ reads: xmm_unit(from), writes: general_unit(to) })
 		_ => Err(Opaque)

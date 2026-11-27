@@ -217,22 +217,19 @@ Heap :: [].{
 		place = Heap.element_kind_place
 		kept = "${label}_kind_kept"
 		lowered = "${label}_kind_lowered"
-		to_numbers = "${label}_kind_numbers"
+		not_int32 = "${label}_kind_not_int32"
 		to_values = "${label}_kind_values"
-		# A whole number of 32 bits, not -0: its integer is its low 32 bits
-		# sign-extended, and the double made back from it has its bits.
+		# A whole number of 32 bits, not -0, which every kind holds: the
+		# double made back from its 32-bit integer has its bits (a value that
+		# is no number is a NaN to `cvttsd2si`, as `X86.Cvttsd2si32` says).
 		int32_tested = [
 			Emit.to_xmm(Xmm0, bits),
-			Instruction(Cvttsd2si({ to: Rcx, from: Xmm0 })),
-			Instruction(Movsxd({ to: Rdx, from: Rcx })),
-			Emit.cmp(Rdx, Rcx),
-			Emit.jcc(Ne, to_numbers),
-			Instruction(Cvtsi2sd({ to: Xmm1, from: Rcx })),
+			Instruction(Cvttsd2si32({ to: Rcx, from: Xmm0 })),
+			Instruction(Cvtsi2sd32({ to: Xmm1, from: Rcx })),
 			Instruction(MovqFromXmm({ to: Rdx, from: Xmm1 })),
 			Emit.cmp(Rdx, bits),
 			Emit.jcc(E, kept),
-			Emit.mark(to_numbers),
-			Emit.imm(Rdx, Heap.element_code(Numbers)),
+			Emit.mark(not_int32),
 		]
 		match stored {
 			InKind => []
@@ -244,21 +241,29 @@ Heap :: [].{
 					Emit.jcc(Ne, kept),
 				]
 					.concat(int32_tested)
-					.concat([Emit.byte_store(place, Dl), Emit.mark(kept)])
-			Value =>
-				[
-					Emit.byte_load(Rdx, place),
-					Emit.cmp_imm(Rdx, Heap.element_code(Values)),
-					Emit.jcc(E, kept),
-					Emit.mov(Rcx, bits),
-					Emit.shr(Rcx, Boxing.tag_shift),
-					Emit.cmp_imm(Rcx, Boxing.first_tag),
-					Emit.jcc(Ae, to_values),
-					Emit.cmp_imm(Rdx, Heap.element_code(Numbers)),
-					Emit.jcc(E, kept),
-				]
-					.concat(int32_tested)
 					.concat([
+						Emit.imm(Rdx, Heap.element_code(Numbers)),
+						Emit.byte_store(place, Dl),
+						Emit.mark(kept),
+					])
+			# An Int32 item fits any kind, so it is tested first, with no load
+			# of the header: a whole number, the commonest item the SAT race
+			# stores, takes 6 instructions. Then Values holds any item, a
+			# number keeps Numbers or lowers Int32 to it, and any other value
+			# lowers either to Values.
+			Value =>
+				int32_tested
+					.concat([
+						Emit.byte_load(Rdx, place),
+						Emit.cmp_imm(Rdx, Heap.element_code(Values)),
+						Emit.jcc(E, kept),
+						Emit.mov(Rcx, bits),
+						Emit.shr(Rcx, Boxing.tag_shift),
+						Emit.cmp_imm(Rcx, Boxing.first_tag),
+						Emit.jcc(Ae, to_values),
+						Emit.cmp_imm(Rdx, Heap.element_code(Numbers)),
+						Emit.jcc(E, kept),
+						Emit.imm(Rdx, Heap.element_code(Numbers)),
 						Emit.jmp(lowered),
 						Emit.mark(to_values),
 						Emit.imm(Rdx, Heap.element_code(Values)),
@@ -1737,13 +1742,9 @@ block_check_items = [
 		Emit.cmp_imm(Rax, Heap.element_code(Int32)),
 		Emit.jcc(Ne, "runtime_heap_block_next"),
 		Emit.to_xmm(Xmm0, Rdx),
-		Instruction(Cvttsd2si({ to: Rsi, from: Xmm0 })),
-		Instruction(Movsxd({ to: Rdx, from: Rsi })),
-		Emit.cmp(Rdx, Rsi),
-		Emit.jcc(Ne, "runtime_heap_bad_element"),
-		Instruction(Cvtsi2sd({ to: Xmm1, from: Rsi })),
+		Instruction(Cvttsd2si32({ to: Rsi, from: Xmm0 })),
+		Instruction(Cvtsi2sd32({ to: Xmm1, from: Rsi })),
 		Instruction(MovqFromXmm({ to: Rsi, from: Xmm1 })),
-		Emit.load(Rdx, Emit.mem(Rdi, 0)),
 		Emit.cmp(Rsi, Rdx),
 		Emit.jcc(Ne, "runtime_heap_bad_element"),
 		Emit.mark("runtime_heap_block_next"),

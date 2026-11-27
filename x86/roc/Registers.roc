@@ -414,8 +414,11 @@ direct_registers = |instruction|
 		MovMemReg({ to: _, from }) => [from]
 		MovzxByte({ to, from: _ })
 		| Cvttsd2si({ to, from: _ })
+		| Cvttsd2si32({ to, from: _ })
 		| MovqFromXmm({ to, from: _ }) => [to]
-		Cvtsi2sd({ to: _, from }) | MovqToXmm({ to: _, from }) => [from]
+		Cvtsi2sd({ to: _, from })
+		| Cvtsi2sd32({ to: _, from })
+		| MovqToXmm({ to: _, from }) => [from]
 		Div(register) | Div32(register) | Idiv(register) | ImulWide(register) => [register]
 		Neg(register) | Not(register) => [register]
 		Push(register) | Pop(register) | CallReg(register) => [register]

@@ -176,6 +176,14 @@ X86 :: [].{
 		Ucomisd({ left : X86.Xmm, right : X86.Xmm }),
 		Cvtsi2sd({ to : X86.Xmm, from : X86.Register }),
 		Cvttsd2si({ to : X86.Register, from : X86.Xmm }),
+		# `from`'s low 32 bits, a signed integer, made a double (`cvtsi2sd
+		# xmm, r32`).
+		Cvtsi2sd32({ to : X86.Xmm, from : X86.Register }),
+		# `from`'s double truncated to a signed 32-bit integer, zero-extended
+		# into `to` (`cvttsd2si r32, xmm`): 0x80000000 for a NaN or a double
+		# past the 32-bit integers, so a double makes the round trip back to
+		# its own bits exactly when it is a whole number of 32 bits, not -0.
+		Cvttsd2si32({ to : X86.Register, from : X86.Xmm }),
 		MovqToXmm({ to : X86.Xmm, from : X86.Register }),
 		MovqFromXmm({ to : X86.Register, from : X86.Xmm }),
 	]
@@ -514,6 +522,24 @@ X86 :: [].{
 					reg: register_number(to),
 					operand: Direct(xmm_number(from)),
 				}),
+			)
+			Cvtsi2sd32({ to, from }) => append_encoded(
+				out,
+				{ ..crossing_layout({
+					prefix: [0xF2],
+					opcode: [0x0F, 0x2A],
+					reg: xmm_number(to),
+					operand: Direct(register_number(from)),
+				}), wide: Narrow },
+			)
+			Cvttsd2si32({ to, from }) => append_encoded(
+				out,
+				{ ..crossing_layout({
+					prefix: [0xF2],
+					opcode: [0x0F, 0x2C],
+					reg: register_number(to),
+					operand: Direct(xmm_number(from)),
+				}), wide: Narrow },
 			)
 			MovqToXmm({ to, from }) => append_encoded(
 				out,
@@ -879,6 +905,9 @@ X86 :: [].{
 	expect hex_of(Cvtsi2sd({ to: Xmm0, from: Rax })) == "f2 48 0f 2a c0"
 	expect hex_of(Cvtsi2sd({ to: Xmm9, from: R10 })) == "f2 4d 0f 2a ca"
 	expect hex_of(Cvttsd2si({ to: Rax, from: Xmm0 })) == "f2 48 0f 2c c0"
+	expect hex_of(Cvtsi2sd32({ to: Xmm1, from: Rcx })) == "f2 0f 2a c9"
+	expect hex_of(Cvtsi2sd32({ to: Xmm9, from: R10 })) == "f2 45 0f 2a ca"
+	expect hex_of(Cvttsd2si32({ to: Rcx, from: Xmm0 })) == "f2 0f 2c c8"
 	expect hex_of(MovqToXmm({ to: Xmm0, from: Rax })) == "66 48 0f 6e c0"
 	expect hex_of(MovqFromXmm({ to: Rax, from: Xmm0 })) == "66 48 0f 7e c0"
 	expect hex_of(MovqFromXmm({ to: R9, from: Xmm10 })) == "66 4d 0f 7e d1"
