@@ -146,7 +146,7 @@ By 01:21 UTC the compiler ran 45 of the 61 programs the corpus then held exactly
 
 ### 2026-11-26: method tables, and a third contestant
 
-The methods moved off the instances (`e4834f9`): each class got one table of its methods, each method one function whose first parameter is the receiver, so that the compiler can call a method directly once it knows the receiver's class (`555b245`). Roc's own build of the fib race joined as a third contestant (`ee99278`), and the compiler came out even with it ({{chapter Three compilers, one race}}). The same day the compiler gained an integer kind for whole numbers proved in range (`81b5809`) and put small leaf functions in line at their calls inside loops (`7810da3`).
+The methods moved off the instances (`e4834f9`): each class got one table of its methods, each method one function whose first parameter is the receiver, so that the compiler can call a method directly once it knows the receiver's class (`555b245`). Roc's own build of the fib race joined as a third contestant (`ee99278`), and the compiler came out even with it ({{chapter The fib race}}). The same day the compiler gained an integer kind for whole numbers proved in range (`81b5809`) and put small leaf functions in line at their calls inside loops (`7810da3`).
 
 ### 2026-11-27: a collector for the compiled programs
 
