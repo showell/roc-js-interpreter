@@ -2245,7 +2245,10 @@ integer_literal = |site, { instruction, state, demoted, jump_joined }| {
 				},
 			).is_ok()
 		Ok(GetIndex(_)) => takes_integer_index(beneath)
-		Ok(Call(_)) | Ok(LoadLocal(_)) => integer_argument(site, state)
+		Ok(LoadLocal(slot)) =>
+			integer_argument(site, state)
+				or (!jump_joined and literal_on_left(site, { literal: kind, slot, state }))
+		Ok(Call(_)) => integer_argument(site, state)
 		Ok(PushNumber(_)) | Ok(MakeArray(_)) => integer_argument(site, state) or integer_item(site)
 		Ok(SetIndex(_)) =>
 			match kind_under(state, 1) {
@@ -2258,6 +2261,38 @@ integer_literal = |site, { instruction, state, demoted, jump_joined }| {
 		Ok({ whole: LoweringBasics.whole_of_literal(number), kind })
 	} else {
 		Err(NotInteger)
+	}
+}
+
+## Whether a literal pushed at the site is the left operand of `+ - * %`
+## or a bitwise operator whose right is the `Integer` the next instruction
+## loads from `slot`, and whose answer stays one (`2 * i`): the instruction
+## after that load is the operator, and no other way reaches it.
+literal_on_left : LoweringBasics.Site,
+{
+	literal : LoweringBasics.Kind,
+	slot : U64,
+	state : LoweringBasics.State,
+} -> Bool
+literal_on_left = |site, { literal, slot, state }| {
+	right = match state.slots.get(slot) {
+		Ok(Ready(Integer(range))) => Integer(range)
+		_ => return False
+	}
+	match site.code.ops.get(site.at + 2) {
+		Ok(Binary(operator, _)) if operator != Divide and !site.skipped.contains(site.at + 2) =>
+			integer_binary(
+				site,
+				{
+					operator,
+					left: literal,
+					right,
+					callee: Undefined,
+					step: 3,
+					joined: True,
+				},
+			).is_ok()
+		_ => False
 	}
 }
 
