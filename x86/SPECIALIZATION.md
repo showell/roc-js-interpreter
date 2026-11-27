@@ -2,7 +2,7 @@
 
 The code here was written by AI coding agents (Claude), with human supervision.
 
-This is a proposed design for milestone 6: values that keep known number kinds through arrays and objects. Nothing in the compiler changed for it. It follows x86/COLLECTOR.md's shape: why now, what the compiled program looks like, the designs compared, the one I'd build, how it is checked, the lanes, and the decisions for Steve.
+This is the design for milestone 6: values that keep known number kinds through arrays and objects. Steve accepted it on 2026-11-27 with all seven decisions at the end. Lane 1 is built ("Lane 1, as built", the last section). It follows x86/COLLECTOR.md's shape: why now, what the compiled program looks like, the designs compared, the one I'd build, how it is checked, the lanes, and the decisions for Steve.
 
 **Every number here is preliminary.** The box's load average went from 0.2 to 8.3 while I measured (other lanes compiling). The profiles count CPU time, so their shares hold up under load. The kernel timings are medians of 7 alternated runs at a load of 2.6 to 3.4.
 
@@ -161,3 +161,45 @@ Lane 1 is the one to start on a quiet tree: it touches Heap.roc and every runtim
 5. **A budget on versioned instructions, and byte identity held for programs with nothing to guard?** Lean yes.
 6. **Milestone 6 is the SAT race's: fib, fourteen, bank and big daddy are expected not to move, and bank's hashing and big daddy's Map search and sweep go to lanes of their own outside this milestone?** Lean yes.
 7. **Lane 1 on a quiet tree, not beside other compiler lanes?** Lean yes, as for the collector's lane 1.
+
+## Lane 1, as built (2026-11-27)
+
+`roc/Heap.roc`'s header is the element kinds' home; nothing reads them for code generation yet, and every program's output is as it was.
+
+**The header.** An array's record block is one of three block kinds: `Int32Array` (code 15), `NumbersArray` (14) or `Array` (2, Values). The codes fall as the kind does, and each fits the header's byte 6 (`Heap.element_kind_place`, the record's address minus 2), so a lowering is one byte stored. The collector traces all three as an array's record.
+
+**Where a kind is set:**
+- **An array literal** (`MakeArray`) starts at Numbers when the lowering knows it holds numbers (`Numbers` or `Integers`, `runtime_new_numbers_array`); at Int32 when each item was an `Integer` within 32 bits, or there are none (`runtime_new_int32_array`); at Values when an item is known to be no number; and otherwise `runtime_find_element_kind` finds it from the items as the program runs. A literal with spreads (`NewArray`) starts at Int32, and its appends keep it.
+- **Every other array a routine makes** (`map`, `filter`, `slice`, `concat`, `split`, `Array.from`, a spread into a call, a rest, a pattern's array) is Values, from `runtime_new_array`.
+
+**Where a kind is kept:** `Heap.kind_kept_items`, by what the item is known to be (`Heap.ItemStored`), and the routine `runtime_keep_item_kind` built from it:
+- IndexLowering's store in line: nothing for an array of numbers the lowering knows (only numbers are written into one, and it starts at Numbers), one byte stored for an item known to be no number, the Number sequence for a double, the Value sequence for anything else;
+- `runtime_push_item` (and so `push`, the appends of a literal with spreads, `concat`, `filter`, the timers' list), in line, before the item is stored;
+- `runtime_set_index`'s store in place and each item `splice` puts in, by the routine;
+- `sort` makes the kind Values when it writes an `undefined` past the items it sorted; `reverse`, `pop` and `sort`'s moves change no item's kind.
+
+**The test.** A whole number of 32 bits, never -0, is a double that makes the round trip through a 32-bit integer back to its own bits: `cvttsd2si r32` then `cvtsi2sd` from it (X86's `Cvttsd2si32` and `Cvtsi2sd32`), whose 0x80000000 for a NaN, a boxed value or a double past 32 bits misses the round trip. The instructions each store adds, on its fast way:
+
+| store | its item known to be | instructions |
+|---|---|---|
+| in line, into an array of numbers the lowering knows | a number | 0 |
+| in line | no number | 2 |
+| in line | a double: into Numbers or Values / into Int32, a whole number of 32 bits / lowering Int32 | 3 / 9 / 11 |
+| in line, and `push` | any value: a whole number of 32 bits, into any array / any item into Values / a number into Numbers | 6 / 9 / 15 |
+| `runtime_set_index` in place, each item `splice` puts in | any value | the Value sequence and a call, about 15 more |
+
+**The check.** The heap walk (`heapwalk`, and after every collection under `gcalways` and `gcsample`) holds every Int32 and Numbers array's items, to its length, to the kind, and stops with "x86: the heap walk found an array's item that its element kind doesn't hold". `x86/tests/element-kinds.js` changes kinds every way (fractions and strings stored in line, -0, the edges of 32 bits, NaN and the infinities pushed, stores through arrays held in an object, `splice`, `sort`, spreads, `concat`, arrays routines make). Planted and seen red, each taken out: the in-line store of a value without its upkeep (x86/programs.shale failed 2 of 118, element-kinds.js and the SAT race, whose `activity` takes doubles); `runtime_push_item` without its upkeep; the Number sequence's lowering left unstored.
+
+**What it cost** (master 779279e's executables against this lane's, alternated, niced, medians of 7 runs, CPU; the box was loaded by other lanes, load 2.6 to 3.9, so these are preliminary):
+
+| race | master | lane |
+|---|---|---|
+| fib, N = 100,000 | 1,413 ms | 1,243 ms |
+| bank, 2,000,000 transfers | 472 ms | 475 ms |
+| fourteen, 300 rounds | 520 ms | 519 ms |
+| big daddy, 300 rounds | 1,537 ms | 1,376 ms |
+| sat, small | 865 ms | 805 ms |
+
+Every difference is within the box's noise; the same pair measured 11 runs each at load 7.6 gave sat 1,035 against 994 ms and big daddy 1,661 against 1,600. The profile is the steadier guide: of sat's 3,130 samples, 157 (5%) fall on the upkeep's instructions, the 80 Int32 tests in its code and the runtime's and the labels past them, a few of them the store's before it; big daddy's are about 1%. An earlier cut of the lane, measured at a load near 1, had fib 24% slower (its limb arrays started Int32, so every store took the test) and sat 7 to 16% slower (18 instructions a store); starting the lowering's arrays of numbers at Numbers and the 32-bit round trip took both out.
+
+**For lane 2 and 3:** a guard on an array is its tag, then `movzx` of `[record - 2]` and a compare with 15 or 14. Arrays that arrive held as values (sat's `st`) are Int32 or Numbers when built from literals and appends; every routine's array is Values until the routine is taught its kind. A versioned loop's fast copy that knows an array is Int32 and stores an `Integer` within 32 bits needs no upkeep; one that stores anything else keeps the generic store's.
