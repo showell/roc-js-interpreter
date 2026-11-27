@@ -1,0 +1,141 @@
+-- budget: steps=400000000 arena_bytes=2000000000
+-- x86/satprofile.shale: where the compiled SAT race spends its time, for
+-- x86/satrace/TRIAGE.md. Builds js-x86 on the dev backend, compiles
+-- x86/satrace/sat.js (its WORKLOAD set by `workload=`, "small" unset),
+-- writes the executable, its disassembly (objdump, Intel syntax, at the
+-- addresses the code runs at) and its labels (js-x86's `labels`), then runs
+-- it with the argument `profile` (x86/roc/Profiler.roc: a sample each
+-- millisecond of CPU time, counted by the code byte it landed on) and
+-- prints the samples by function (`code_<n>`, the bytecode's n-th code, or
+-- the runtime routine), by bytecode instruction (`code_<n>_<at>`) and by
+-- instruction, each with its share. `perf` doesn't sample for an
+-- unprivileged user on the box, hence the executable's own sampler.
+--
+--   shale x86/satprofile.shale
+--   shale x86/satprofile.shale workload=race top=60
+
+use("./executables.shale")
+
+const WHO = "x86/satprofile.shale"
+const RACE = "x86/satrace/sat.js"
+const CODE_START = 4194424
+const WANT_OBJDUMP = "x86: the compiled race read back for its triage"
+
+function hex(n)
+  local digits = "0123456789abcdef"
+  local out = ""
+  local x = n
+  while x > 0 do
+    local d = x % 16
+    out = sub(digits, d + 1, d + 1) .. out
+    x = x // 16
+  end
+  if out == "" then out = "0" end
+  return out
+end
+
+-- The labels as {at, label}, sorted by offset.
+function labels_of(exe, text)
+  local made = driver_run(exe, text, "labels")
+  if made.code ~= 0 then fail(WHO .. ": js-x86 labels exited " .. made.code .. ": " .. trim(made.out)) end
+  local rows = {}
+  for l in lines(made.out) do
+    local m = re_find(l, "^([0-9]+) (.*)$")
+    if m ~= nil then push(rows, {at = tonumber(m.groups[1]), label = m.groups[2]}) end
+  end
+  sort(rows, "at")
+  return rows
+end
+
+-- The samples as {at, n}: each code offset sampled and its count, from
+-- `od`'s reading of the counts' file (eight bytes a code byte; a run of
+-- zero lines is one `*`).
+function samples_of(prof)
+  local r = run({"od", "-A", "d", "-t", "u8", real(prof)}, {timeout_ms = 120000, whole = 100000000})
+  if r.code ~= 0 then fail(WHO .. ": od exited " .. r.code) end
+  local out = {}
+  for l in lines(r.out) do
+    local ws = words(l)
+    if #ws > 1 then
+      local base = tonumber(ws[1]) // 8
+      for j = 2, #ws do
+        local n = tonumber(ws[j])
+        if n > 0 then push(out, {at = base + j - 2, n = n}) end
+      end
+    end
+  end
+  return out
+end
+
+-- The label each sample falls under, of those `keep` accepts: a map from
+-- label to count. `rows` and `samples` are both sorted by offset.
+function attributed(rows, samples, pattern)
+  local kept = {}
+  for r in rows do
+    if re_find(r.label, pattern) ~= nil then push(kept, r) end
+  end
+  local by = {}
+  local k = 1
+  for s in samples do
+    while k < #kept and kept[k + 1].at <= s.at do k = k + 1 end
+    local name = "(before every label)"
+    if #kept > 0 and kept[k].at <= s.at then name = kept[k].label end
+    by[name] = get(by, name, 0) + s.n
+  end
+  return by
+end
+
+function percent(n, total)
+  local tenths = (n * 1000 + total // 2) // total
+  return (tenths // 10) .. "." .. (tenths % 10) .. "%"
+end
+
+function math_min(a, b)
+  if a < b then return a end
+  return b
+end
+
+function shown(title, by, total, top)
+  local rows = {}
+  for k in keys(by) do push(rows, {name = k, n = by[k]}) end
+  sort(rows, "n", "desc")
+  print("── " .. title)
+  for i = 1, math_min(top, #rows) do print(rows[i].n .. "  " .. percent(rows[i].n, total) .. "  " .. rows[i].name) end
+end
+
+function main()
+  local workload = arg("workload", "small")
+  local top = arg("top", 40)
+  local text = re_replace(read(RACE), "\nconst WORKLOAD = [^;\n]+;", "\nconst WORKLOAD = \"" .. workload .. "\";")
+  local exe = built_roc(WHO, "x86/roc/JsToX86.roc", "js-x86", "dev")
+  local dir = executables_dir() .. "/satprofile"
+  mkdir(dir)
+  local path = dir .. "/sat"
+  local bytes = written_executable(WHO, exe, text, path)
+  local rows = labels_of(exe, text)
+  local out = {}
+  for r in rows do push(out, hex(CODE_START + r.at) .. " " .. r.label) end
+  replace(path .. ".labels", join(out, "\n") .. "\n")
+  local d = run({"objdump", "-D", "-b", "binary", "-mi386:x86-64", "-M", "intel", "--adjust-vma=0x400000", "--start-address=0x400078", real(path)}, {timeout_ms = 120000, whole = 200000000, want = WANT_OBJDUMP})
+  if d.code ~= 0 then fail(WHO .. ": objdump exited " .. d.code) end
+  replace(path .. ".s", d.out)
+  print("the executable: " .. real(path) .. " (" .. bytes .. " bytes), " .. real(path) .. ".s, " .. real(path) .. ".labels")
+  print("load: " .. trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out))
+  local prof = dir .. "/x86.prof"
+  if exists(prof) then remove(prof) end
+  local r = run({real(path), "profile"}, {cwd = dir, timeout_ms = 600000, whole = 100000, want = WANT_BINARY, nice = 19})
+  if r.code ~= 0 then fail(WHO .. ": the executable exited " .. r.code .. ": " .. sub(r.out, 1, 2000)) end
+  print("ran in " .. r.ms .. " ms, " .. r.cpu_ms .. " ms of CPU")
+  local samples = samples_of(prof)
+  local total = 0
+  for s in samples do total = total + s.n end
+  print(total .. " samples")
+  if total == 0 then fail(WHO .. ": no samples") end
+  shown("by function", attributed(rows, samples, "^(code_[0-9]+|runtime_[a-z_]+)$"), total, top)
+  shown("by bytecode instruction", attributed(rows, samples, "^(code_[0-9]+(_[0-9]+)?|runtime_[a-z_]+)$"), total, top)
+  local by_at = {}
+  for s in samples do by_at[hex(CODE_START + s.at)] = s.n end
+  shown("by instruction", by_at, total, top)
+end
+
+main()

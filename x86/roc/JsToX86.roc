@@ -6,6 +6,8 @@ app [main!] { js: "../../js/roc/main.roc" }
 # (Assembly.roc) and wrapped as an executable (Elf.roc), every byte here.
 #
 #   js-x86 "<program>"
+#   js-x86 "<program>" inlined    # the sites Inlining put in line
+#   js-x86 "<program>" labels     # each label's offset in the code
 #
 # It runs on Roc's default platform, whose one effect writes text to
 # stdout, so it prints the executable's bytes as hex (X86.hex_text: two
@@ -24,8 +26,9 @@ main! = |arguments| {
 	match (arguments.get(0), arguments.get(1)) {
 		(Ok(src), Err(_)) => write_program!(src)
 		(Ok(src), Ok("inlined")) => write_inlined!(src)
+		(Ok(src), Ok("labels")) => write_labels!(src)
 		_ => {
-			echo!("usage: js-x86 \"<program>\" [inlined]\n")
+			echo!("usage: js-x86 \"<program>\" [inlined | labels]\n")
 			Err(Exit(2))
 		}
 	}
@@ -63,6 +66,33 @@ write_inlined! = |src| {
 			Err(Exit(1))
 		}
 	}
+}
+
+## A line `<offset> <label>` for each label of the program's code, the
+## offset in bytes from the code's start (the executable's 0x400078), for
+## reading the code back with a disassembler (x86/satrace/TRIAGE.md).
+write_labels! : Str => Try({}, [Exit(I8)])
+write_labels! = |src| {
+	laid = match lowering_of(src) {
+		Ok(lowered) =>
+			match Assembly.laid_out(lowered.statements) {
+				Ok(it) => it
+				Err(_) => {
+					echo!("js-x86: the code does not assemble\n")
+					return Err(Exit(1))
+				}
+			}
+		Err(why) => {
+			echo!("js-x86: ${why}\n")
+			return Err(Exit(1))
+		}
+	}
+	var $text = ""
+	for (label, at) in laid.marks.to_list() {
+		$text = $text.concat("${at.to_str()} ${label}\n")
+	}
+	echo!($text)
+	Ok({})
 }
 
 ## The executable a program compiles to, or why it doesn't.

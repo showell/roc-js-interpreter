@@ -26,6 +26,7 @@ import Boxing
 import X86
 import Emit
 import Heap
+import Profiler
 import RuntimeBuilders
 
 Runtime :: [].{
@@ -483,6 +484,7 @@ Runtime :: [].{
 		Emit.plus(R14, Rax),
 	]
 		.concat(Heap.start_items)
+		.concat(Profiler.start_items)
 		.concat([
 			Emit.mov(R12, Rsp),
 			Emit.minus_imm(R12, stack_size),
@@ -495,6 +497,7 @@ Runtime :: [].{
 	routine_items : List(Assembly.Statement)
 	routine_items = [
 		Heap.items,
+		Profiler.items,
 		output_items,
 		heap_exit_items,
 		stop_items,

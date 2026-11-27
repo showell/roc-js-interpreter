@@ -50,7 +50,12 @@ Assembly :: [].{
 	## The code for `items`, or the first label one names that none marks,
 	## or the first label marked twice.
 	assemble : List(Assembly.Statement) -> Try(List(U8), [UnknownLabel(Str), DuplicateLabel(Str)])
-	assemble = |items| {
+	assemble = |items| Assembly.laid_out(items).map_ok(|laid| laid.bytes)
+
+	## The code for `items` with each label's place in it, for reading the
+	## code back (js-x86's `labels`), or `assemble`'s refusals.
+	laid_out : List(Assembly.Statement) -> Try({ bytes : List(U8), marks : Dict(Str, U64) }, [UnknownLabel(Str), DuplicateLabel(Str)])
+	laid_out = |items| {
 		var $bytes = []
 		var $marks = Dict.empty()
 		var $fixups = []
@@ -123,7 +128,7 @@ Assembly :: [].{
 				Err(_) => return Err(UnknownLabel(distance.label))
 			}
 		}
-		Ok($bytes)
+		Ok({ bytes: $bytes, marks: $marks })
 	}
 
 	expect Assembly.assemble([
