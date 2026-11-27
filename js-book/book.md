@@ -285,7 +285,7 @@ digraph {
 
 ### A value in 8 bytes
 
-A slot of the frame that `Compile` lays out has to hold any JavaScript value. The compiler fits every value into the 8 bytes of a double, a scheme called NaN-boxing. A double has about 2^53 bit patterns that all mean NaN, and x86-64's arithmetic makes only two of them. So a number is its own double, and every other value is one of the spare NaNs: its top 16 bits are a tag, and its low 48 bits are an address or a constant (`x86/roc/Boxing.roc`):
+A slot of the frame that `Compile` lays out has to hold any JavaScript value. The compiler fits every value into the 8 bytes of a double, by NaN-boxing, as LuaJIT and SpiderMonkey do. A double has about 2^53 bit patterns that all mean NaN, and x86-64's arithmetic makes only two of them. So a number is its own double, and every other value is one of the spare NaNs: its top 16 bits are a tag, and its low 48 bits are an address or a constant (`x86/roc/Boxing.roc`):
 
 | top 16 bits | value | low 48 bits |
 |---|---|---|
@@ -355,7 +355,7 @@ All times are in ms (`x86/BENCH.md`). A ratio in brackets is at a small size, wh
 | collatz(10000) | 84 | 108 | 5.7 | 3.3 | (25) | 2,258 |
 | collatz(300000) | 1,043 | 446 | 375.9 | 479.4 | 2.18 | - |
 
-A second run a minute later had the same shape and a fair spread: loops(300000) took 1,261 ms in the executable against 155.6 warmed (8.10), fib(35) took 219 against 165.5 (1.32), and collatz(10000)'s executable took 27 ms where the first run had taken 84. Runs on this box differ by 30% or more. Every ratio at a large size stayed on the same side of 1.
+Runs on this box differ by 30% or more; in a second run, which `x86/BENCH.md` records, every ratio at a large size stayed on the same side of 1.
 
 The vm column's 112 ms for fib(22) is a wall time, process start included, the median of three niced runs. {{chapter Handing the machine on}} quotes 99 ms for the same program from `js/README.md`: the best of five CPU times, on a quiet box. The two measure different things and agree in size.
 
@@ -367,12 +367,16 @@ The interpreter of Part III is the slower comparison: at the small sizes the VM'
 
 ### Large programs: warm node wins
 
-Warmed, node is faster on all four:
+Warmed, node is faster on all four (the two runs of `x86/BENCH.md`):
 
-- **fib**, by 1.2 to 1.3 times. All of fib's kinds are known, so the executable tests zero tags; what remains is its baseline code, which keeps every value in memory.
-- **sieve**, by 1.7 times.
-- **collatz**, by 2.2 times.
-- **loops**, by 6 to 8 times, the widest gap.
+| program | warm node is faster by |
+|---|---|
+| fib | 1.2 to 1.3 times |
+| sieve | 1.7 times |
+| collatz | 2.2 times |
+| loops | 6 to 8 times |
+
+All of fib's kinds are known, so its executable tests zero tags; what remains is its baseline code, which keeps every value in memory.
 
 One-shot node, start-up included, is faster at the large sizes too: in the table its time is below the executable's on all four, and fib's difference, 222 against 213 ms, is well inside the spread between runs.
 
@@ -408,13 +412,31 @@ Runs on this box move by about a tenth, so the honest reading is that js-x86 and
 
 ### What the loop costs
 
-The race lives in one loop, `addInto`'s, one limb a time round. Counted with `objdump` on 2026-11-26 (`x86/race/README.md`), Roc's loop runs 46 to 51 instructions a limb. js-x86's ran 76 at `c990f68`, 71 after the race README's fixes 18 and 19, and 64 since the integer counter below. Of those 76, about 25 came from the numbers being JavaScript doubles: moves between the general and the floating-point registers, conversions to whole numbers for indexing, and unboxing an array's address. Roc pays for its own representation in turn: its `U64` arithmetic is checked, three overflow branches a limb, and each list write tests the list's reference count first.
+The race lives in one loop, `addInto`'s, one limb a time round. Counted with `objdump` on 2026-11-26 (`x86/race/README.md`):
+
+| one limb of `addInto`'s loop | instructions |
+|---|---|
+| Roc, LLVM | 46 to 51 |
+| js-x86 at `c990f68` | 76 |
+| js-x86 after the race's fixes 18 and 19 | 71 |
+| js-x86 with the integer counter | 64 |
+
+Of js-x86's 76, about 25 came from the numbers being JavaScript doubles: moves between the general and the floating-point registers, conversions to whole numbers for indexing, and unboxing an array's address. Roc pays for its own representation in turn: its `U64` arithmetic is checked, three overflow branches a limb, and each list write tests the list's reference count first.
 
 What closed the gap were the fixes that `x86/race/README.md` numbers 1 to 19, every one a general rule with its own test. Among them: an array's length and items read in line, a comparison fused with its jump, a select of two numbers made with a conditional move, which ended the carry's mispredicted branch, and a loop's carried values kept in registers first.
 
 ### What remains
 
-The largest lead the race's README ranked, an integer loop counter, is in: `i` and `aLength` are integers, and the loop went from 71 instructions a limb to 64 (`x86/race/README.md`, "What is left", 1). Its other leads, constants kept for the loop and an array's address reused, are open. The bank ledger and fourteen races are where node still leads: in their last full-size runs it took 2.84 and 2.60 times less time than the compiled program (`x86/bank/README.md` and `x86/fourteen/README.md`, "Against Roc", 2026-11-26). Both are object and call heavy, where node's hidden classes and inlining pay. A fourth race, big daddy, is a fork of the corpus's program 54 (`x86/bigdaddy/README.md`); since the collector it runs at its full size, 10,000 rounds. A fifth, the SAT race, is rocsat's CDCL solver written in the subset: in its first run, on 2026-11-27 and on a busy box, the executable took 95.24 s to node's 52.75 s and LLVM's Roc build's 36.12 s (`x86/satrace/README.md`, marked preliminary there). These are the races as of 2026-11-27; each race's README adds the runs made since.
+The largest lead the race's README ranked, an integer loop counter, is in: it is the 64 above. Its other leads, constants kept for the loop and an array's address reused, are open. The other races stood so against node, as of 2026-11-27:
+
+| race | js-x86's time over node's | source |
+|---|---|---|
+| fib | 0.74 | above |
+| bank ledger | 2.84 | `x86/bank/README.md`, "Against Roc" |
+| fourteen | 2.60 | `x86/fourteen/README.md`, "Against Roc" |
+| SAT, preliminary | 1.81 | `x86/satrace/README.md` |
+
+The bank and fourteen races are object and call heavy, where node's hidden classes and inlining pay. The SAT race is rocsat's CDCL solver written in the subset, and its one run was on a busy box. A fifth race, big daddy, is a fork of the corpus's program 54 (`x86/bigdaddy/README.md`), which runs at its full size, 10,000 rounds, since the collector. Each race's README adds the runs made since.
 
 ## What the compiler leaves to an optimizer
 
@@ -431,6 +453,8 @@ The compiler makes code cheaper in these ways (`x86/roc/Lowering.roc`'s header, 
 - for what is unknown, the commonest cases are tested in line, and the runtime's routine is called only when the test fails: `+` and the comparisons of two numbers, a number's tag test, and an array's `length`, item read and item write (`OperatorLowering.roc`, `IndexLowering.roc`; `17cb2b0`, `d6ecebd`);
 - a small leaf function called inside a loop is put in line in the bytecode, within a budget of instructions (`Inlining.roc`);
 - after the lowering, a looping function's four busiest frame places live in registers (`Registers.roc`), and three passes take out loads of what a register already holds, dead register moves, and jumps to jumps (`Forwarding.roc`, `Moves.roc`, `Jumps.roc`).
+
+Each is a standard technique. A test in line before a call to the general routine is an inline cache (Deutsch and Schiffman, 1984, for Smalltalk-80), and guessing a field's place from its class follows Self's maps (Chambers, Ungar and Lee, 1989), which V8 calls hidden classes. Inlining, jump threading and the passes over moves are textbook optimizations, and choosing registers by counting uses is the plainest register allocation, short of graph coloring (Chaitin, 1982).
 
 ### The plain parts
 
@@ -745,7 +769,7 @@ The memory view's chart of the cells in use over one run of the garbage sample (
 
 ### Two collectors, two worlds
 
-The compiled programs have a collector of their own, a separate codebase in the same family: a non-moving mark and sweep that collects at twice the last live size, and at least every 8 MiB. `Collector.roc` works on a Roc list of cells: a reference is an index, the VM names its roots exactly, and Roc's reference counting frees what a `Freed` cell held. The compiler's, designed in `x86/COLLECTOR.md`, works on raw memory: each heap block carries a header word of its kind and size, blocks sit in pages of one size class, and the roots are found conservatively, in every word of the machine stack and the registers that looks like a heap address. The headers and pages came first (`a328636`), then the mark, the sweep and a torture tier that collects at every allocation (`460b606`). A floor of 8 MiB held big daddy at 8.8 MB, about a twelfth of node's peak on the same run; floors from 2 to 64 MiB kept its CPU time within 8% (`x86/COLLECTOR.md`, "Lane 3").
+The compiled programs have a collector of their own, a separate codebase in the same family: a non-moving mark and sweep that collects at twice the last live size, and at least every 8 MiB. `Collector.roc` works on a Roc list of cells: a reference is an index, the VM names its roots exactly, and Roc's reference counting frees what a `Freed` cell held. The compiler's, designed in `x86/COLLECTOR.md`, works on raw memory: each heap block carries a header word of its kind and size, blocks sit in pages of one size class, and the roots are found conservatively, in every word of the machine stack and the registers that looks like a heap address, as Boehm and Weiser's collector for C finds them (1988). The headers and pages came first (`a328636`), then the mark, the sweep and a torture tier that collects at every allocation (`460b606`). A floor of 8 MiB held big daddy at 8.8 MB, about a twelfth of node's peak on the same run; floors from 2 to 64 MiB kept its CPU time within 8% (`x86/COLLECTOR.md`, "Lane 3").
 
 ## JavaScript's rules for values
 
@@ -978,18 +1002,15 @@ He put the three together at about 12 times faster for this repository's code sp
 
 ### js-x86 building a program, preliminary, as of 2026-11-27
 
-The compiler turns the question around: how long from a program's source to an executable on the disk? `x86/buildrace.shale` times js-x86 against `roc build` of the same race written in Roc, at `--opt=dev` and at `--opt=speed`, the build that makes the fast executable the races run (`x86/buildrace/README.md`). These numbers are preliminary: the box was shared with other lanes, and a run on a quiet box will replace them. They are wall times of warm runs at a load of 1.0 to 1.3, after the build-time fixes of 2026-11-27 (`x86/buildrace/PROFILE.md`, "The build race, before and after"):
+The compiler turns the question around: how long from a program's source to an executable on the disk? `x86/buildrace.shale` times js-x86 against `roc build` of the same race written in Roc, at `--opt=dev` and at `--opt=speed`, the build that makes the fast executable the races run (`x86/buildrace/README.md`). These numbers are preliminary: the box was shared with other lanes, and a run on a quiet box will replace them. The headline, from warm runs at a load of 1.0 to 1.3 (`x86/buildrace/PROFILE.md`, "The build race, before and after"; `x86/RC2.md` for the executables):
 
-| race | js-x86 (its driver alone) | `--opt=dev`, cold / warm | `--opt=speed`, warm |
-|---|---|---|---|
-| fib | 63 ms (55) | 0.05 s / 0.03 s | 1.07 to 1.79 s |
-| bank | 94 ms (81) | 0.09 to 0.11 s / 0.03 s | 3.4 to 3.8 s |
-| fourteen | 44 ms (37) | 0.05 to 0.06 s / 0.02 to 0.03 s | 0.72 to 0.75 s |
-| big daddy | 454 ms (444) | - | - |
+| from a race's source to an executable | build time | the executable it makes |
+|---|---|---|
+| js-x86 | 44 to 94 ms | fast |
+| `roc build --opt=dev`, warm | 0.02 to 0.03 s | about 2.3 MB, 10 to 25 times slower than `--opt=speed`'s |
+| `roc build --opt=speed`, warm | 0.72 to 3.8 s | 32 to 180 KB, fast |
 
-js-x86 builds a race 15 to 50 times faster than `--opt=speed`, and is level with Roc's cold dev build; Roc's warm dev build is faster still. What the dev build makes is another thing: each of its executables is about 2.3 MB, against 32 to 180 KB at `--opt=speed`, and runs 10 to 25 times slower (`x86/RC2.md`). Big daddy, which has its race in JavaScript alone, shows the compile growing with the program.
-
-Almost all of js-x86's time is its lowering and the passes after it, and for a small race about 20 ms of its 40 to 50 go to passes over the runtime's own statements, which every program carries (`x86/buildrace/PROFILE.md`, "What is left"). js-x86 itself is built once by Roc's release build, in about 250 s of CPU under RC1 or RC2 (`x86/RC2.md`).
+So js-x86 builds 15 to 50 times faster than the Roc build that makes a fast executable; Roc's dev build is faster still, and makes a slow one.
 
 ## How it is tested
 
