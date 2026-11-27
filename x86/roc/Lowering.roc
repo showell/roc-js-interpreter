@@ -240,7 +240,7 @@ LoweringBasics.ArrayRule -> Try(
 items_with_numbers = |program, arrays| {
 	makers = KnownFunctions.makers_of(program)?
 	literals = literals_of(program)?
-	field_slots = FieldSlots.field_slots(program, makers)
+	field_slots = FieldSlots.with_literal_slots(FieldSlots.field_slots(program, makers), program)
 	statics = KnownFunctions.statics_of(program, makers)
 	var $escaped_codes =
 		makers

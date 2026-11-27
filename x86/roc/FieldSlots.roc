@@ -67,6 +67,36 @@ FieldSlots :: [].{
 		$slots
 	}
 
+	## `slots` with each key an object literal writes, and the place its
+	## literal's entries hold it at, added (at most `most_guesses` a key, the
+	## classes' first). A literal's entries are laid out in the order it
+	## writes its keys (`NewObject`, then a `SetField` a key, a key written
+	## twice kept at its first), so `{ num_vars: n, arena: [0] }` holds
+	## `arena` at place 1 wherever it is made. A literal is read up to the
+	## first literal or spread inside it, past which its places aren't known
+	## here; a guess that is wrong anyway is only slower (the header's rule).
+	with_literal_slots : Dict(Str, List(U64)), Bytecode.Program -> Dict(Str, List(U64))
+	with_literal_slots = |slots, program| {
+		var $slots = slots
+		for code in program.codes {
+			for at in 0..<code.ops.len() {
+				match code.ops.get(at) {
+					Ok(NewObject) => {
+						keys = literal_keys(code.ops, at + 1)
+						for (key, place) in keys.map_with_index(|key, place| (key, place)) {
+							guesses = $slots.get(key) ?? []
+							if !guesses.contains(place) and guesses.len() < FieldSlots.most_guesses {
+								$slots = $slots.insert(key, guesses.append(place))
+							}
+						}
+					}
+					_ => {}
+				}
+			}
+		}
+		$slots
+	}
+
 	## `receiver.key` read into the receiver's place: the value at an
 	## expected place when the entry there holds the key, else `slow_items`,
 	## the runtime's call. `receiver_kind` is `Object` or `Value`; a `Value`
@@ -158,6 +188,61 @@ FieldSlots :: [].{
 	most_guesses : U64
 	most_guesses = 3
 }
+
+## The keys an object literal whose `NewObject` is just before `from`
+## writes, in order, each once: up to the first literal, spread or instance
+## made inside it, or the code's end.
+literal_keys : List(Bytecode.Op), U64 -> List(Str)
+literal_keys = |ops, from| {
+	var $keys = []
+	for instruction in ops.drop_first(from) {
+		match instruction {
+			SetField(key) => {
+				if !$keys.contains(key) {
+					$keys = $keys.append(key)
+				}
+			}
+			NewObject | SpreadFields(_) | NewInstance(_) | Return | Finish => return $keys
+			_ => {}
+		}
+	}
+	$keys
+}
+
+## Whether `with_literal_slots` gives a program's object literals these
+## keys at these places, and no other key, for the expects.
+has_literal_slots : List(Str), List((Str, List(U64))) -> Bool
+has_literal_slots = |source_lines, expected| {
+	src = Str.join_with(source_lines, "\n")
+	tree = Parser.program_of(src, Core) ?? crash "FieldSlots.has_literal_slots: a program"
+	program = match Compile.program(tree) {
+		Ok(compiled) => compiled
+		Err(_) => crash "FieldSlots.has_literal_slots: a program that compiles"
+	}
+	slots = FieldSlots.with_literal_slots(Dict.empty(), program)
+	slots.len() == expected.len()
+		and expected.all(
+			|(key, places)| {
+				found = slots.get(key) ?? []
+				found.len() == places.len() and places.all(|place| found.contains(place))
+			},
+		)
+}
+
+# A literal's keys take their places in the order it writes them, a key
+# written twice at its first; two literals give a key the places of both.
+expect has_literal_slots(
+	["const a = { x: 1, y: [2], x: 3 };", "const b = { z: 0, y: 1 };", "console.log(a, b);"],
+	[("x", [0]), ("y", [1]), ("z", [0])],
+)
+
+# A literal inside another ends the outer one's count; the inner one's
+# keys are its own, and the outer key after it is guessed at the inner's
+# next place, a wrong guess the test in line turns away.
+expect has_literal_slots(
+	["const a = { p: 1, q: { r: 2 }, s: 3 };", "console.log(a);"],
+	[("p", [0]), ("r", [0]), ("q", [1]), ("s", [2])],
+)
 
 ## How many classes deep `class_fields` follows `super(...)`: a class
 ## extends only a class declared above it, so a chain never loops, and this
