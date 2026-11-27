@@ -13,7 +13,7 @@ This folder is the start of an ahead-of-time compiler for the JavaScript subset 
 5. **The collector,** and the whole corpus held to node. The collector is *done* (2026-11-27): conservative roots and a non-moving mark-sweep, with headers on every block and a GC-torture tier, as x86/COLLECTOR.md designs it and says of each lane. The corpus is not whole yet ("The corpus", below).
 6. **Type specialization,** for long numeric loops. Begun: an integer kind, for loop counters, indexes, parameters, arrays of whole numbers and the bitwise operators ("An integer kind" and "The bitwise operators", below).
 
-**Predicting speed without a stopwatch:** `x86/cost.shale` is a deterministic cost tier. It runs llvm-mca on the bytes this compiler writes, so it reads the same on a busy box as on a quiet one. x86/COST.md explains what it measures, gives its first table, and designs the exact per-block counter that comes next.
+**Predicting speed without a stopwatch:** `x86/cost.shale` is a deterministic cost tier. It runs llvm-mca on the bytes this compiler writes, so it reads the same on a busy box as on a quiet one. x86/COST.md explains what it measures and gives its first table. With `counted=1` it also gives each race's exact dynamic instruction count, from js-x86's `counted` mode (`roc/Counter.roc`), by place, by function and in all, with cycles predicted from it.
 
 ## What works now (2026-11-25: Map and Set, the timers, and node's errors)
 

@@ -31,7 +31,9 @@
 --   - x86/fib.shale timing=0, which runs the compiler's expects and compiles
 --     x86/fib.js, its executable's output held to node's, and
 --     x86/programs.shale, which holds each program in x86/tests/ to node and
---     each in x86/tests/refused/ to its refusal.
+--     each in x86/tests/refused/ to its refusal;
+--   - x86/cost.shale proof=1, which holds js-x86's `counted` mode to a
+--     loop's counts worked out by hand.
 --
 -- `js=1` is the allocation tier, kept out of the default run for its time
 -- (about two minutes when js-vm's release build compiles; seconds when
@@ -171,6 +173,7 @@ function all()
   script_check("x86/hello.shale", "the x86-64 backend's expects and its hello-world executable")
   script_check("x86/fib.shale", "the compiler's expects and fib, compiled and held to node", {"timing=0"})
   script_check("x86/programs.shale", "the compiled programs held to node, and the refused to their refusals")
+  script_check("x86/cost.shale", "the counter held to a loop's counts, worked out by hand", {"proof=1"})
   return nil
 end
 
