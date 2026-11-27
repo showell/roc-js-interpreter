@@ -146,8 +146,8 @@ end
 -- runtime's post-passes done once (RuntimePosts), or nil.
 function posts_why(exe, text)
   local said = trim(driver_run(exe, text, "posts").out)
-  if said == "posts: beside" then return nil end
-  return "js-x86 posts said " .. json_write(said) .. ", not \"posts: beside\""
+  if starts_with(said, "posts: beside (") then return nil end
+  return "js-x86 posts said " .. json_write(said) .. ", not \"posts: beside (...)\""
 end
 
 -- Why the refused program at `js_path` failed, or nil.
