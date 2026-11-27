@@ -257,6 +257,16 @@ items_with_numbers = |program, arrays| {
 	}
 	known = { program, makers, statics }
 	methods = MethodTables.method_tables(known)
+	# Each function's cells and captured numbers are the same in every pass,
+	# so they are found once, not once a pass.
+	var $cells_by_code = []
+	var $numbers_by_code = []
+	for index in 0..<program.codes.len() {
+		$cells_by_code = $cells_by_code.append(KnownFunctions.celled_slots(known, index))
+		$numbers_by_code = $numbers_by_code.append(KnownFunctions.constant_numbers(known, index))
+	}
+	cells_by_code = $cells_by_code
+	numbers_by_code = $numbers_by_code
 	trying = program.codes.any(
 		|code|
 			code.ops.any(
@@ -295,8 +305,8 @@ items_with_numbers = |program, arrays| {
 				makers,
 				statics,
 				escaped_codes: $escaped_codes,
-				cells: KnownFunctions.celled_slots(known, index),
-				numbers: KnownFunctions.constant_numbers(known, index),
+				cells: cells_by_code.get(index) ?? crash "Lowering.items_with_numbers: a code's cells",
+				numbers: numbers_by_code.get(index) ?? crash "Lowering.items_with_numbers: a code's numbers",
 				trying,
 				arrays,
 				returns: $returns,
@@ -2012,8 +2022,15 @@ integers_made : LoweringBasics.Site,
 	joined : Bool,
 } -> { statements : List(Assembly.Statement), state : LoweringBasics.State }
 integers_made = |site, { instruction, state, demoted, joined }| {
-	kept = integers_kept(site, { instruction, state, demoted, joined })
-	stacked = integers_met(site.code, { state, kept })
+	# With no `Integer` on the stack there is none to make a double, and
+	# `integers_kept` need not be asked.
+	stacked =
+		if state.stack_kinds.any(LoweringBasics.is_integer) {
+			kept = integers_kept(site, { instruction, state, demoted, joined })
+			integers_met(site.code, { state, kept })
+		} else {
+			{ statements: [], state }
+		}
 	stepped = match instruction {
 		UpdateLocal({ slot, step }) => Ok({ slot, steps: integers_stepped(state, { slot, step }) })
 		AppendLocal({ slot, at: _ }) => Ok({ slot, steps: False })
