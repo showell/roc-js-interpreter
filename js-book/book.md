@@ -344,7 +344,7 @@ A record update copies the record around the field it writes, inline sub-records
 
 ## The compiler to x86-64
 
-The `x86/` folder holds `js-x86`, an ahead-of-time compiler that turns a program into a static Linux x86-64 executable. Roc writes every byte of that file. The instruction encoder (`X86.roc`), the assembler (`Assembly.roc`) and the ELF writer (`Elf.roc`) are Roc modules, and the executable talks to the kernel directly, by the `syscall` instruction. The product holds no assembler, linker, LLVM or libc, and the executable needs none of them to run (`x86/README.md`).
+`js-x86`, in `x86/`, turns a program into a static Linux x86-64 executable, and Roc writes every byte of that file. The instruction encoder (`X86.roc`), the assembler (`Assembly.roc`) and the ELF writer (`Elf.roc`) are Roc modules, and the executable talks to the kernel directly, by the `syscall` instruction. The product holds no assembler, linker, LLVM or libc, and the executable needs none of them to run (`x86/README.md`). So any byte the processor runs traces back to the Roc module that wrote it.
 
 ### The pipeline
 
@@ -365,15 +365,17 @@ digraph {
 }
 ```
 
-- **The front end is shared.** `JsToX86.roc` imports `Parser` and `Compile` from `js/roc/` as a package, so the compiler starts from the same `Bytecode` the interpreter runs ({{chapter The front end}}).
-- **`Lowering.roc`** turns each function's bytecode into `Assembly` statements, one instruction's machine code after another, and hands each family of instructions to a module of its own: `OperatorLowering`, `BuiltinLowering`, `CallLowering` and `IndexLowering`. `Inlining` and four later passes are in {{chapter What the compiler leaves to an optimizer}}.
-- **`Assembly.roc`** lays the statements out as bytes. A jump or a call that names a label gets a placeholder, patched once every label's place is known.
-- **`Elf.roc`** wraps the code as an executable: an ELF header, one program header and one segment, read and execute, mapped at 0x400000.
-- **The last step only carries.** Roc's default platform writes text alone to stdout, so `js-x86` prints the executable as hex, and `x86/executables.shale` turns each pair of digits back into its byte.
+| stage | what it does |
+|---|---|
+| the front end, shared | `JsToX86.roc` imports `Parser` and `Compile` from `js/roc/` as a package, so the compiler starts from the same `Bytecode` the interpreter runs ({{chapter The front end}}) |
+| `Lowering.roc` | turns each function's bytecode into `Assembly` statements, one instruction's machine code after another; `OperatorLowering`, `BuiltinLowering`, `CallLowering` and `IndexLowering` each take a family of instructions, and `Inlining` and four later passes are in {{chapter What the compiler leaves to an optimizer}} |
+| `Assembly.roc` | lays the statements out as bytes; a jump or a call that names a label gets a placeholder, patched once every label's place is known: backpatching, as in a one-pass assembler |
+| `Elf.roc` | wraps the code as an executable: an ELF header, one program header and one segment, read and execute, mapped at 0x400000 |
+| `x86/executables.shale` | Roc's default platform writes text alone to stdout, so `js-x86` prints the executable as hex, and this script turns each pair of digits back into its byte |
 
 ### A value in 8 bytes
 
-A slot of the frame that `Compile` lays out has to hold any JavaScript value. The compiler fits every value into the 8 bytes of a double, by NaN-boxing, as LuaJIT and SpiderMonkey do. A double has about 2^53 bit patterns that all mean NaN, and x86-64's arithmetic makes only two of them. So a number is its own double, and every other value is one of the spare NaNs: its top 16 bits are a tag, and its low 48 bits are an address or a constant (`x86/roc/Boxing.roc`):
+A slot of the frame that `Compile` lays out has to hold any JavaScript value. The compiler fits every value into the 8 bytes of a double by NaN-boxing, the representation LuaJIT and SpiderMonkey use. A double has about 2^53 bit patterns that all mean NaN, and x86-64's arithmetic makes only two of them. So a number is its own double, and every other value is one of the spare NaNs: its top 16 bits are a tag, and its low 48 bits are an address or a constant (`x86/roc/Boxing.roc`):
 
 | top 16 bits | value | low 48 bits |
 |---|---|---|
@@ -391,13 +393,28 @@ The two NaNs the processor makes lie below every tag, so a value is a number exa
 
 ### The runtime
 
-Every executable carries the runtime, about 24 KB of machine code (`let x = 1;` compiles to 24,407 bytes, 2026-11-27, `x86/README.md`): the start, the allocator, buffered output, `console.log`'s writing of values as node writes them, the array methods, the Maps and Sets, and the timers. It is written in Roc too, as lists of `Assembly` statements, one instruction a line through the short builders of `Emit.roc`. Here is the allocator, from `Heap.roc`:
+Every executable carries the runtime, about 24 KB of machine code: the start, the allocator, buffered output, `console.log`'s writing of values as node writes them, the array methods, the Maps and Sets, and the timers. It is written in Roc too, as lists of `Assembly` statements, one instruction a line through the short builders of `Emit.roc`. Here is the allocator, from `Heap.roc`:
 
 {{function x86/roc/Heap.roc allocate_items}}
 
-Four registers belong to the runtime for the whole run: `r12` the stack's limit, `r13` the runtime's state, `r14` the heap's end and `r15` the heap's state, in a mapping of 3 GiB: a heap of 2 GiB, then the collector's mark stack. The heap is 64 KiB pages of one block size each, every block behind a header word of its kind and size (`x86/COLLECTOR.md`). The allocator pops its size's free list or bumps through a page, and past a threshold it collects first ({{chapter The garbage collector}}).
+Four registers belong to the runtime for the whole run:
 
-`x86/fib.js`'s executable was 24,837 bytes the same day; milestone 2's fib(22), before the runtime, was 1,010 bytes (`0c5ea7e`).
+| register | holds |
+|---|---|
+| `r12` | the stack's limit |
+| `r13` | the runtime's state |
+| `r14` | the heap's end |
+| `r15` | the heap's state |
+
+They live in a mapping of 3 GiB: a heap of 2 GiB, then the collector's mark stack. The heap is 64 KiB pages of one block size each, every block behind a header word of its kind and size (`x86/COLLECTOR.md`). The allocator pops its size's free list or bumps through a page, and past a threshold it collects first ({{chapter The garbage collector}}).
+
+The runtime dominates a small program's size:
+
+| executable | size |
+|---|---|
+| `let x = 1;`, 2026-11-27 | 24,407 bytes (`x86/README.md`) |
+| `x86/fib.js`, the same day | 24,837 bytes |
+| fib(22) at milestone 2 of `x86/README.md`, before the runtime | 1,010 bytes (`0c5ea7e`) |
 
 ### What it compiles, as of 2026-11-27
 
@@ -409,7 +426,7 @@ Four registers belong to the runtime for the whole run: `r12` the stack's limit,
 | 4 | a number `console.log` can write only once number printing is written: three fractions, and an integer past 2^53 |
 | 5 | one each: `Math.sin`, an array of more than 100 items printed, a string beyond ASCII, a call of a number, and an array's `at` |
 
-The compiler refuses what it has yet to compile by name, before it writes a byte. What only a value can decide stops the executable as it runs, with a line `x86: ... is not compiled yet` on stderr and exit 1.
+{{chapter Limitations}} says how the compiler refuses the rest.
 
 ## The compiler against node
 
@@ -417,16 +434,29 @@ The executables beat `node file.js` on small programs, and most of that win is n
 
 ### Where the numbers come from
 
-Every number in this chapter is from `x86/BENCH.md` (`68f420b`), which `shale x86/bench.shale` measures; the one from `x86/README.md` says so. The timings stay outside `check.shale`, since the box is too noisy to gate on. They are one sample from one day, 2026-11-25, on the 2-core development box with node v22.23.2, and the book quotes them as recorded there. They were taken before the in-line paths of {{chapter What the compiler leaves to an optimizer}} (`17cb2b0`, `d6ecebd`), the integer kind and the register passes, and the four programs are unmeasured since. A rerun on a quiet box will replace the table; until then it is the record of 2026-11-25, and speaks for that day's compiler alone.
+Every number in this chapter is from `x86/BENCH.md` (`68f420b`), which `shale x86/bench.shale` measures; the one from `x86/README.md` says so. The timings stay outside `check.shale`, since the box is too noisy to gate on. They are one sample from one day, 2026-11-25, on the 2-core development box with node v22.23.2.
+
+That day came before the in-line paths of {{chapter What the compiler leaves to an optimizer}} (`17cb2b0`, `d6ecebd`), the integer kind and the register passes, and the four programs are unmeasured since. So the table speaks for that day's compiler alone, and a rerun on a quiet box will replace it.
 
 Each program in `x86/bench/` defines `work(n)`:
 
-- **fib**: a recursive `fib(n)`, so the cost is mostly calls.
-- **loops**: nested loops over local variables and an array of 100 numbers, with a `%` in the inner body.
-- **sieve**: the sieve of Eratosthenes over an array of `n + 1` flags built by `push`, mostly array reads and writes.
-- **collatz**: the sum of the Collatz steps for every start from 1 to `n`, using `%`, `/` and `*` on doubles in a `while` loop.
+| program | what `work(n)` does |
+|---|---|
+| fib | a recursive `fib(n)`, so the cost is mostly calls |
+| loops | nested loops over local variables and an array of 100 numbers, with a `%` in the inner body |
+| sieve | the sieve of Eratosthenes over an array of `n + 1` flags built by `push`, mostly array reads and writes |
+| collatz | the sum of the Collatz steps for every start from 1 to `n`, using `%`, `/` and `*` on doubles in a `while` loop |
 
-The script checks that each executable prints exactly what node prints before it times anything, and each time is the median of 3 niced runs. **executable** is the compiled file's wall time, process start included. **node** is `node file.js`, start-up included. **warmed** runs `work(n)` in a loop inside one node process, throws away the first runs (200 at the small size, 3 at the large), and takes the median of the next 50 or 5; **first run** is that process's very first call. **vm** is the interpreter's release build, at the small sizes alone. The **ratio** is the executable's time over node warmed's, so above 1 means node is faster.
+The script checks that each executable prints exactly what node prints before it times anything, and each time is the median of 3 niced runs. The table's columns:
+
+| column | what it measures |
+|---|---|
+| executable | the compiled file's wall time, process start included |
+| node | `node file.js`, start-up included |
+| warmed | `work(n)` in a loop inside one node process: the first runs thrown away (200 at the small size, 3 at the large), then the median of the next 50 or 5 |
+| first run | that process's very first call |
+| vm | the interpreter's release build, at the small sizes alone |
+| ratio | the executable's time over node warmed's, so above 1 means node is faster |
 
 ### The table, as of 2026-11-25
 
@@ -476,11 +506,13 @@ These four programs are measured as they came. One program was tuned for: the fi
 
 ## The fib race
 
-`x86/race/fib_race.js` computes F(740000) with the ordinary iterative algorithm. Its numbers are arrays of base-10^7 limbs, added one into the other in place. Three contestants run it, one after another, each timed from outside as its whole process (`shale x86/race.shale`):
+`x86/race/fib_race.js` computes F(740000) with the ordinary iterative algorithm. Its numbers are arrays of base-10^7 limbs, added one into the other in place. This race is where the compiler was tuned, so its record shows which changes paid and by how much. Three contestants run it, one after another, each timed from outside as its whole process (`shale x86/race.shale`):
 
-- **js-x86**, this repository's compiler, writing every byte of the executable from Roc;
-- **node**, on the same source;
-- **Roc**, on `x86/race/fibonacci_race.roc`, the same algorithm line for line, with `U64` limbs, built with `--opt=speed`, which hands the code to LLVM.
+| contestant | what runs |
+|---|---|
+| js-x86 | this repository's compiler, writing every byte of the executable from Roc |
+| node | the same source |
+| Roc | `x86/race/fibonacci_race.roc`, the same algorithm line for line, with `U64` limbs, built with `--opt=speed`, which hands the code to LLVM |
 
 Each one's whole output, more than 150,000 digits, is held to a stored sha256 of the answer. The rules are fixed: the algorithm stays the ordinary one, node runs the same source, and any trick in the compiler has to be one that would help other programs too.
 
@@ -528,21 +560,22 @@ The bank and fourteen races are object and call heavy, where node's hidden class
 
 ## What the compiler leaves to an optimizer
 
-The compiler's code is plain, and {{chapter The compiler against node}} measures what that costs against V8. This chapter says what the compiler does to make code cheaper, what it leaves undone, and what comes next.
+The compiler's code is plain, and {{chapter The compiler against node}} measures what that costs against V8. This chapter is the map for anyone making the code faster: what the compiler already does to make code cheaper, what it leaves undone, and what comes next.
 
 ### What makes code cheaper
 
-The compiler makes code cheaper in these ways (`x86/roc/Lowering.roc`'s header, `x86/README.md`):
+Each optimization the compiler makes is a standard technique (`x86/roc/Lowering.roc`'s header, `x86/README.md`):
 
-- a known kind skips the tag's test, so two known numbers add with one `addsd`; a whole number proved in range is an `Integer`, so a loop's counter steps with `add` and indexes an array as it is (`x86/README.md`, "An integer kind");
-- a function known by its code is called directly, and keeps the parameter kinds its calls give it;
-- a function known before the program runs takes zero bytes in a slot, and becomes a closure record only where it is used as a value;
-- a class's field is read at the place its constructor gives it, and a method from its class's table, each tested in line (`FieldSlots.roc`, `MethodTables.roc`);
-- for what is unknown, the commonest cases are tested in line, and the runtime's routine is called only when the test fails: `+` and the comparisons of two numbers, a number's tag test, and an array's `length`, item read and item write (`OperatorLowering.roc`, `IndexLowering.roc`; `17cb2b0`, `d6ecebd`);
-- a small leaf function called inside a loop is put in line in the bytecode, within a budget of instructions (`Inlining.roc`);
-- after the lowering, a looping function's four busiest frame places live in registers (`Registers.roc`), and three passes take out loads of what a register already holds, dead register moves, and jumps to jumps (`Forwarding.roc`, `Moves.roc`, `Jumps.roc`).
-
-Each is a standard technique. A test in line before a call to the general routine is an inline cache (Deutsch and Schiffman, 1984, for Smalltalk-80), and guessing a field's place from its class follows Self's maps (Chambers, Ungar and Lee, 1989), which V8 calls hidden classes. Inlining, jump threading and the passes over moves are textbook optimizations, and choosing registers by counting uses is the plainest register allocation, short of graph coloring (Chaitin, 1982).
+| what the compiler does | where | the technique |
+|---|---|---|
+| a known kind skips the tag's test, so two known numbers add with one `addsd`; a whole number proved in range is an `Integer`, so a loop's counter steps with `add` and indexes an array as it is | `Lowering.roc`; `x86/README.md`, "An integer kind" | kinds found by iterating to a fixed point, as in dataflow analysis (Kildall, 1973) |
+| a function known by its code is called directly, and keeps the parameter kinds its calls give it | `Lowering.roc` | a direct call of a known function |
+| a function known before the program runs takes zero bytes in a slot, and becomes a closure record only where it is used as a value | `Lowering.roc` | a closure made only where it escapes |
+| a class's field is read at the place its constructor gives it, and a method from its class's table, each tested in line | `FieldSlots.roc`, `MethodTables.roc` | Self's maps (Chambers, Ungar and Lee, 1989), which V8 calls hidden classes |
+| for what is unknown, the commonest cases are tested in line, and the runtime's routine is called only when the test fails: `+` and the comparisons of two numbers, a number's tag test, and an array's `length`, item read and item write | `OperatorLowering.roc`, `IndexLowering.roc`; `17cb2b0`, `d6ecebd` | an inline cache (Deutsch and Schiffman, 1984, for Smalltalk-80) |
+| a small leaf function called inside a loop is put in line in the bytecode, within a budget of instructions | `Inlining.roc` | inlining, a textbook optimization |
+| after the lowering, a looping function's four busiest frame places live in registers | `Registers.roc` | register allocation by usage counts (Freiburghouse, 1974), the plainest kind, short of graph coloring (Chaitin, 1982) |
+| three passes take out loads of what a register already holds, dead register moves, and jumps to jumps | `Forwarding.roc`, `Moves.roc`, `Jumps.roc` | peephole optimization (McKeeman, 1965) and jump threading |
 
 ### The plain parts
 
@@ -550,11 +583,20 @@ Everything else is done the plainest way. Each function's frame is fixed: every 
 
 ### Where an optimizer would pay
 
-An optimizer would pay most on loops. The loops program has the widest gap, 6 to 8 times. A guess, unmeasured, as `x86/BENCH.md` gives it: a tight loop over a local array is where V8's registers and small integers help most, and where the executable's trips through memory cost most. A second guess, also unmeasured: loops and collatz both use `%`, which the executable lowers to `idiv`, one of the processor's slower instructions. The README's milestone 6, type specialization for long numeric loops, is aimed at the first. In the fib race the cost was measured, by reading the machine code: eleven calls into the runtime for each limb, since an array's items are of unknown kind, which the in-line paths cut (`x86/race/README.md`).
+An optimizer would pay most on loops. The loops program has the widest gap, 6 to 8 times. `x86/BENCH.md` offers an unmeasured guess: a tight loop over a local array is where V8's registers and small integers help most, and where the executable's trips through memory cost most. A second guess, also unmeasured, is that loops and collatz both use `%`, which the executable lowers to `idiv`, one of the processor's slower instructions. The README's milestone 6, type specialization for long numeric loops, is aimed at the first. In the fib race the cost was measured, by reading the machine code: eleven calls into the runtime for each limb, since an array's items are of unknown kind, which the in-line paths cut (`x86/race/README.md`).
 
 ### What comes next
 
-The compiler's own milestones say what follows (`x86/README.md`). Classes came first, and compile since `6ec8068`: the parser already writes each class as plain functions, so the work was the `NewInstance` and `InstanceOf` instructions of the bytecode. Since 2026-11-26 an instance holds its class's table of methods, and a method takes its receiver as its first parameter, passed in `rdx` by every call through a value. Next is milestone 4, the runtime in the subset: `console.log`'s formatting, Map and Set, and number printing, which four corpus programs wait on (02, 30, 58 and 54), written in the JavaScript subset and compiled by this compiler. Milestone 5, the collector of `x86/COLLECTOR.md` ({{chapter The garbage collector}}), is in (`a328636`, `460b606`). Then milestone 6, the type specialization the loops above ask for.
+The compiler's own milestones say what follows (`x86/README.md`):
+
+| work | state |
+|---|---|
+| classes | compiled since `6ec8068`; the parser already writes each class as plain functions, so the work was the `NewInstance` and `InstanceOf` instructions of the bytecode |
+| milestone 4, the runtime in the subset: `console.log`'s formatting, Map and Set, and number printing, written in the JavaScript subset and compiled by this compiler | next; four corpus programs wait on its number printing (02, 30, 58 and 54) |
+| milestone 5, the collector of `x86/COLLECTOR.md` ({{chapter The garbage collector}}) | in (`a328636`, `460b606`) |
+| milestone 6, the type specialization the loops above ask for | after milestone 4 |
+
+Since 2026-11-26 an instance holds its class's table of methods, and a method takes its receiver as its first parameter, passed in `rdx` by every call through a value.
 
 ## The interpreter
 
