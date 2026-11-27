@@ -115,11 +115,8 @@ import Assembly
 import Boxing
 import BuiltinLowering
 import Emit
-import Forwarding
 import KnownFunctions
-import Jumps
 import LoweringBasics
-import Moves
 import FieldSlots
 import MethodTables
 import ObjectTable
@@ -130,7 +127,7 @@ import OperatorLowering
 import Registers
 import Runtime
 import RuntimeBuilders
-import RuntimeCode
+import RuntimePosts
 import X86
 
 Lowering :: [].{
@@ -401,17 +398,14 @@ items_with_numbers = |program, arrays| {
 						statics,
 						escaped_codes: $escaped_codes,
 					})
-					statements =
-						$items
-							.concat(RuntimeCode.items)
-							.concat(literal_statements(literals))
-							.concat(closures)
-					# Jumps first, so that the labels its threading leaves unnamed
-					# (an item read's `done`) no longer end Forwarding's and Moves'
-					# straight runs; then again, for the jumps Moves leaves next to
-					# their labels.
-					threaded = Jumps.thread_jumps(statements)
-					Ok(Jumps.thread_jumps(Moves.trim_moves(Forwarding.forward_loads(threaded))))
+					# The program's code, the runtime's, then the texts and the
+					# closure records, through the post-passes, the runtime's done
+					# once when js-x86 is built where they may be (RuntimePosts).
+					posted = RuntimePosts.posts({
+						program: $items,
+						tail: literal_statements(literals).concat(closures),
+					})
+					Ok(posted.statements)
 				}
 				Err(refused) => Err(refused)
 			}

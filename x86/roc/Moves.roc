@@ -65,9 +65,26 @@ Moves :: [].{
 	trim_moves : List(Assembly.Statement) -> List(Assembly.Statement)
 	trim_moves = |statements| {
 		named = Assembly.named_labels(statements)
-		once = dead_dropped(copies_dropped(statements, named), named)
-		dead_dropped(copies_dropped(once, named), named)
+		Moves.trim_moves_beside(statements, { named, beside: alone }).trimmed
 	}
+
+	## `trim_moves` of statements that run beside others the walks don't
+	## see (RuntimePosts): `named` is every label the whole names (or more),
+	## and `beside` what the walks take of the others' labels: those whose
+	## address is taken, and what is read at each of the rest in each of the
+	## two backward walks. It gives the trimmed statements and what each walk
+	## found read at the labels these statements mark.
+	trim_moves_beside : List(Assembly.Statement), { named : Set(Str), beside : Moves.Beside } -> { trimmed : List(Assembly.Statement), reads : List(Dict(Str, U32)) }
+	trim_moves_beside = |statements, { named, beside }| {
+		first = dead_dropped(copies_dropped(statements, named), { named, beside, walk: 0 })
+		second = dead_dropped(copies_dropped(first.kept, named), { named, beside, walk: 1 })
+		{ trimmed: second.kept, reads: [first.reads, second.reads] }
+	}
+
+	## What the backward walks take of labels other statements mark:
+	## `addressed`, those whose address is taken there, and `reads`, what is
+	## read at each of the rest, in each walk.
+	Beside : { addressed : Set(Str), reads : List(Dict(Str, U32)) }
 
 	## The registers an instruction reads and writes, as bits (`Access`), or
 	## `Opaque` for one that may read or write any: `register_accesses`.
@@ -328,9 +345,9 @@ fits_i32 = |value| value >= -2147483648 and value <= 2147483647
 
 ## The statements, walked backward, with each plain move whose register
 ## nothing reads after taken out, and each pair `one_move_of` joins made one.
-dead_dropped : List(Assembly.Statement), Set(Str) -> List(Assembly.Statement)
-dead_dropped = |statements, named| {
-	labels = settled_labels(statements, named)
+dead_dropped : List(Assembly.Statement), { named : Set(Str), beside : Moves.Beside, walk : U64 } -> { kept : List(Assembly.Statement), reads : Dict(Str, U32) }
+dead_dropped = |statements, { named, beside, walk }| {
+	labels = settled_labels(statements, { named, beside, walk })
 	var $kept = List.with_capacity(statements.len())
 	var $read = every_unit
 	# The instruction kept just after this one, and what is read after it;
@@ -402,8 +419,12 @@ dead_dropped = |statements, named| {
 			}
 		}
 	}
-	reverse_statements($kept)
+	{ kept: reverse_statements($kept), reads: labels.reads }
 }
+
+## Nothing beside: the whole program is walked.
+alone : Moves.Beside
+alone = { addressed: Set.empty(), reads: [Dict.empty(), Dict.empty()] }
 
 ## A register stepped in place through another, `mov t, s`, an operation on
 ## `t` and `mov s, t`, made the one operation on `s`, when nothing reads `t`
@@ -444,11 +465,14 @@ stepped_in_place = |first, { following, last }| {
 ## What a backward walk knows of the labels: those a statement names; those
 ## among them whose address is taken, named by a call, a `lea` or a distance, where any
 ## register may be read; and what is read at each of the others, which only
-## jumps reach.
+## jumps reach; and what the walk takes of the labels others mark (`Beside`).
 Labels : {
 	named : Set(Str),
 	addressed : Set(Str),
 	reads : Dict(Str, U32),
+	outside_addressed : Set(Str),
+	outside : Dict(Str, U32),
+	marked : Set(Str),
 }
 
 ## The labels a call, a `lea` or a distance names.
@@ -466,18 +490,42 @@ addressed_labels = |statements| {
 	$addressed
 }
 
+## Every label the statements mark.
+marked_labels : List(Assembly.Statement) -> Set(Str)
+marked_labels = |statements| {
+	var $marked = Set.empty()
+	for statement in statements {
+		match statement {
+			Mark(label) => {
+				$marked = $marked.insert(label)
+			}
+			_ => {}
+		}
+	}
+	$marked
+}
+
 ## The registers read at a label: every one at a label whose address is taken, else what the walk
 ## has found so far (none, before it has passed the label).
 label_reads : Labels, Str -> U32
 label_reads = |labels, label|
-	if labels.addressed.contains(label) {
+	if is_addressed(labels, label) {
 		every_unit
 	} else {
 		match labels.reads.get(label) {
 			Ok(reads) => reads
-			Err(_) => 0
+			Err(_) if labels.marked.contains(label) => 0
+			Err(_) =>
+				match labels.outside.get(label) {
+					Ok(reads) => reads
+					Err(_) => 0
+				}
 		}
 	}
+
+## Whether a label's address is taken, here or beside.
+is_addressed : Labels, Str -> Bool
+is_addressed = |labels, label| labels.addressed.contains(label) or labels.outside_addressed.contains(label)
 
 ## The registers read before a statement that is neither an instruction nor
 ## a label, given those read after it: a jump's are its label's, a
@@ -494,12 +542,19 @@ read_before_flow = |statement, { after, labels }|
 ## What is read at each label only jumps reach, found by walking the
 ## statements backward again until no label's set grows: each set only
 ## grows, and a walk that grows none has found them all.
-settled_labels : List(Assembly.Statement), Set(Str) -> Labels
-settled_labels = |statements, named| {
+settled_labels : List(Assembly.Statement), { named : Set(Str), beside : Moves.Beside, walk : U64 } -> Labels
+settled_labels = |statements, { named, beside, walk }| {
 	var $labels = {
 		named,
 		addressed: addressed_labels(statements),
 		reads: Dict.empty(),
+		outside_addressed: beside.addressed,
+		outside: beside.reads.get(walk) ?? Dict.empty(),
+		marked: if beside.reads.all(|reads| reads.is_empty()) {
+			Set.empty()
+		} else {
+			marked_labels(statements)
+		},
 	}
 	for _ in 0..<statements.len() {
 		var $read = every_unit
@@ -509,7 +564,7 @@ settled_labels = |statements, named| {
 			statement = statements.get(at) ?? crash "Moves.settled_labels: a statement"
 			match statement {
 				Mark(label) =>
-					if named.contains(label) and !$labels.addressed.contains(label) {
+					if named.contains(label) and !is_addressed($labels, label) {
 						known = label_reads($labels, label)
 						now = both(known, $read)
 						if now != known {

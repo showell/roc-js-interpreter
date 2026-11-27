@@ -31,8 +31,13 @@ Forwarding :: [].{
 
 	## The statements with each load of a value a register holds made a move.
 	forward_loads : List(Assembly.Statement) -> List(Assembly.Statement)
-	forward_loads = |statements| {
-		named = Assembly.named_labels(statements)
+	forward_loads = |statements| Forwarding.forward_loads_named(statements, Assembly.named_labels(statements))
+
+	## `forward_loads` with the labels that end a straight run given:
+	## every label the whole program names, for statements that run beside
+	## others (RuntimePosts).
+	forward_loads_named : List(Assembly.Statement), Set(Str) -> List(Assembly.Statement)
+	forward_loads_named = |statements, named| {
 		var $out = List.with_capacity(statements.len())
 		var $holdings = []
 		for statement in statements {

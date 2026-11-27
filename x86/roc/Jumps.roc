@@ -28,18 +28,64 @@ Jumps :: [].{
 	## The statements with each jump to a jump made a jump to its target,
 	## each statement no way reaches and each jump to just after it taken out.
 	thread_jumps : List(Assembly.Statement) -> List(Assembly.Statement)
-	thread_jumps = |statements| {
+	thread_jumps = |statements| Jumps.thread_jumps_beside(statements, alone).threaded
+
+	## `thread_jumps` of statements that run beside others it doesn't see
+	## (RuntimePosts): `beside.named` are labels to take as named whatever
+	## these statements name, and `beside.hops` the others' labels whose
+	## first instruction is a jump, by their targets. It says how many
+	## rounds it ran and whether the last changed nothing (`settled`; at most
+	## 8 rounds run, as `thread_jumps` runs).
+	thread_jumps_beside : List(Assembly.Statement), Jumps.Beside -> { threaded : List(Assembly.Statement), rounds : U64, settled : Bool }
+	thread_jumps_beside = |statements, beside| {
 		var $now = statements
-		for _ in 0..<8 {
-			once = next_jumps_dropped(unreached_dropped(thread_each_jump($now)))
+		for round in 0..<most_rounds {
+			once = Jumps.round_beside($now, beside).after
 			if once.len() == $now.len() {
-				return once
+				return { threaded: once, rounds: round + 1, settled: True }
 			}
 			$now = once
 		}
-		$now
+		{ threaded: $now, rounds: most_rounds, settled: False }
 	}
+
+	## One round of `thread_jumps_beside`: the statements after it, and the
+	## labels named once its threading was done, before anything was taken
+	## out.
+	round_beside : List(Assembly.Statement), Jumps.Beside -> { after : List(Assembly.Statement), threaded_named : Set(Str) }
+	round_beside = |statements, beside| {
+		threaded = Jumps.round_threaded(statements, beside.hops)
+		named = Assembly.named_labels(threaded)
+		{ after: Jumps.round_dropped(threaded, { named, beside: beside.named }), threaded_named: named }
+	}
+
+	## A round's threading: each jump to a jump made a jump to its target,
+	## the hops of the labels beside taken too.
+	round_threaded : List(Assembly.Statement), Dict(Str, Str) -> List(Assembly.Statement)
+	round_threaded = |statements, hops| thread_each_jump(statements, hops)
+
+	## A round's taking out, after its threading: what no way reaches (a
+	## label in `named` or `beside` taken as named), then each jump to just
+	## after it.
+	round_dropped : List(Assembly.Statement), { named : Set(Str), beside : Set(Str) } -> List(Assembly.Statement)
+	round_dropped = |threaded, names| next_jumps_dropped(unreached_dropped(threaded, names))
+
+	## The most rounds `thread_jumps` runs.
+	most_rounds : U64
+	most_rounds = 8
+
+	## What `thread_jumps_beside` takes of the labels beside.
+	Beside : { named : Set(Str), hops : Dict(Str, Str) }
+
+	## Each label's first instruction that is an unconditional jump to a
+	## label, by the label.
+	hops_of : List(Assembly.Statement) -> Dict(Str, Str)
+	hops_of = |statements| jump_labels(statements)
 }
+
+## Nothing beside.
+alone : Jumps.Beside
+alone = { named: Set.empty(), hops: Dict.empty() }
 
 ## Each label's first instruction that is an unconditional jump to a label,
 ## by the label: the jump's target.
@@ -69,11 +115,15 @@ jump_labels = |statements| {
 
 ## Where a jump to `label` ends up, following jumps to jumps, at most
 ## eight of them, so a cycle of jumps ends.
-final_target : Dict(Str, Str), Str -> Str
-final_target = |hops, label| {
+final_target : Dict(Str, Str), Dict(Str, Str), Str -> Str
+final_target = |hops, outside, label| {
 	var $at = label
 	for _ in 0..<8 {
-		match hops.get($at) {
+		hop = match hops.get($at) {
+			Ok(next) => Ok(next)
+			Err(_) => outside.get($at)
+		}
+		match hop {
 			Ok(next) if next != label => {
 				$at = next
 			}
@@ -84,15 +134,15 @@ final_target = |hops, label| {
 }
 
 ## The statements with each jump to a jump made a jump to its target.
-thread_each_jump : List(Assembly.Statement) -> List(Assembly.Statement)
-thread_each_jump = |statements| {
+thread_each_jump : List(Assembly.Statement), Dict(Str, Str) -> List(Assembly.Statement)
+thread_each_jump = |statements, outside| {
 	hops = jump_labels(statements)
 	statements.map(
 		|statement|
 			match statement {
-				JmpTo(label) => JmpTo(final_target(hops, label))
+				JmpTo(label) => JmpTo(final_target(hops, outside, label))
 				JccTo({ condition, label }) => {
-					landing = final_target(hops, label)
+					landing = final_target(hops, outside, label)
 					JccTo({ condition, label: landing })
 				}
 				_ => statement
@@ -102,14 +152,13 @@ thread_each_jump = |statements| {
 
 ## The statements with what follows a jump or a `ret`, up to the next label
 ## a statement names, taken out, data kept.
-unreached_dropped : List(Assembly.Statement) -> List(Assembly.Statement)
-unreached_dropped = |statements| {
-	named = Assembly.named_labels(statements)
+unreached_dropped : List(Assembly.Statement), { named : Set(Str), beside : Set(Str) } -> List(Assembly.Statement)
+unreached_dropped = |statements, { named, beside }| {
 	var $kept = List.with_capacity(statements.len())
 	var $reached = True
 	for statement in statements {
 		match statement {
-			Mark(label) if named.contains(label) => {
+			Mark(label) if named.contains(label) or beside.contains(label) => {
 				$reached = True
 				$kept = $kept.append(statement)
 			}
