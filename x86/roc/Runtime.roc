@@ -468,7 +468,7 @@ Runtime :: [].{
 	start_items = |main| [
 		Emit.imm(Rax, 9),
 		Emit.zero(Rdi),
-		Emit.imm(Rsi, Heap.mapped_size),
+		Emit.imm(Rsi, Heap.mapping_size),
 		Emit.imm(Rdx, 3),
 		Emit.imm(R10, 0x4022),
 		Emit.imm(R8, -1),
@@ -524,9 +524,10 @@ stack_size = 6 * 1024 * 1024
 ## the buffer's fill (`[r13]`), node's inspect depth (8), the innermost
 ## `try`'s handler (16, 0 when none waits), the timers' places, 24 to
 ## 48, which `Timers` holds and describes, and whether a method was ever
-## shadowed (56, `Runtime.shadowed_place`).
+## shadowed (56, `Runtime.shadowed_place`). The collector reads every
+## place before it as a root (`Heap.runtime_roots_size`).
 buffer_place : I64
-buffer_place = 64
+buffer_place = Heap.runtime_roots_size
 
 buffer_size : I64
 buffer_size = 65536
@@ -604,7 +605,8 @@ output_items = [
 ## argument asked for it (`Heap.mode_place`), the mode cleared first so a
 ## stop the walk makes doesn't walk again; with `heapstat`, its counts are
 ## written after the program's own output, a line:
-## `heap: <n> blocks, <n> bytes asked, <n> bytes in blocks, <n> pages`.
+## `heap: <n> blocks, <n> bytes asked, <n> bytes in blocks, <n> pages, <n>
+## pages at most, <n> collections`.
 heap_exit_items : List(Assembly.Statement)
 heap_exit_items = {
 	counted = |{ place, text }| [
@@ -639,6 +641,8 @@ heap_exit_items = {
 		counted({ place: Heap.asked_place, text: "runtime_text_heap_asked" }),
 		counted({ place: Heap.held_place, text: "runtime_text_heap_held" }),
 		counted({ place: Heap.pages_place, text: "runtime_text_heap_pages" }),
+		counted({ place: Heap.peak_place, text: "runtime_text_heap_peak" }),
+		counted({ place: Heap.collections_place, text: "runtime_text_heap_collections" }),
 		[Emit.mark("runtime_heap_exit_done"), Emit.ret],
 	].join()
 }

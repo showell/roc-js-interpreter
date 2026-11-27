@@ -91,7 +91,8 @@ end
 -- together, the code -1 when it didn't exit. `argument`, when given, is the
 -- executable's first argument: `heapwalk` walks the heap at its exit and at
 -- a stop, every block's header checked (x86/roc/Heap.roc), and prints
--- nothing more unless a header is wrong.
+-- nothing more unless a header is wrong; `gcalways` also collects at every
+-- allocation and walks the heap after each collection (the torture tier).
 function executable_run(path, argument?)
   local argv = {real(path)}
   if argument ~= nil then push(argv, argument) end

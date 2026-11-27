@@ -39,8 +39,8 @@
 ##   entry in it again.
 ## - A table more than half full is replaced by one of at least four times
 ##   the entries' count in slots (32 at least), so a table is allocated once
-##   for each doubling, never for a lookup. The old one is left on the heap,
-##   as everything is while no collector runs.
+##   for each doubling, never for a lookup. The old one is left for the
+##   collector.
 ##
 ## No object loses a key: the subset has no `delete`.
 ##

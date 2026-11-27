@@ -20,7 +20,7 @@
 use("./executables.shale")
 
 const WHO = "x86/fib.shale"
-const EXPECTS = 225
+const EXPECTS = 226
 const PROGRAM = "x86/fib.js"
 const LAST_LINE = "console.log(fib(30));\n"
 const RUNS = 3

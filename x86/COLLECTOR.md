@@ -8,7 +8,7 @@ This is the agreed design for the compiled programs' garbage collector. Steve ac
 - a GC-torture tier in the gate, which collects at every allocation, at small sizes;
 - lane 1 starts on a quiet tree, not beside other compiler lanes.
 
-Lane 1 is in (2026-11-27): headers and size-class pages, still never freeing; "Lane 1, as built" at the end says what it is and what it cost. Nothing else below is built yet.
+Lanes 1 and 2 are in (2026-11-27): headers and size-class pages, then the mark, the sweep and the torture tier; "Lane 1, as built" and "Lane 2, as built" at the end say what each is and what it cost. Trigger tuning (lane 3) and the book (lane 4) are not done yet.
 
 ## Why now
 
