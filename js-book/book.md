@@ -191,13 +191,13 @@ The two NaNs the processor makes lie below every tag, so a value is a number exa
 
 ### The runtime
 
-Every executable carries the runtime, about 15 KB of machine code (`x86/README.md`): the start, the allocator, buffered output, `console.log`'s writing of values as node writes them, the array methods, the Maps and Sets, and the timers. It is written in Roc too, as lists of `Assembly` statements, one instruction a line through the short builders of `Emit.roc`. Here is the allocator, with its paths for a fresh page and a large block, from `Heap.roc`:
+Every executable carries the runtime, about 21 KB of it: the executable of `let x = 1;` is 21,611 bytes (measured for this chapter on 2026-11-27; `x86/README.md`'s "about 15 KB" predates the later routines): the start, the allocator, buffered output, `console.log`'s writing of values as node writes them, the array methods, the Maps and Sets, and the timers. It is written in Roc too, as lists of `Assembly` statements, one instruction a line through the short builders of `Emit.roc`. Here is the allocator, with its paths for a fresh page and a large block, from `Heap.roc`:
 
 {{function x86/roc/Heap.roc allocate_items}}
 
 Four registers belong to the runtime for the whole run: `r12` the stack's limit, `r13` the runtime's state, `r14` the heap's end and `r15` the heap's state, in a heap of 2 GiB. The heap is 64 KiB pages of one block size each, every block behind a header word of its kind and size (`x86/COLLECTOR.md`), and the allocator only bumps through them, so every allocation lasts until the program exits, and a program that fills the heap stops with a message saying the collector is still to come ({{chapter The garbage collector}} says what is being built).
 
-The executable of fib(22) is 25,167 bytes, nearly all of it the runtime (`x86/fib.shale`, 2026-11-25): milestone 2's, before the runtime, was 1,010 bytes (`x86/README.md`).
+The executable of `x86/fib.js`, which prints fib(22) and fib(30), is 22,041 bytes, nearly all of it the runtime (`x86/fib.shale`, 2026-11-27): milestone 2's fib(22), before the runtime, was 1,010 bytes (`0c5ea7e`).
 
 ### What it compiles
 
