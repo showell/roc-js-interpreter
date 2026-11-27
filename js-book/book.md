@@ -456,12 +456,17 @@ Since 2026-11-26 an instance holds its class's table of methods, and a method ta
 
 ## Roc's copy rule
 
-Roc has only values, yet it writes a list in place whenever it safely can. Both programs depend on that. The interpreter keeps a JavaScript program's heap in one Roc list, which many of its instructions write; the compiler builds an executable's bytes by appending to one list. Each is fast only while Roc writes its list in place. This chapter states when Roc does, and when it quietly copies the list first. Every later chapter that weighs a cost comes back to it, and {{chapter Handing the machine on}} gives the three habits the interpreter took from it.
+Roc has only values, yet it writes a list in place whenever it safely can. This chapter states when Roc does, and when it quietly copies the list first. The compiler meets the rule once, mildly, and the interpreter meets it at nearly every instruction. Every later chapter that weighs a cost comes back to it, and {{chapter Handing the machine on}} gives the three habits the interpreter took from it.
 
 ### What the copy rule still asks
 
-With the effects gone, the machine record and its lending go too. The lowering's state is the kinds of one function's slots, made afresh for each function on each pass, and the passes are a plain loop over values that ends when the kinds settle. The one large value that grows is the code itself. `Assembly.roc` builds the bytes by appending to one list and patches the placeholders with `set` while that list has one owner, so both passes write it in place (the module's own comment; unchecked by an allocation count). The copy rule of {{chapter Roc's copy rule}} still holds, and in the compiler it governs one list in one place.
+The compiler is one pure function, yet the rule still asks something of it. The lowering's state is the kinds of one function's slots, made afresh for each function on each pass, and the passes are a plain loop over values that ends when the kinds settle. The one large value that grows is the code itself. `Assembly.roc` builds the bytes by appending to one list, then patches each jump's placeholder with `set`:
 
+{{function x86/roc/Assembly.roc patched_rel32}}
+
+`$out` is the list's one owner, so each `set` writes in place (the module's own comment; unchecked by an allocation count). In the compiler the rule governs that one list in that one place.
+
+The interpreter is where the rule bites. It keeps a JavaScript program's whole heap in one Roc list, which many of its instructions write, and the run travels through its loop as one record that holds that list. A second owner of the list at the moment of a write turns that write into a copy of the heap.
 
 ### When a write copies
 
@@ -500,7 +505,7 @@ Each shape below is a loop in roc-apps' `tools/copy_shapes/CopyShapes.roc`, held
 
 ### Shapes that copy in every build
 
-**The old list read after its write.** The write takes the list only while it is the list's one reader:
+The first shape reads the old list after its write. The write takes the list only while it is the list's one reader:
 
 ```roc get-after-set: a copy a write
 ys = xs.set(j, i) ?? xs
@@ -514,7 +519,7 @@ v = xs.get(j) ?? crash "set_restored: in range"
 ys = xs.set(j, v + 1) ?? xs
 ```
 
-**A closure over the list, called after the write.** The closure holds the old list:
+In the second, a closure over the list is called after the write, and the closure holds the old list:
 
 ```roc closure-called-after: a copy a write
 at = |k| xs.get(k) ?? crash "closure_called_after: in range"
@@ -524,7 +529,7 @@ closure_called_after(i + 1, steps, size, ys, sum + at(j))
 
 Called inside the write's own arguments, the same closure is free (`closure-called-before`): `ys = xs.set(j, at(j) + 1) ?? xs`.
 
-**An inner list got, written and set back while the outer list still holds it:**
+In the third, an inner list is got, written and set back while the outer list still holds it:
 
 ```roc nested-get-then-set: a copy a write
 inner = rows.get(0) ?? crash "nested_get_then_set: outer in range"
@@ -537,14 +542,14 @@ written = rows.set(0, inner.set(j, i) ?? crash "nested_get_then_set: inner in ra
 written = rows.update(0, |inner| inner.set(j, i) ?? crash "nested_update: inner in range") ?? crash "nested_update: outer in range"
 ```
 
-**The old dict read after an insert, even its length:**
+A dict copies the same way when the old dict is read after an insert, even for its length:
 
 ```roc dict-length-after-insert: a copy a write
 d2 = d.insert(j, i)
 dict_length_after_insert(i + 1, steps, size, d2, sum + d.len())
 ```
 
-**A value got from a dict, written and inserted back while the dict still holds it:**
+It copies too when a value is got from the dict, written and inserted back while the dict still holds it:
 
 ```roc dict-get-then-insert: a copy a write
 l = d.get(0) ?? crash "dict_get_then_insert: key 0 is there"
@@ -561,9 +566,9 @@ dict_take_then_insert(i + 1, steps, size, d0.insert(0, l.set(j, i) ?? l), sum + 
 
 ### Shapes that copy in the dev build only
 
-In the dev build a helper stays a call that owns its arguments. The release build specializes the helper first, and writes in place. These shapes still matter: a dev-only copy often becomes a release copy once the code around it changes ({{chapter Roc's two builds}}).
+In the dev build a helper stays a call that owns its arguments, where the release build specializes the helper first and writes in place. The shapes are held anyway, since a dev-only copy often becomes a release copy once the code around it changes ({{chapter Roc's two builds}}).
 
-**A helper that reads its list after writing it:**
+The first is a helper that reads its list after writing it:
 
 ```roc helper-length-after-set: a copy a write, dev only
 bump_length_after = |xs, j, v| (xs.set(j, v) ?? xs, xs.len())
@@ -578,7 +583,7 @@ bump_length_first = |xs, j, v| {
 }
 ```
 
-**A helper that reads the whole record inside the write of one of its fields:**
+The second is a helper that reads the whole record inside the write of one of its fields:
 
 ```roc helper-reads-record: a copy a write, dev only
 kept = |d, a| (a + d.base) % d.cells.len()
@@ -587,7 +592,7 @@ helper_reads_record(i + 1, steps, size, { ..d, cells: d.cells.set(kept(d, j), i)
 
 Bound on the line before, the same index is free (`index-bound-before`): `k = kept(d, j)`, then `d.cells.set(k, i)`.
 
-**`?? xs` on a list whose entries hold a reference count,** such as a list of strings:
+The third is `?? xs` on a list whose entries hold a reference count, such as a list of strings:
 
 ```roc str-list-restored: a copy a write, dev only
 ys = xs.set(j, "x") ?? xs
@@ -597,7 +602,7 @@ ys = xs.set(j, "x") ?? xs
 
 ### Records and boxes
 
-A record update copies the record around the field it writes, inline sub-records included. A `Box` carried untouched is free, but every write re-boxes it, one allocation a write. {{chapter Handing the machine on}} shows both at work on the interpreter's machine record.
+A record update copies the record around the field it writes, inline sub-records included. A `Box` carried untouched is free, but every write re-boxes it, one allocation a write. {{chapter Handing the machine on}} shows both at work on the record that carries the interpreter's run.
 
 ## The interpreter
 
@@ -644,7 +649,7 @@ Measuring further is left for later. `perf` is closed to an unprivileged user on
 
 The VM runs the program inside the Roc call. When the program calls `console.log`, the VM hands the line to its host's `emit!` then and there; a timer waits on the event queue; a click arrives from the page ({{chapter A canvas in the browser}}). So the VM's loop is effectful, and Roc marks every function on that path with `!` and `=>`: 25 lines of `Vm.roc` declare such a function, and 38 lines across `js/roc/` (lines of the form `name! :`, counted for this chapter on 2026-11-25).
 
-The run's whole state travels with those calls as one value, the machine, and most of the interpreter's performance work went into handing it on cheaply. The cells are lent to a rule and taken back, so a write to the heap stays in place ({{chapter JavaScript's rules for values}}). Every shape that would put a second owner on the heap is a copy cliff, and the machine record is held to 248 bytes so that handing it to each instruction costs vector moves in place of a `memcpy` ({{chapter Handing the machine on}}).
+The run's whole state travels with those calls as one value, the machine, and most of the interpreter's performance work went into handing it on cheaply. The heap's cells are handed to the code that writes them as their one owner and taken back after, so a write to the heap stays in place ({{chapter JavaScript's rules for values}}). Every shape that would put a second owner on the heap is a copy cliff, and the machine record is held to 248 bytes so that handing it to each instruction costs vector moves in place of a `memcpy` ({{chapter Handing the machine on}}).
 
 ## Memory strategy
 
@@ -760,7 +765,7 @@ That holds while the cells have one owner. `js/README.md`, "Why the heap is one 
 
 - a writer gets the list straight from the record it updates;
 - a result is taken apart where it is answered, so its machine lives on alone;
-- a writer asks what a cell is (`ValueRules.kind_of`), and leaves the cell in the heap;
+- a writer asks what a cell is, and leaves the cell in the heap;
 - a stack place given up is cleared to `Null`;
 - a loop over the machine is a `var $st` loop, so the machine stays out of every closure;
 - the host travels as an argument of its own.
@@ -848,7 +853,7 @@ The allocation controls check it ({{chapter Roc's two builds}}). 05-array-push p
 
 ## The garbage collector
 
-The interpreter's collector visits every cell of the heap in one pass, so it is where a second owner of the cells would cost the most, and its design follows from that.
+The interpreter's collector visits every cell of the heap in one pass, so it is where a second owner of the cells would cost the most, and its design follows from that. The compiled programs carry a collector of their own, over raw memory ({{chapter The compiler to x86-64}}), and this chapter is the interpreter's alone.
 
 ### What it does
 
@@ -879,14 +884,14 @@ Writing `Freed` over a garbage cell drops the cell that was there, and Roc's ref
 
 The collector is shaped around Roc's copy cliff, where a write to a list that something else still refers to copies the whole list first ({{chapter Roc's copy rule}} lists the shapes):
 
-- **The marks are a list of their own.** `marked` reads the cells and writes only its marks and its stack of cells waiting to be visited, each in place, so every list it writes is its own. A mark bit inside each cell would make the first mark copy the heap.
-- **The sweep owns the cells.** `collected` takes the cells out of the machine with `lent` before it calls `swept`, so each `set` in the sweep is the list's only reference and writes in place:
+- The marks are a list of their own. `marked` reads the cells and writes only its marks and its stack of cells waiting to be visited, each in place, so every list it writes is its own. A mark bit inside each cell would make the first mark copy the heap.
+- The sweep owns the cells. `collected` takes the cells out of the machine with `lent` before it calls `swept`, so each `set` in the sweep is the list's only reference and writes in place:
 
 {{function js/roc/Machine.roc collected}}
 
-- **The waiting stack reuses its places.** A visited cell's place is written over by the next one pushed, so the stack grows only to the mark's deepest point.
+- The waiting stack reuses its places. A visited cell's place is written over by the next one pushed, so the stack grows only to the mark's deepest point.
 
-A count holds these three only loosely. On the dev build, 08-garbage-in-a-call's collections allocate 0.04 a pass, about one collection every thousand passes (`js/controls/expected-dev.txt`); one copy of the heap at each collection would add about a thousandth a pass, inside the ladder's tolerance of 0.05 a pass (`tools/alloc_ladder.shale`). So the guards are unchecked as copies; the heap programs' peaks of about 4 MB (`62110109`) are the nearest measure.
+A collection comes about once in a thousand passes of 08-garbage-in-a-call (`js/controls/expected-dev.txt`), so a copy of the heap at each would fall inside the allocation counts' tolerance (`tools/alloc_ladder.shale`), and the heap programs' peaks of about 4 MB (`62110109`) are the nearest measure of these three.
 
 ### Its roots, and when it runs
 
@@ -961,7 +966,7 @@ Timer(number) => { ..machine, events: Box.box(Events.without_timer(Box.unbox(mac
 
 The release build's fib(22) went from 123 ms to 82, and the loops from 441 ms to 350, with every allocation count as it was (`15686d94`'s message). Since every write re-boxes, a box suits a part that is rarely written after it is made.
 
-**Finding a field worth boxing.** List each field of the record beside the handlers that write it. A field that only a few rare instructions write is a candidate: the event queue (the timer builtins and the event loop), the turtle (the turtle's builtins), the collector's schedule (a collection). A field that most instructions write, such as the program counter or the stack's top, stays inline, since boxing it would add an allocation to most instructions. Then weigh the record's size against the line below; `tools/machine_size.shale` holds the machine's size exactly, so a change that moves it fails the gate until the commit says why.
+To find a field worth boxing, list each field of the record beside the handlers that write it. A field that only a few rare instructions write is a candidate: the event queue (the timer builtins and the event loop), the turtle (the turtle's builtins), the collector's schedule (a collection). A field that most instructions write, such as the program counter or the stack's top, stays inline, since boxing it would add an allocation to most instructions. Then weigh the record's size against the line below; `tools/machine_size.shale` holds the machine's size exactly, so a change that moves it fails the gate until the commit says why.
 
 ### Stay under 256 bytes
 
