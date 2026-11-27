@@ -600,9 +600,14 @@ Since 2026-11-26 an instance holds its class's table of methods, and a method ta
 
 ## The interpreter
 
-The interpreter, js-vm, is the other way to run the subset, and the first one built ({{chapter How it got here}}). Where the compiler turns a program into an executable, the interpreter runs it directly: the front end's bytecode ({{chapter The front end}}) goes to `Vm.roc`, a stack machine written in Roc. It runs in two places. From the command line, `js/roc/JsVm.roc` runs a file, and `js/oracle.shale` holds every corpus program's output to node's. In the browser, the same VM compiled to wasm is the engine of [the playground](https://roc.lynrummy.com/js/), where a program draws on a canvas ({{chapter A canvas in the browser}}).
+The interpreter, js-vm, is the other way to run the subset, and the first one built ({{chapter How it got here}}). Where the compiler turns a program into an executable, the interpreter runs it directly: the front end's bytecode ({{chapter The front end}}) goes to `Vm.roc`, a stack machine written in Roc. It runs all 63 corpus programs as node does, so it is also the project's reference for what the subset means. It runs in two places:
 
-Because the interpreter keeps a whole run in Roc values, it needs its own memory, its own collector and its own care with copies, the subjects of {{chapter Memory strategy}}, {{chapter The garbage collector}} and {{chapter Handing the machine on}}. This chapter looks at the VM's loop, then at the one value the run works on: the machine.
+| where | what runs | held by |
+|---|---|---|
+| the command line | `js/roc/JsVm.roc`, on a file | `js/oracle.shale`, which holds every corpus program's output to node's |
+| the browser | the same VM compiled to wasm, the engine of [the playground](https://roc.lynrummy.com/js/), where a program draws on a canvas ({{chapter A canvas in the browser}}) | `js/page_check.mjs` ({{chapter How it is tested}}) |
+
+The interpreter keeps a whole run in Roc values, so it needs its own memory, its own collector and its own care with copies, the subjects of {{chapter Memory strategy}}, {{chapter The garbage collector}} and {{chapter Handing the machine on}}. This chapter looks at the VM's loop, then at the one value the run works on: the machine.
 
 Beside it, `Inspect.roc` formats `console.log`'s output as node's `util.inspect` does, function for function, and `NumberText.roc` writes a number as `String(n)` does.
 
@@ -636,16 +641,20 @@ Measuring further is left for later. `perf` is closed to an unprivileged user on
 
 ## A canvas in the browser
 
+The playground at [roc.lynrummy.com/js/](https://roc.lynrummy.com/js/) runs the interpreter in a browser, where a program draws as it runs. It is also the one place where the VM's effects reach a screen, so it shows most plainly how a pure Roc program hands effects to a host. This chapter covers what a program may call, how the page runs it, and how each effect travels.
+
 ### What a program sees
 
-In [the playground](https://roc.lynrummy.com/js/), a program is JavaScript from the subset plus a deliberately small API for one 400 by 400 canvas. It is a toy's API, sized for sketches, games of one screen and demonstrations:
+In the playground, a program is JavaScript from the subset plus a deliberately small API for one 400 by 400 canvas. It is a toy's API, sized for sketches, games of one screen and demonstrations:
 
-- **Drawing:** `background`, `fill`, `noFill`, `stroke`, `noStroke`, `line`, `rect`, `circle`, `ellipse`, `polygon` and `text`, named after p5.js's but a small set of their own, with colors as CSS strings.
-- **A turtle:** `forward`, `back`, `turn`, `penUp`, `penDown` and `goto`.
-- **Input:** `mouseX()`, `mouseY()` and `keyIsDown(key)`, read when called, and `onClick(handler)`.
-- **Time:** `setTimeout`, `setInterval` and their clears, and a `function frame(t)`, which the page calls 30 times a second.
-- **The memory view's hook:** `onCollect(handler)`, which hears each garbage collection.
-- **`console.log`,** which writes under the canvas.
+| kind | the names |
+|---|---|
+| drawing | `background`, `fill`, `noFill`, `stroke`, `noStroke`, `line`, `rect`, `circle`, `ellipse`, `polygon` and `text`, named after p5.js's but a small set of their own, with colors as CSS strings |
+| a turtle | `forward`, `back`, `turn`, `penUp`, `penDown` and `goto` |
+| input | `mouseX()`, `mouseY()` and `keyIsDown(key)`, read when called, and `onClick(handler)` |
+| time | `setTimeout`, `setInterval` and their clears, and a `function frame(t)`, which the page calls 30 times a second |
+| the memory view's hook | `onCollect(handler)`, which hears each garbage collection |
+| output | `console.log`, which writes under the canvas |
 
 That is the whole of it: a program draws, listens and waits, and the page's DOM, the network and other files stay out of its reach. The playground's "click dots" sample uses most of it:
 
@@ -706,9 +715,11 @@ digraph {
 }
 ```
 
-- **The page's** host (`JsApp.roc`, on the platform in `js/wasm/`) calls into the page's JavaScript while the Roc call runs.
-- **The recording host,** `js-canvas` (`JsCanvas.roc`), writes every effect and every read as a line, for the golden logs.
-- **`js-vm`'s** host prints each log as it is made.
+| host | module | what it does with an effect |
+|---|---|---|
+| the page's | `JsApp.roc`, on the platform in `js/wasm/` | calls into the page's JavaScript while the Roc call runs |
+| the recording host, `js-canvas` | `JsCanvas.roc` | writes every effect and every read as a line, for the golden logs |
+| `js-vm`'s | `JsVm.roc` | prints each log as it is made |
 
 ### The queue and its clock
 
@@ -732,7 +743,7 @@ console.log("x");
 
 ## Memory strategy
 
-Everything a JavaScript program shares lives in one Roc list, and every operation is shaped so that Roc writes that list in place. This chapter lays out the types, states what each operation costs and how that is checked, and follows one line of JavaScript through the machine.
+Everything a JavaScript program shares lives in one Roc list, and every operation is shaped so that Roc writes that list in place. A change that gives the list a second owner turns each write into a copy of the heap. This chapter lays out the types, the cost of each operation and its check, and one line of JavaScript traced through the machine.
 
 ### A reference is an index
 
@@ -751,8 +762,6 @@ An `Instance` is an object marked with the names of its class and of each class 
 A freed cell stays in its place as `Freed(next)`, a link to the next free cell, and the machine's `free` names the first, `FreeAt(id)` or `NoneFree`. An allocation reads the link out of the first free cell and writes the new cell into its place with one `set`; only an empty free list appends:
 
 {{lines js/roc/Heap.roc from "allocated : List(Heap.Cell), Heap.Free" to "{ cells: cells.set(id, cell)"}}
-
-Garbage collection is what refills the free list; {{chapter The garbage collector}} says how.
 
 Two references into the heap, and its free list
 ```dot
@@ -785,7 +794,7 @@ A variable a closure may capture lives in a box, a `Variable` cell the frame and
 
 ### What each operation costs
 
-A control's count is what one more pass allocates, run at 1,000 and 10,000 passes ({{chapter Dev and release builds disagree}}). A write that copies its list allocates once a pass, so a flat count rules the copy out. A count is a count of allocations; the probes time a write at three sizes on the dev build (`js/README.md`, "What the probes say", 2026-11-24).
+A control is a small program of `js/controls/`, a loop of one kind of write, and its count is what one more pass allocates, run at 1,000 and 10,000 passes ({{chapter Dev and release builds disagree}}). A write that copies its list allocates once a pass, so a flat count rules the copy out. A probe times a write at three sizes on the dev build (`js/README.md`, "What the probes say", 2026-11-24).
 
 | operation | cost | how it is checked |
 |---|---|---|
@@ -805,7 +814,7 @@ A control's count is what one more pass allocates, run at 1,000 and 10,000 passe
 
 ### One line of JavaScript
 
-The line `o.total = o.total + a[i];` runs in a loop whose frame holds `o` in slot 0, `a` in 1 and `i` in 2. These are the instructions `Compile.program` makes for it, printed for this chapter by a scratch program that runs `Parser.program_of` and `Compile.program` and writes each instruction with `Str.inspect`:
+The line `o.total = o.total + a[i];` runs in a loop whose frame holds `o` in slot 0, `a` in 1 and `i` in 2. These are the instructions `Compile.program` makes for it, printed for this chapter by a scratch program (`Parser.program_of`, `Compile.program`, then `Str.inspect` of each):
 
 | instruction | the stack after | what it does |
 |---|---|---|
@@ -853,9 +862,26 @@ That holds while the cells have one owner. `js/README.md`, "Why the heap is one 
 
 ## The garbage collector
 
+The interpreter's collector visits every cell of the heap in one pass, so it is where a second owner of the cells would cost the most, and its design follows from that.
+
 ### What it does
 
-`Collector.roc` is the VM's garbage collector, a precise mark and sweep. The VM names its roots, `marked` follows every reference from them through the cells, and `swept` turns each unmarked cell into a `Freed` cell on the free list. A live cell keeps its index, so every reference stays valid across a collection.
+`Collector.roc` is the VM's garbage collector, a precise mark and sweep, the technique of McCarthy's Lisp (1960). The VM names its roots, `marked` follows every reference from them through the cells, and `swept` turns each unmarked cell into a `Freed` cell on the free list. A live cell keeps its index, so every reference stays valid across a collection.
+
+One collection
+```dot
+digraph {
+  rankdir=LR;
+  node [shape=box, style=rounded];
+  roots [label="Machine.roots"];
+  marked [label="marked\nits own list of marks"];
+  swept [label="swept\nthe lent cells"];
+  free [label="the free list"];
+  roots -> marked [label="follow"];
+  marked -> swept [label="unmarked"];
+  swept -> free [label="Freed"];
+}
+```
 
 The sweep is where memory comes back:
 
@@ -863,7 +889,7 @@ The sweep is where memory comes back:
 
 Writing `Freed` over a garbage cell drops the cell that was there, and Roc's reference counting returns what it held (an object's properties, an array's items, a closure's boxes) to the allocator at that write. The heap's list keeps its length, and {{chapter Memory strategy}} shows an allocation taking a freed place. That is how the programs in `js/heaps/` went from peaks of 40 to 164 MB to about 4 MB each (`62110109`).
 
-### Around the copy cliff
+### Shaped around the copy cliff
 
 The collector is shaped around Roc's copy cliff, where a write to a list that something else still refers to copies the whole list first ({{chapter Roc's copy rule}} lists the shapes):
 
@@ -888,22 +914,33 @@ A collection is due when the free list is empty and the heap has reached its thr
 
 Between two instructions every value the program holds is in the machine. The one exception is a builtin that runs a callback, such as `filter` or `sort`: what it keeps across the callback waits on the stack, where the collections inside the callback see it. A live value that names a freed cell stops the run, since it means a root was missed.
 
-### Garbage you can watch
+### The collector on the page
 
 Two samples show the collector at work. `js/tests/55-garbage.js` makes 1,800 short-lived pieces, an object, an array and a closure each, in 12 rounds, so the memory view's sawtooth shows its teeth; node holds it like every corpus program, and the page lists it third (`a57db770`). Here is the memory view's top chart after one run on the page: the cells in use climb as the program allocates and drop at each collection, a dashed line, and the dots are what each collection kept.
 
 ```shot garbage-memory
 The memory view's chart of the cells in use over one run of the garbage sample (js-book/canvas_shots.mjs, 2026-11-27).
 ```
- `onCollect(fn)` is a playground extra, like `onClick` and outside JavaScript: its handler hears each collection after the sweep, as an event that runs between instructions, as a timer does. Node keeps its own collector hidden from a program, so the canvas log `9-garbage-heard` holds that sample, in `js-canvas` and on the page (`aa391df8`). The handler sits in the boxed event queue, so a program that ignores `onCollect` pays one match inside each collection and runs every instruction as before.
 
-### Two collectors, two worlds
+`onCollect(fn)` is a playground extra, like `onClick` and outside JavaScript: its handler hears each collection after the sweep, as an event that runs between instructions, as a timer does. Node keeps its own collector hidden from a program, so the canvas log `9-garbage-heard` holds that sample, in `js-canvas` and on the page (`aa391df8`). The handler sits in the boxed event queue, so a program that ignores `onCollect` pays one match inside each collection and runs every instruction as before.
 
-The compiled programs have a collector of their own, a separate codebase in the same family: a non-moving mark and sweep that collects at twice the last live size, and at least every 8 MiB. `Collector.roc` works on a Roc list of cells: a reference is an index, the VM names its roots exactly, and Roc's reference counting frees what a `Freed` cell held. The compiler's, designed in `x86/COLLECTOR.md`, works on raw memory: each heap block carries a header word of its kind and size, blocks sit in pages of one size class, and the roots are found conservatively, in every word of the machine stack and the registers that looks like a heap address, as Boehm and Weiser's collector for C finds them (1988). The headers and pages came first (`a328636`), then the mark, the sweep and a torture tier that collects at every allocation (`460b606`). A floor of 8 MiB held big daddy at 8.8 MB, about a twelfth of node's peak on the same run; floors from 2 to 64 MiB kept its CPU time within 8% (`x86/COLLECTOR.md`, "Lane 3").
+### The compiled programs' collector
+
+The compiled programs have a separate collector of their own, designed in `x86/COLLECTOR.md`:
+
+| | `Collector.roc`, in the VM | the compiled programs' |
+|---|---|---|
+| kind | a precise mark and sweep | a non-moving mark and sweep |
+| works on | a Roc list of cells | raw memory: each heap block carries a header word of its kind and size, and blocks sit in pages of one size class |
+| a reference | an index | an address |
+| its roots | named exactly by the VM | found conservatively, in every word of the machine stack and the registers that looks like a heap address, as Boehm and Weiser's collector for C finds them (1988) |
+| when it collects | once the free list is empty and the heap reaches twice what the last collection kept, at least 1,024 cells | at twice the last live size, and at least every 8 MiB |
+
+The headers and pages came first (`a328636`), then the mark, the sweep and a torture tier that collects at every allocation (`460b606`). A floor of 8 MiB held big daddy at 8.8 MB, about a twelfth of node's peak on the same run; floors from 2 to 64 MiB kept its CPU time within 8% (`x86/COLLECTOR.md`, "Lane 3").
 
 ## JavaScript's rules for values
 
-The compiler's runtime gives values their JavaScript meanings in machine code (`runtime_add` and its kin, {{chapter The compiler to x86-64}}). This chapter is about the interpreter, which gives them the same meanings in Roc.
+The compiler's runtime gives values their JavaScript meanings in machine code (`runtime_add` and its kin, {{chapter The compiler to x86-64}}). The interpreter gives them the same meanings in Roc, and this chapter shows how, with the hand-off of the heap that keeps those rules off the copy cliff.
 
 In JavaScript, one operator means different things for different values. `1 + 2` adds, and gives `3`. `"a" + 1` turns the number into text, and gives `"a1"`. `"5" * 2` asks for a string to become a number. A property read varies too: with `o` holding `{ x: 1 }`, `o.x` gives `1`, `o.y` gives `undefined`, and `[1, 2].length` reads a property every array has.
 
@@ -939,7 +976,7 @@ The eight names of `Object.prototype` in `ValueRules.is_prototype_name`, such as
 
 ### The cells are lent
 
-In Roc, every value stays as it was made: `List.set(list, i, x)` returns a list with the new item, and any other holder of the old list keeps the old items. Roc keeps this fast: when the list has one holder, Roc writes into that list's own memory; when it has two, Roc first copies the whole list. That copy is the copy cliff of {{chapter Roc's copy rule}}.
+`List.set(list, i, x)` writes the list's own memory while the list has one holder; with two, Roc first copies the whole list, the copy cliff of {{chapter Roc's copy rule}}.
 
 The heap is one list of cells, and the VM's machine record holds it ({{chapter Memory strategy}}). Some rules write it: `a.push(1)` reaches `ArrayRules.array_method`, which writes the array's cell, and a method that makes a new array allocates a cell.
 
@@ -968,24 +1005,50 @@ digraph {
 ```
 
 The allocation controls check it ({{chapter Dev and release builds disagree}}). 05-array-push pushes through this path, and the release build is held to exactly one allocation a pass, its list of arguments (`js/controls/expected.txt`); a copy of the heap at each push would be a second.
+
 ### The four modules on it
 
 `ValueRules` holds the operators, the property reads and writes, and the patterns. Four modules hold the rest, one kind of value each, and each takes the lent cells and answers a `Got`:
 
-- **`StringRules`**: the methods of strings (`text_method`), those that count by position on ASCII text alone.
-- **`ArrayRules`**: `push`, `pop`, `splice` and the other array methods that take only values. `map`, `filter`, `sort` and the others that call the program back run the VM's loop, so the VM runs them.
-- **`CollectionRules`**: the walks that a spread, a pattern and `for ... of` make, and the methods of Maps and Sets.
-- **`BuiltinRules`**: the starting globals, what `new` makes, and the builtins that give a value alone.
+| module | what it holds |
+|---|---|
+| `StringRules` | the methods of strings (`text_method`), those that count by position on ASCII text alone |
+| `ArrayRules` | `push`, `pop`, `splice` and the other array methods that take only values; `map`, `filter`, `sort` and the others that call the program back run the VM's loop, so the VM runs them |
+| `CollectionRules` | the walks that a spread, a pattern and `for ... of` make, and the methods of Maps and Sets |
+| `BuiltinRules` | the starting globals, what `new` makes, and the builtins that give a value alone |
 
 `console.log`, the canvas, the timers, the program's own functions and the host stay with the VM.
 
 ## Handing the machine on
 
-The interpreter's performance work came down to {{chapter Roc's copy rule}} and three habits that follow from it, each about the machine record of {{chapter The interpreter}}.
+The interpreter's performance work came down to {{chapter Roc's copy rule}} and three habits that follow from it, each about the machine record of {{chapter The interpreter}}. They apply to any Roc program that threads one large record through a loop:
+
+| habit | why | what it bought |
+|---|---|---|
+| know that a value is copied when it is handed on | each instruction copies the whole inline record once | - |
+| box what is rarely written | a boxed part is one pointer in that copy | fib(22) from 123 ms to 82 (`15686d94`) |
+| stay under 256 bytes | LLVM copies a record of up to 256 bytes with vector moves, and calls `memcpy` past it | fib(22) from 110 ms to 99 (`3aba5cf7`) |
 
 ### A value is copied when it is handed on
 
 Every VM instruction takes the machine and hands it back: `dispatch!` passes it to the instruction's handler, which answers an update of it, `{ ..machine, pc: ... }` or the like. A record update copies the record around the field it writes, so each instruction copies the whole inline record once, however little it changes. That cost is the record's size, paid at every instruction, and the next two habits keep the size down.
+
+One instruction's copy of the machine
+```dot
+digraph {
+  rankdir=TB;
+  node [shape=box, style=rounded];
+  dispatch [label="dispatch!"];
+  handler [label="the handler"];
+  update [label="{ ..machine, pc: ... }\nthe inline record copied"];
+  vec [label="eight vector moves"];
+  memcpy [label="a memcpy call"];
+  dispatch -> handler [label="the machine"];
+  handler -> update;
+  update -> vec [label="up to 256 bytes"];
+  update -> memcpy [label="past 256 bytes"];
+}
+```
 
 ### Box what is rarely written
 
