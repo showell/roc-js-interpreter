@@ -147,7 +147,11 @@ Lowering :: [].{
 	##
 	## `posts` says how the post-passes ran (RuntimePosts.posts' `way`).
 	program_lowering : Bytecode.Program -> Try(
-		{ statements : List(Assembly.Statement), inlined : { sites : U64, instructions : U64 }, posts : Str },
+		{
+			statements : List(Assembly.Statement),
+			inlined : { sites : U64, instructions : U64 },
+			posts : Str,
+		},
 		[Refused(Str)],
 	)
 	program_lowering = |compiled| {
@@ -164,14 +168,21 @@ Lowering :: [].{
 			}
 		}
 		rules_items(threaded).map_ok(
-			|{ statements, posts }| { statements, inlined: { sites: 0, instructions: 0 }, posts },
+			|{ statements, posts }| {
+				statements,
+				inlined: { sites: 0, instructions: 0 },
+				posts,
+			},
 		)
 	}
 }
 
 ## The program's machine code under the first rule for arrays of numbers
 ## that lowers it.
-rules_items : Bytecode.Program -> Try({ statements : List(Assembly.Statement), posts : Str }, [Refused(Str)])
+rules_items : Bytecode.Program -> Try(
+	{ statements : List(Assembly.Statement), posts : Str },
+	[Refused(Str)],
+)
 rules_items = |program| {
 	# Any refusal with arrays of numbers on may be one of an array of
 	# numbers escaping, or of whole numbers taking another, so the program

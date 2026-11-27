@@ -38,27 +38,47 @@ Jumps :: [].{
 	## first instruction is a jump, by their targets. It says how many
 	## rounds it ran and whether the last changed nothing (`settled`; at most
 	## 8 rounds run, as `thread_jumps` runs).
-	thread_jumps_beside : List(Assembly.Statement), Jumps.Beside -> { threaded : List(Assembly.Statement), rounds : U64, settled : Bool }
+	thread_jumps_beside : List(Assembly.Statement),
+	Jumps.Beside -> {
+		threaded : List(Assembly.Statement),
+		rounds : U64,
+		settled : Bool,
+	}
 	thread_jumps_beside = |statements, beside| {
 		var $now = statements
 		for round in 0..<most_rounds {
 			once = Jumps.round_beside($now, beside).after
 			if once.len() == $now.len() {
-				return { threaded: once, rounds: round + 1, settled: True }
+				return {
+					threaded: once,
+					rounds: round + 1,
+					settled: True,
+				}
 			}
 			$now = once
 		}
-		{ threaded: $now, rounds: most_rounds, settled: False }
+		{
+			threaded: $now,
+			rounds: most_rounds,
+			settled: False,
+		}
 	}
 
 	## One round of `thread_jumps_beside`: the statements after it, and the
 	## labels named once its threading was done, before anything was taken
 	## out.
-	round_beside : List(Assembly.Statement), Jumps.Beside -> { after : List(Assembly.Statement), threaded_named : Set(Str) }
+	round_beside : List(Assembly.Statement),
+	Jumps.Beside -> {
+		after : List(Assembly.Statement),
+		threaded_named : Set(Str),
+	}
 	round_beside = |statements, beside| {
 		threaded = Jumps.round_threaded(statements, beside.hops)
 		named = Assembly.named_labels(threaded)
-		{ after: Jumps.round_dropped(threaded, { named, beside: beside.named }), threaded_named: named }
+		{
+			after: Jumps.round_dropped(threaded, { named, beside: beside.named }),
+			threaded_named: named,
+		}
 	}
 
 	## A round's threading: each jump to a jump made a jump to its target,
@@ -69,7 +89,11 @@ Jumps :: [].{
 	## A round's taking out, after its threading: what no way reaches (a
 	## label in `named` or `beside` taken as named), then each jump to just
 	## after it.
-	round_dropped : List(Assembly.Statement), { named : Set(Str), beside : Set(Str) } -> List(Assembly.Statement)
+	round_dropped : List(Assembly.Statement),
+	{
+		named : Set(Str),
+		beside : Set(Str),
+	} -> List(Assembly.Statement)
 	round_dropped = |threaded, names| next_jumps_dropped(unreached_dropped(threaded, names))
 
 	## The most rounds `thread_jumps` runs.
@@ -154,7 +178,11 @@ thread_each_jump = |statements, outside| {
 
 ## The statements with what follows a jump or a `ret`, up to the next label
 ## a statement names, taken out, data kept.
-unreached_dropped : List(Assembly.Statement), { named : Set(Str), beside : Set(Str) } -> List(Assembly.Statement)
+unreached_dropped : List(Assembly.Statement),
+{
+	named : Set(Str),
+	beside : Set(Str),
+} -> List(Assembly.Statement)
 unreached_dropped = |statements, { named, beside }| {
 	var $kept = List.with_capacity(statements.len())
 	var $reached = True

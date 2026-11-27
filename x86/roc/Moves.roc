@@ -76,7 +76,11 @@ Moves :: [].{
 	## address is taken, and what is read at each of the rest in each of the
 	## two backward walks. It gives the trimmed statements and what each walk
 	## found read at the labels these statements mark.
-	trim_moves_beside : List(Assembly.Statement), { named : Set(Str), beside : Moves.Beside } -> { trimmed : List(Assembly.Statement), reads : List(Dict(Str, U32)) }
+	trim_moves_beside : List(Assembly.Statement),
+	{ named : Set(Str), beside : Moves.Beside } -> {
+		trimmed : List(Assembly.Statement),
+		reads : List(Dict(Str, U32)),
+	}
 	trim_moves_beside = |statements, { named, beside }| {
 		first = dead_dropped(copies_dropped(statements, named), { named, beside, walk: 0 })
 		second = dead_dropped(copies_dropped(first.kept, named), { named, beside, walk: 1 })
@@ -347,7 +351,12 @@ fits_i32 = |value| value >= -2147483648 and value <= 2147483647
 
 ## The statements, walked backward, with each plain move whose register
 ## nothing reads after taken out, and each pair `one_move_of` joins made one.
-dead_dropped : List(Assembly.Statement), { named : Set(Str), beside : Moves.Beside, walk : U64 } -> { kept : List(Assembly.Statement), reads : Dict(Str, U32) }
+dead_dropped : List(Assembly.Statement),
+{
+	named : Set(Str),
+	beside : Moves.Beside,
+	walk : U64,
+} -> { kept : List(Assembly.Statement), reads : Dict(Str, U32) }
 dead_dropped = |statements, { named, beside, walk }| {
 	labels = settled_labels(statements, { named, beside, walk })
 	var $kept = List.with_capacity(statements.len())
@@ -527,7 +536,10 @@ label_reads = |labels, label|
 
 ## Whether a label's address is taken, here or beside.
 is_addressed : Labels, Str -> Bool
-is_addressed = |labels, label| labels.addressed.contains(label) or labels.outside_addressed.contains(label)
+is_addressed = |
+	labels,
+	label,
+| labels.addressed.contains(label) or labels.outside_addressed.contains(label)
 
 ## The registers read before a statement that is neither an instruction nor
 ## a label, given those read after it: a jump's are its label's, a
@@ -544,7 +556,12 @@ read_before_flow = |statement, { after, labels }|
 ## What is read at each label only jumps reach, found by walking the
 ## statements backward again until no label's set grows: each set only
 ## grows, and a walk that grows none has found them all.
-settled_labels : List(Assembly.Statement), { named : Set(Str), beside : Moves.Beside, walk : U64 } -> Labels
+settled_labels : List(Assembly.Statement),
+{
+	named : Set(Str),
+	beside : Moves.Beside,
+	walk : U64,
+} -> Labels
 settled_labels = |statements, { named, beside, walk }| {
 	var $labels = {
 		named,

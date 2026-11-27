@@ -205,7 +205,11 @@ executable_of = |src| {
 
 ## A program's lowering, or why it has none.
 lowering_of : Str -> Try(
-	{ statements : List(Assembly.Statement), inlined : { sites : U64, instructions : U64 }, posts : Str },
+	{
+		statements : List(Assembly.Statement),
+		inlined : { sites : U64, instructions : U64 },
+		posts : Str,
+	},
 	Str,
 )
 lowering_of = |src| {
