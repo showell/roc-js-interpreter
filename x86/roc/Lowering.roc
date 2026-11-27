@@ -566,7 +566,7 @@ items_with_numbers = |program, { arrays, versions, seed }| {
 					posted = RuntimePosts.posts({
 						program_statements: Runtime.start_items(
 							LoweringBasics.code_label(program.main),
-						).concat(functions_trimmed($functions, trying)),
+						).concat(functions_trimmed({ functions: $functions, trying })),
 						tail_statements: literal_statements(literals).concat(closures),
 					})
 					Ok({
@@ -1577,6 +1577,7 @@ code_walk = |context, { heads, doubted, demoted }| {
 				statements: made,
 				frame_bytes,
 				worth_renaming: !looped_to.is_empty() or !code.ops.any(calls_code),
+				cold: generic_labels(context),
 			})
 		}
 	var $heads = Dict.empty()
@@ -1603,8 +1604,11 @@ code_walk = |context, { heads, doubted, demoted }| {
 ## carries nothing taken out (FrameValues), but in a program with a `try`,
 ## whose handlers read the frame where no jump shows it. Run once, on the
 ## pass whose kinds settled, so the passes before it pay nothing for it.
-functions_trimmed : List({ index : U64, statements : List(Assembly.Statement) }), Bool -> List(Assembly.Statement)
-functions_trimmed = |functions, trying|
+functions_trimmed : {
+	functions : List({ index : U64, statements : List(Assembly.Statement) }),
+	trying : Bool,
+} -> List(Assembly.Statement)
+functions_trimmed = |{ functions, trying }|
 	functions.join_map(
 		|{ index, statements }|
 			if trying {
@@ -1613,9 +1617,21 @@ functions_trimmed = |functions, trying|
 				# Only the function's own places' labels are named by its own
 				# statements alone; its entries are named from outside it.
 				own = "${LoweringBasics.code_label(index)}_"
-				FrameValues.trimmed({ statements, outside: |label| !is_place_label(label, own) })
+				outside = |label| !is_place_label(label, own)
+				FrameValues.trim_frame_statements({ statements, outside })
 			},
 	)
+
+## The labels of a versioned loop's generic copy's places: each fast place's
+## twin, where its side exits go. Registers counts only the rest.
+generic_labels : LoweringBasics.Context -> Set(Str)
+generic_labels = |context| {
+	var $labels = Set.empty()
+	for (_, fast) in context.versions.fast.to_list() {
+		$labels = $labels.insert(LoweringBasics.place_label(context, fast.generic))
+	}
+	$labels
+}
 
 ## Whether a label is one of the function's places' (`code_<f>_<n>`, or one
 ## of its own labels, `code_<f>_<n>_slow`), given `code_<f>_`.

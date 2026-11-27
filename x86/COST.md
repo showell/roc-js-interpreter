@@ -158,6 +158,81 @@ and 3,184 samples, and lane 3 2,618 ms and 2,618 samples. A quiet-box run
 gave 782 ms against 811 ms the other way. The gap between those two
 measurements is the noise this tier is meant to avoid.
 
+## Lane 4, as built (2026-11-27)
+
+**A correction to the tables above.** An empty place's label shares the next
+place's address, and `fast_path` read that code once for each label at it.
+It reads it once now, so the rows move: master's loop is 63.0, not 63.8, and
+lane 3's is 63.0, not 67.0. Lane 3's store bound was partly the tier's double
+count. The tier also prints the fast path's instructions by kind now.
+
+Lane 4 is two general rules of the compiler's frame and register use:
+
+- **FrameValues** (x86/roc/FrameValues.roc), a pass over each function once
+  its kinds settle. A load of a frame place that a register already holds
+  becomes a move from that register. The pass numbers values, so a copy
+  outlives its register being written, and a stored immediate is loaded as
+  the immediate. A label whose jumps all come before it starts with what
+  every way into it knows. A store that no path ever loads back is dropped.
+  This is backward liveness over the places, following every jump. The pass
+  leaves a function alone if it takes the address of a place or names `rbp`
+  any other way, and it does nothing in a program with a `try`.
+- **Registers counts hot code only.** A versioned loop's generic copy runs
+  only after a guard fails or a side exit is taken. Its moves no longer count
+  toward which places get the four spare registers, and its loops' carried
+  places are no longer carried. So the fast copy takes the registers it used
+  to share with its twin.
+
+The drivers are master and lane 3 as in the first table, and lane 4 at this
+branch's head (master 06a4131 merged).
+
+| window | driver | instructions | micro-ops | rthroughput | latency (ceiling) | free (floor) |
+|---|---|---|---|---|---|---|
+| the read and its neighbours (master 72-78, lanes 3 and 4 73-79) | master | 43 | 47 | 7.8 | 51 | 27 |
+| | lane 3 | 26 | 27 | 7.0 | 62 | 32 |
+| | lane 4 | 22 | 23 | 3.8 | 34 | 26 |
+| the loop's fast path (master 70-135, lanes 3 and 4 71-136) | master | 348 | 378 | 63.0 | 327 | 87 |
+| | lane 3 | 222 | 245 | 63.0 | 438 | 86 |
+| | lane 4 | 172 | 191 | 31.8 | 244 | 63 |
+
+Over the loop's fast path:
+
+| kind | master | lane 3 | lane 4 |
+|---|---|---|---|
+| all | 348 | 222 | 172 |
+| branches | 48 | 12 | 12 |
+| tag and untag shifts | 37 | 14 | 14 |
+| converts | 18 | 13 | 13 |
+| loads | 64 | 72 | 51 |
+| frame loads | 45 | 53 | 32 |
+| stores | 42 | 63 | 23 |
+| frame stores | 40 | 61 | 21 |
+
+The loop's bound is no longer the store port. Its `rthroughput` is half of
+master's.
+
+In the read, the array record now stays in `rbx`, the bytecode stack's top
+place that Registers renames, and `i` stays in `r10`.
+
+Three things are still left in the read:
+- the record is untagged at every read;
+- `base + 2 * i` still makes one trip through two stack places, because the
+  lowering works in `rax` and `rcx` and its operands are gone from them by
+  the time the `add` reads them;
+- the item is still a `cvttsd2si`. An Int32 array's items are doubles in
+  memory, so an item read as an integer is a convert wherever it is read.
+
+Removing the convert would need items stored as integers. Keeping the
+untagged record across the iteration would need a register held across the
+loop, which is past Registers' rule of renaming whole places.
+
+The rules touch fib, bank and fourteen. FrameValues applies in each of their
+functions. fib 100,000 goes from 31,115 to 30,713 bytes, bank 2,000,000 from
+45,069 to 44,341, and fourteen 300 from 29,687 to 29,479. Big daddy 300 has a
+`try`, so it is the same 90,622 bytes. The Registers rule applies only to
+versioned loops, so it leaves all four races' bytes as they were. The SAT
+race's small workload is 247,334 bytes, against lane 3's 269,264.
+
 ## The counter: an exact dynamic count (designed, not built)
 
 The box can't count a run's instructions from outside it. js-x86 can make the
