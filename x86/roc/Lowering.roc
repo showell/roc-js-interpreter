@@ -1371,9 +1371,12 @@ loop_targets = |code| {
 ## `===` or `!==` of two known numbers that a `JumpIfFalse` follows, with no
 ## other way reaching the `JumpIfFalse`, is lowered as one
 ## (`OperatorLowering.equal_jump_items`): a `ucomisd` and the jumps on its
-## flags, with no boolean made and tested. x86/tests/equal-jumps.js holds
-## both operators, NaNs, -0 and a near miss (a `JumpIfFalse` that another
-## way reaches) to node.
+## flags, with no boolean made and tested. So is one where either side is a
+## `Value`: each `Value` tested for a number in line, the `ucomisd` when
+## both are, and `runtime_strict_equal`'s answer tested when either isn't.
+## x86/tests/equal-jumps.js and equal-values.js hold both operators, NaNs,
+## -0, strings, objects and a near miss (a `JumpIfFalse` that another way
+## reaches) to node.
 ##
 ## **`Math.floor(a / b)` OF TWO `Integer`S IS ONE INTEGER DIVISION.** A `/`
 ## of two `Integer`s that a call of `Math.floor` of one argument follows,
@@ -1458,13 +1461,13 @@ fused_jump = |site, { instruction, joined, ahead, state, origins }| {
 			}
 		}
 		(Binary(operator, _), Ok(JumpIfFalse(skip))) if !joined and is_equality(operator) =>
-			if (
-				LoweringBasics.kind_below(state, 1),
-				LoweringBasics.kind_below(state, 0),
-			) == (Number, Number) {
-				done = OperatorLowering.equal_jump_items(site, { state, operator, skip })
-				Fused({ done, through: 1 })
-			} else {
+			if
+				is_number_or_value(LoweringBasics.kind_below(state, 1))
+					and is_number_or_value(LoweringBasics.kind_below(state, 0))
+					{
+						done = OperatorLowering.equal_jump_items(site, { state, operator, skip })
+						Fused({ done, through: 1 })
+					} else {
 				Unfused
 			}
 		_ => Unfused
@@ -1489,6 +1492,15 @@ number_arm = |site, { arm, state }|
 				Err(NoArm)
 			}
 		_ => Err(NoArm)
+	}
+
+## Whether a kind is a known number or a `Value`: an equality of two such
+## fuses with its jump (`OperatorLowering.equal_jump_items`).
+is_number_or_value : LoweringBasics.Kind -> Bool
+is_number_or_value = |kind|
+	match kind {
+		Number | Value => True
+		_ => False
 	}
 
 ## Whether an operator is `===` or `!==`.

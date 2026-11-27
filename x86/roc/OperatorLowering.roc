@@ -850,12 +850,14 @@ OperatorLowering :: [].{
 		LoweringBasics.falling(items, LoweringBasics.with_top({ ..state, slots }, pushed))
 	}
 
-	## A `===` or `!==` of the two known numbers on top, followed by a
-	## `JumpIfFalse`, as one (Lowering's `fused_jump` has the rule): both
-	## dropped, and the jump taken to the `JumpIfFalse`'s target when the
-	## operator's answer is false. Two doubles are equal when `ucomisd` sets
-	## ZF and not PF, NaN's flag, so `===` is false on either `jne` or `jp`,
-	## and `!==` is false when `je` holds and `jp` doesn't.
+	## A `===` or `!==` of the two values on top, each a known number or a
+	## `Value`, followed by a `JumpIfFalse`, as one (Lowering's `fused_jump`
+	## has the rule): both dropped, and the jump taken to the `JumpIfFalse`'s
+	## target when the operator's answer is false. Two doubles are equal when
+	## `ucomisd` sets ZF and not PF, NaN's flag, so `===` is false on either
+	## `jne` or `jp`, and `!==` is false when `je` holds and `jp` doesn't. A
+	## `Value` is tested for a number in line first, and when either side
+	## isn't one, `runtime_strict_equal` answers, its boolean tested.
 	equal_jump_items : LoweringBasics.Site,
 	{
 		state : LoweringBasics.State,
@@ -865,6 +867,7 @@ OperatorLowering :: [].{
 	equal_jump_items = |site, { state, operator, skip }| {
 		left = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 2)
 		right = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 1)
+		kinds = (LoweringBasics.kind_below(state, 1), LoweringBasics.kind_below(state, 0))
 		target = site.at + 2 + skip
 		label = LoweringBasics.place_label(site.context, target)
 		compared = [
@@ -883,9 +886,34 @@ OperatorLowering :: [].{
 				]
 			}
 		}
+		answered = match operator {
+			StrictEqual => [Emit.imm(Rcx, Boxing.true_bits), Emit.cmp(Rax, Rcx), Emit.jcc(Ne, label)]
+			_ => [Emit.imm(Rcx, Boxing.true_bits), Emit.cmp(Rax, Rcx), Emit.jcc(E, label)]
+		}
+		called = [
+			Emit.load(Rdi, left),
+			Emit.load(Rsi, right),
+			Emit.call(Runtime.strict_equal),
+		]
+			.concat(answered)
+		statements =
+			if kinds == (Number, Number) {
+				compared.concat(jumped)
+			} else {
+				numbers_first_items(
+					site,
+					{
+						kinds,
+						left,
+						right,
+						fast_items: compared.concat(jumped),
+						slow_items: called,
+					},
+				)
+			}
 		after = LoweringBasics.without_top(state, 2)
 		{
-			statements: compared.concat(jumped),
+			statements,
 			falls: Falls(after),
 			branch: Branch({ target, state: after }),
 			result: GivesNothing,
