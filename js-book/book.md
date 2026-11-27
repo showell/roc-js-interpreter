@@ -30,7 +30,7 @@ The project began as a folder of [roc-apps](https://github.com/showell/roc-apps)
 
 ### The order of the book
 
-{{chapter How it got here}} is the project's short history. Part I is the machinery the two programs share: {{chapter The front end}}, and {{chapter Roc's copy rule}}, which both lean on. Part II is the compiler, from {{chapter The compiler to x86-64}} on. For Roc it is the simpler program, one pure function from a program's text to an executable's bytes, so it comes first. Part III is the interpreter, from {{chapter The VM and its machine}} on, which carries what the compiler hands to the processor: the program's effects, a heap, a collector and a page. Part IV, from {{chapter Why a compiler suits Roc}} on, is what building the two taught about Roc.
+{{chapter How it got here}} is the project's short history. Part I is the machinery the two programs share: {{chapter The front end}}, and {{chapter Roc's copy rule}}, which both lean on. Part II is the compiler, from {{chapter The compiler to x86-64}} on. For Roc it is the simpler program, one pure function from a program's text to an executable's bytes, so it comes first. Part III is the interpreter, from {{chapter The interpreter}} on, which carries what the compiler hands to the processor: the program's effects, a heap, a collector and a page. Part IV, from {{chapter Why a compiler suits Roc}} on, is what building the two taught about Roc.
 
 ## Motivation
 
@@ -98,7 +98,7 @@ digraph {
 - **`Resolve.roc`** places every name before the run: each read, write and declaration learns how many scopes out its variable lives and where it sits there. Each back end then reads a variable by its place, and only `Resolve` compares variables' names.
 - **`Compile.roc`** lays out each function's frame and makes each function, and the program itself, a flat list of `Bytecode.roc`'s instructions. Every jump is relative to the instruction after it, so a piece of compiled code means the same wherever it lands.
 
-From there the bytecode goes one of two ways. In `js-vm`, `Vm.roc` runs it on a stack machine ({{chapter The VM and its machine}}). In `js-x86`, `x86/roc/Lowering.roc` turns it into machine code ({{chapter The compiler to x86-64}}).
+From there the bytecode goes one of two ways. In `js-vm`, `Vm.roc` runs it on a stack machine ({{chapter The interpreter}}). In `js-x86`, `x86/roc/Lowering.roc` turns it into machine code ({{chapter The compiler to x86-64}}).
 
 ### Classes are plain functions
 
@@ -322,9 +322,11 @@ An optimizer would pay most on loops. The loops program has the widest gap, 6 to
 
 The compiler's own milestones say what follows (`x86/README.md`). Classes came first, and compile since `6ec8068`: the parser already writes each class as plain functions, so the work was the `NewInstance` and `InstanceOf` instructions of the bytecode. Since 2026-11-26 an instance holds its class's table of methods, and a method takes its receiver as its first parameter, passed in `rdx` by every call through a value. Next is milestone 4, the runtime in the subset: `console.log`'s formatting, Map and Set, and number printing, which four corpus programs wait on (02, 30, 58 and 54), written in the JavaScript subset and compiled by this compiler. Then milestone 5, the collector of `x86/COLLECTOR.md` ({{chapter The garbage collector}}), so a program can outgrow the 1 GiB heap and the whole corpus can be held to node. Then milestone 6, the register allocation and type specialization the loops above ask for.
 
-## The VM and its machine
+## The interpreter
 
-`Vm.roc` is the interpreter's back end: it runs the front end's bytecode ({{chapter The front end}}) on a stack machine. This chapter looks at its loop, then at the one value the run works on: the machine.
+The interpreter, js-vm, is the other way to run the subset, and the first one built ({{chapter How it got here}}). Where the compiler turns a program into an executable, the interpreter runs it directly: the front end's bytecode ({{chapter The front end}}) goes to `Vm.roc`, a stack machine written in Roc. It runs in two places. From the command line, `js/roc/JsVm.roc` runs a file, and `js/oracle.shale` holds every corpus program's output to node's. In the browser, the same VM compiled to wasm is the engine of [the playground](https://roc.lynrummy.com/js/), where a program draws on a canvas ({{chapter A canvas in the browser}}).
+
+Because the interpreter keeps a whole run in Roc values, it needs its own memory, its own collector and its own care with copies, the subjects of {{chapter Memory strategy}}, {{chapter The garbage collector}} and {{chapter Handing the machine on}}. This chapter looks at the VM's loop, then at the one value the run works on: the machine.
 
 Beside it, `Inspect.roc` formats `console.log`'s output as node's `util.inspect` does, function for function, and `NumberText.roc` writes a number as `String(n)` does.
 
@@ -345,6 +347,92 @@ Everything a run holds is one record, `Machine.Machine`, handed to each instruct
 {{lines js/roc/Machine.roc from "Machine : {" to "turtle : Box(Canvas.Turtle),"}}
 
 The boxes in it are the subject of {{chapter Handing the machine on}}: each boxed part is one that most instructions leave alone.
+
+## A canvas in the browser
+
+### What a program sees
+
+In [the playground](https://roc.lynrummy.com/js/), a program is JavaScript from the subset plus a deliberately small API for one 400 by 400 canvas. It is a toy's API, sized for sketches, games of one screen and demonstrations:
+
+- **Drawing:** `background`, `fill`, `stroke`, `line`, `rect`, `circle`, `ellipse`, `polygon` and `text`, named after p5.js's but a small set of their own, with colors as CSS strings.
+- **A turtle:** `forward`, `back`, `turn`, `penUp`, `penDown` and `goto`.
+- **Input:** `mouseX()`, `mouseY()` and `keyIsDown(key)`, read when called, and `onClick(handler)`.
+- **Time:** `setTimeout`, `setInterval` and their clears, and a `function frame(t)`, which the page calls 30 times a second.
+- **The memory view's hook:** `onCollect(handler)`, which hears each garbage collection.
+- **`console.log`,** which writes under the canvas.
+
+That is the whole of it: a program draws, listens and waits, and the page's DOM, the network and other files stay out of its reach. The playground's "click dots" sample uses most of it:
+
+{{file js/canvas/7-click-dots.js}}
+
+### The page
+
+The page is `js/web/`. `js_page.js` makes everything the page shows, its styles included, so the HTML is only a door: an editor, the canvas and the console. `js_runner.js` loads `js.wasm`, the interpreter compiled from Roc, starts a program, then calls it a frame at a time, about 30 times a second. Each frame is a tick of the program's clock (`Vm.tick!`) that runs the clicks queued since the last tick, the timers due and `frame(t)`. `js_painter.js` paints each effect's line on a 2D canvas as it arrives, and the browser shows the canvas when the frame's call returns. The page's JavaScript only loads, ticks and paints; the program itself runs in the wasm.
+
+One frame on the page
+```dot
+digraph {
+  rankdir=TB;
+  node [shape=box, style=rounded];
+  tick [label="js_runner.js\nevery 1/30 s"];
+  vm [label="Vm.tick!\nclicks, timers, frame(t)"];
+  emit [label="emit!\na line per effect"];
+  paint [label="js_painter.js\n2D canvas"];
+  tick -> vm -> emit -> paint;
+}
+```
+
+The memory view, `js_memory.js`, is a popup with two small charts of the last run. The top one is the heap's cells in use, which climb as the program allocates and drop at each collection, a sawtooth; the bottom one is the wasm memory's size.
+
+`js/build.shale` names every file but `index.html` by its bytes, so a browser always loads the scripts that match its page, and it replaces the page only after `js/page_check.mjs` passes.
+
+### How an effect travels
+
+The interpreter reaches the world through a host, `Canvas.Host`, a record of four effectful functions:
+
+{{lines js/roc/Canvas.roc from "Host : {" to "collected! : {"}}
+
+An effect happens when the program calls for it: the VM hands each one to `emit!` in program order, `console.log` included, so a program that stops halfway has drawn what it drew before the stop. A read, `pointer!` or `key!`, is asked of the host when the program asks. `collected!` hears of each collection once it has swept. Every effect has one written form, `Canvas.line_of`, so a sample's golden log is the very text the page paints from.
+
+Three hosts, one interpreter
+```dot
+digraph {
+  node [shape=box, style=rounded];
+  vm [label="Vm"];
+  host [label="Canvas.Host"];
+  page [label="the page"];
+  rec [label="js-canvas"];
+  cli [label="js-vm"];
+  vm -> host [label="effects"];
+  host -> page;
+  host -> rec;
+  host -> cli;
+}
+```
+
+- **The page's** host (`JsApp.roc`, on the platform in `js/wasm/`) calls into the page's JavaScript while the Roc call runs.
+- **The recording host,** `js-canvas` (`JsCanvas.roc`), writes every effect and every read as a line, for the golden logs.
+- **`js-vm`'s** host prints each log as it is made.
+
+### The queue and its clock
+
+`Events.roc` holds the one queue every callback goes through. A timer's callback, a click, the canvas's next `frame(t)` and a call of the `onCollect` handler after a collection are each an event, due at a time in milliseconds. The earliest runs first, and of two due at one time, the one queued first.
+
+The clock is virtual. It reads 0 while the program's own code runs, and moves to each event's time as that event runs: on the page, a tick moves it on to the frame's time (`Vm.tick!`), and `js-vm` moves it from event to event until the queue is empty. So the order of the callbacks follows from the program alone, and a program prints the same on every run, and the same as node. Take this program:
+
+```js
+setTimeout(function f() { console.log("f"); }, 10);
+setTimeout(function g() { console.log("g"); }, 0);
+console.log("x");
+```
+
+| step | the clock | what runs | it prints |
+|---|---|---|---|
+| the program | 0 | queues `f` due at 10 and `g` due at 1, then logs | `x` |
+| the first event | 1 | `g` | `g` |
+| the second event | 10 | `f` | `f` |
+
+`g` is due at 1: `Events.timer_requested` raises a delay below 1 ms to 1 ms, as node does. Node 22 and the dev build of `js-vm` each print `x`, `g`, `f` for it, run side by side for this chapter on 2026-11-25. The clock's column is read from `Events.roc`: an event is due at the clock plus its delay, and `with_event_taken` moves the clock to the due time of the event it takes.
 
 ## Memory strategy
 
@@ -590,95 +678,9 @@ The allocation controls check it ({{chapter Dev and release builds disagree}}). 
 
 `console.log`, the canvas, the timers, the program's own functions and the host stay with the VM.
 
-## A canvas in the browser
-
-### What a program sees
-
-In [the playground](https://roc.lynrummy.com/js/), a program is JavaScript from the subset plus a deliberately small API for one 400 by 400 canvas. It is a toy's API, sized for sketches, games of one screen and demonstrations:
-
-- **Drawing:** `background`, `fill`, `stroke`, `line`, `rect`, `circle`, `ellipse`, `polygon` and `text`, named after p5.js's but a small set of their own, with colors as CSS strings.
-- **A turtle:** `forward`, `back`, `turn`, `penUp`, `penDown` and `goto`.
-- **Input:** `mouseX()`, `mouseY()` and `keyIsDown(key)`, read when called, and `onClick(handler)`.
-- **Time:** `setTimeout`, `setInterval` and their clears, and a `function frame(t)`, which the page calls 30 times a second.
-- **The memory view's hook:** `onCollect(handler)`, which hears each garbage collection.
-- **`console.log`,** which writes under the canvas.
-
-That is the whole of it: a program draws, listens and waits, and the page's DOM, the network and other files stay out of its reach. The playground's "click dots" sample uses most of it:
-
-{{file js/canvas/7-click-dots.js}}
-
-### The page
-
-The page is `js/web/`. `js_page.js` makes everything the page shows, its styles included, so the HTML is only a door: an editor, the canvas and the console. `js_runner.js` loads `js.wasm`, the interpreter compiled from Roc, starts a program, then calls it a frame at a time, about 30 times a second. Each frame is a tick of the program's clock (`Vm.tick!`) that runs the clicks queued since the last tick, the timers due and `frame(t)`. `js_painter.js` paints each effect's line on a 2D canvas as it arrives, and the browser shows the canvas when the frame's call returns. The page's JavaScript only loads, ticks and paints; the program itself runs in the wasm.
-
-One frame on the page
-```dot
-digraph {
-  rankdir=TB;
-  node [shape=box, style=rounded];
-  tick [label="js_runner.js\nevery 1/30 s"];
-  vm [label="Vm.tick!\nclicks, timers, frame(t)"];
-  emit [label="emit!\na line per effect"];
-  paint [label="js_painter.js\n2D canvas"];
-  tick -> vm -> emit -> paint;
-}
-```
-
-The memory view, `js_memory.js`, is a popup with two small charts of the last run. The top one is the heap's cells in use, which climb as the program allocates and drop at each collection, a sawtooth; the bottom one is the wasm memory's size.
-
-`js/build.shale` names every file but `index.html` by its bytes, so a browser always loads the scripts that match its page, and it replaces the page only after `js/page_check.mjs` passes.
-
-### How an effect travels
-
-The interpreter reaches the world through a host, `Canvas.Host`, a record of four effectful functions:
-
-{{lines js/roc/Canvas.roc from "Host : {" to "collected! : {"}}
-
-An effect happens when the program calls for it: the VM hands each one to `emit!` in program order, `console.log` included, so a program that stops halfway has drawn what it drew before the stop. A read, `pointer!` or `key!`, is asked of the host when the program asks. `collected!` hears of each collection once it has swept. Every effect has one written form, `Canvas.line_of`, so a sample's golden log is the very text the page paints from.
-
-Three hosts, one interpreter
-```dot
-digraph {
-  node [shape=box, style=rounded];
-  vm [label="Vm"];
-  host [label="Canvas.Host"];
-  page [label="the page"];
-  rec [label="js-canvas"];
-  cli [label="js-vm"];
-  vm -> host [label="effects"];
-  host -> page;
-  host -> rec;
-  host -> cli;
-}
-```
-
-- **The page's** host (`JsApp.roc`, on the platform in `js/wasm/`) calls into the page's JavaScript while the Roc call runs.
-- **The recording host,** `js-canvas` (`JsCanvas.roc`), writes every effect and every read as a line, for the golden logs.
-- **`js-vm`'s** host prints each log as it is made.
-
-### The queue and its clock
-
-`Events.roc` holds the one queue every callback goes through. A timer's callback, a click, the canvas's next `frame(t)` and a call of the `onCollect` handler after a collection are each an event, due at a time in milliseconds. The earliest runs first, and of two due at one time, the one queued first.
-
-The clock is virtual. It reads 0 while the program's own code runs, and moves to each event's time as that event runs: on the page, a tick moves it on to the frame's time (`Vm.tick!`), and `js-vm` moves it from event to event until the queue is empty. So the order of the callbacks follows from the program alone, and a program prints the same on every run, and the same as node. Take this program:
-
-```js
-setTimeout(function f() { console.log("f"); }, 10);
-setTimeout(function g() { console.log("g"); }, 0);
-console.log("x");
-```
-
-| step | the clock | what runs | it prints |
-|---|---|---|---|
-| the program | 0 | queues `f` due at 10 and `g` due at 1, then logs | `x` |
-| the first event | 1 | `g` | `g` |
-| the second event | 10 | `f` | `f` |
-
-`g` is due at 1: `Events.timer_requested` raises a delay below 1 ms to 1 ms, as node does. Node 22 and the dev build of `js-vm` each print `x`, `g`, `f` for it, run side by side for this chapter on 2026-11-25. The clock's column is read from `Events.roc`: an event is due at the clock plus its delay, and `with_event_taken` moves the clock to the due time of the event it takes.
-
 ## Handing the machine on
 
-The interpreter's performance work came down to {{chapter Roc's copy rule}} and three habits that follow from it, each about the machine record of {{chapter The VM and its machine}}.
+The interpreter's performance work came down to {{chapter Roc's copy rule}} and three habits that follow from it, each about the machine record of {{chapter The interpreter}}.
 
 ### A value is copied when it is handed on
 

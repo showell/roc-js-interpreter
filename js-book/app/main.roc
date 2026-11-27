@@ -80,7 +80,7 @@ parts = [
 		title: "Part II: The compiler",
 	},
 	{
-		before: "The VM and its machine",
+		before: "The interpreter",
 		level: Part,
 		title: "Part III: The interpreter",
 	},
