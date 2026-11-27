@@ -3,32 +3,52 @@
 ## variables are slots of their own, with a guard at the loop's entry that
 ## chooses between them. A loop is versioned when it reads, as a number, a
 ## variable it never writes that the lowering keeps as a `Value` at its head
-## (sat's `nw` and `base`). The guard tests each such variable, and each
+## (sat's `nw` and `base`), or, failing that, when it reads or writes the
+## items of an array held in a slot as a `Value` or an `Array` (sat's
+## `pool`, `value`, `arena`). The guard tests each such number, and each
 ## variable the loop writes and reads as a number from before (its counters),
-## for a whole number of 32 bits; when every test holds, the fast copy runs
-## with those as `Integer`s, so the loop's arithmetic, orderings and indexes
-## on them are integers'. When one fails, the generic copy runs. A variable
-## the loop never writes can't change while it runs, so the fast copy stays
-## right for the whole loop and never leaves it but by the loop's own exits.
+## for a whole number of 32 bits, and each such array for a header that says
+## Int32 (Heap.roc's element kinds); when every test holds, the fast copy
+## runs with the numbers as `Integer`s and the arrays as `Int32Items`, whose
+## items read as `Integer`s. When one fails, the generic copy runs.
+##
+## **SIDE EXITS.** A number the loop never writes can't change while it
+## runs, but an array's facts can: a read past its end gives `undefined`, a
+## store may lower its kind, and a call may store into it. So the fast copy
+## may leave mid-iteration, by a **side exit** into the generic copy at the
+## same instruction, each stack place and each slot the loop writes carried
+## over (an `Integer` made a double), and the generic copy finishes the
+## loop: an item read or write past the end, a write of an item that isn't a
+## whole number of 32 bits, a store into a guarded array's slot of a value
+## whose header doesn't say Int32, and, after an instruction that may lower
+## any array's kind (a call, a method, another write), each guarded array
+## tested again (Lowering's `fast_before` and `fast_after`). Exits go one
+## way, from the fast copy to the generic one.
 ##
 ## **THE LAYOUT.** The loop's instructions, from its head to its `Loop`,
-## become: the guard (a `Jump` to the fast copy, which the lowering makes
-## the tests: `LoweringBasics.Guard`), the generic copy, the fast copy, then
-## one exit for each place the loop leaves to (a `Jump` there, which the
-## lowering makes the copies back: `LoweringBasics.Versions`' `exits`). A
-## jump from before the loop to its head lands on the guard; the generic
-## copy's jumps stay inside it or leave as before; the fast copy's jumps stay
-## inside it or go to its exits. The fast copy names, in place of each slot
-## the loop writes or the guard tests, a slot of its own past the frame's,
-## so the two copies' kinds never meet: the guard copies each in, and each
-## exit copies back those the loop writes.
+## become: the guard (a `Jump` to the generic copy, which the lowering makes
+## the tests, falling to the fast copy when they hold:
+## `LoweringBasics.Guard`), the fast copy, the generic copy, then one exit
+## for each place the loop leaves to (a `Jump` there, which the lowering
+## makes the copies back: `LoweringBasics.Versions`' `exits`). The fast copy
+## lies first, so every side exit is a jump forward, whose kinds the walk
+## meets before it lowers the generic copy (`LoweringBasics.Versions`'
+## `fast`, each fast place's generic twin). A jump from before the loop to
+## its head lands on the guard; the generic copy's jumps stay inside it or
+## leave as before; the fast copy's jumps stay inside it or go to its exits.
+## The fast copy names, in place of each slot the loop writes or the guard
+## tests, a slot of its own past the frame's, so the two copies' kinds never
+## meet: the guard copies each in, and each exit copies back those the loop
+## writes.
 ##
 ## **WHEN IN DOUBT, NOT VERSIONED.** A program with a `try` is left as it
 ## is, and so is a loop that makes a closure or a cell, steps a `for ... of`
 ## (whose slot holds a second slot's place), names a cell in a slot it
 ## would rename, is entered other than at its head, or leaves backwards but
 ## by its own `Loop`. A loop inside a versioned loop is copied with it, not
-## versioned again. The lowering lowers the versioned program after the
+## versioned again, and the loops with a number to guard are chosen before
+## those with arrays alone, so a loop never contains another versioned one.
+## The lowering lowers the versioned program after the
 ## program as it was has lowered, and keeps the program as it was when the
 ## versioned one is refused, so versioning never refuses a program, and a
 ## program with no loop to version is lowered once, to the same bytes.
@@ -60,8 +80,9 @@ Versioning :: [].{
 		program : Bytecode.Program,
 		heads : List(Dict(U64, LoweringBasics.State)),
 		cells : List(List(U64)),
+		flip : Bool,
 	} -> Versioning.Versioned
-	versioned_program = |{ program, heads, cells }| {
+	versioned_program = |{ program, heads, cells, flip }| {
 		unversioned = {
 			program,
 			versions: program.codes.map(|_| LoweringBasics.plain_versions),
@@ -85,7 +106,7 @@ Versioning :: [].{
 				},
 			)
 			$codes = $codes.append(done.code)
-			$versions = $versions.append(done.versions)
+			$versions = $versions.append({ ..done.versions, flip })
 			$loops = $loops + done.loops
 			$instructions = $instructions + done.instructions
 		}
@@ -111,12 +132,14 @@ Versioning :: [].{
 }
 
 ## A loop chosen to be versioned: its head and its `Loop`'s places, the
-## slots the guard tests, and each slot the fast copy names in place of one
-## of the loop's (`renamed`, the loop's slot first).
+## slots the guard tests for whole numbers and for Int32 arrays, the slots
+## the loop writes, and each slot the fast copy names in place of one of the
+## loop's (`renamed`, the loop's slot first).
 Chosen : {
 	head : U64,
 	back : U64,
 	checked : List(U64),
+	arrays : List(U64),
 	written : List(U64),
 	renamed : List((U64, U64)),
 }
@@ -149,26 +172,36 @@ code_versioned = |code, { heads, cells, left }| {
 	var $chosen = []
 	var $used = 0
 	var $frame = code.frame_size
-	for (head, back) in outer_first_loops(code) {
-		inside_chosen = $chosen.any(|chosen| head >= chosen.head and back <= chosen.back)
-		size = back - head + 1
-		if !inside_chosen and $used + size <= budget {
-			match loop_choice(
-				code,
-				{
-					head,
-					back,
-					heads,
-					cells,
-					frame: $frame,
-				},
-			) {
-				Ok(chosen) => {
-					$chosen = $chosen.append(chosen)
-					$used = $used + size
-					$frame = $frame + chosen.renamed.len()
+	# The loops with an invariant read as a number first, as they were
+	# chosen before arrays were guarded, then the loops that guard arrays
+	# alone, each pass the outer loops of a nest first.
+	for scalars in [True, False] {
+		for (head, back) in outer_first_loops(code) {
+			nested = $chosen.any(
+				|chosen|
+					(head >= chosen.head and back <= chosen.back)
+						or (chosen.head >= head and chosen.back <= back),
+			)
+			size = back - head + 1
+			if !nested and $used + size <= budget {
+				match loop_choice(
+					code,
+					{
+						head,
+						back,
+						heads,
+						cells,
+						frame: $frame,
+						scalars,
+					},
+				) {
+					Ok(chosen) => {
+						$chosen = $chosen.append(chosen)
+						$used = $used + size
+						$frame = $frame + chosen.renamed.len()
+					}
+					Err(NotVersioned) => {}
 				}
-				Err(NotVersioned) => {}
 			}
 		}
 	}
@@ -223,8 +256,10 @@ place_order = |one, other|
 	}
 
 ## The loop from `head` to `back` chosen, or not: the rules in the header,
-## and at least one slot it reads as a number and never writes that holds a
-## `Value` at its head. Its fast slots start at `frame`.
+## and, with `scalars`, at least one slot it reads as a number and never
+## writes that holds a `Value` at its head; without, none such and at least
+## one slot holding a `Value` or an `Array` whose items it reads or writes.
+## Its fast slots start at `frame`.
 loop_choice : Bytecode.Code,
 {
 	head : U64,
@@ -232,8 +267,19 @@ loop_choice : Bytecode.Code,
 	heads : Dict(U64, LoweringBasics.State),
 	cells : List(U64),
 	frame : U64,
+	scalars : Bool,
 } -> Try(Chosen, [NotVersioned])
-loop_choice = |code, { head, back, heads, cells, frame }| {
+loop_choice = |
+	code,
+	{
+		head,
+		back,
+		heads,
+		cells,
+		frame,
+		scalars,
+	},
+| {
 	if back < head + 2 {
 		return Err(NotVersioned)
 	}
@@ -270,7 +316,19 @@ loop_choice = |code, { head, back, heads, cells, frame }| {
 		|slot|
 			!written.contains(slot) and !cells.contains(slot) and kind_at_head(slot) == Ok(Value),
 	)
-	if invariant.is_empty() {
+	arrays = receiver_slots(body_instructions).keep_if(
+		|slot| {
+			kind = kind_at_head(slot)
+			!cells.contains(slot) and (kind == Ok(Value) or kind == Ok(Array))
+		},
+	)
+	chosen_here =
+		if scalars {
+			!invariant.is_empty()
+		} else {
+			invariant.is_empty() and !arrays.is_empty()
+		}
+	if !chosen_here {
 		return Err(NotVersioned)
 	}
 	counters = numeric.keep_if(
@@ -282,12 +340,15 @@ loop_choice = |code, { head, back, heads, cells, frame }| {
 			) and (kind == Ok(Value) or kind == Ok(Number))
 		},
 	)
-	renamed_slots = written.concat(invariant)
+	renamed_slots = written
+		.concat(invariant)
+		.concat(arrays.drop_if(|slot| written.contains(slot) or invariant.contains(slot)))
 	renamed = renamed_slots.map_with_index(|slot, at| (slot, frame + at))
 	Ok({
 		head,
 		back,
 		checked: invariant.concat(counters),
+		arrays,
 		written,
 		renamed,
 	})
@@ -360,6 +421,68 @@ numeric_slots = |body_instructions| {
 		}
 	}
 	$out
+}
+
+## The slots some `LoadLocal` of the instructions pushes an array whose
+## item is read or written next (`is_receiver_use`), each once.
+receiver_slots : List(Bytecode.Op) -> List(U64)
+receiver_slots = |body_instructions| {
+	var $out = []
+	for (instruction, at) in body_instructions.map_with_index(|instruction, at| (instruction, at)) {
+		match instruction {
+			LoadLocal(slot) =>
+				if !$out.contains(slot) and is_receiver_use(body_instructions, at) {
+					$out = $out.append(slot)
+				}
+			_ => {}
+		}
+	}
+	$out
+}
+
+## Whether the value the instruction at `at` pushes is next taken as the
+## receiver of an item read or write, in the straight run after it, as
+## `is_numeric_use` follows it.
+is_receiver_use : List(Bytecode.Op), U64 -> Bool
+is_receiver_use = |body_instructions, at| {
+	var $above = 0
+	var $place = at + 1
+	while $place < body_instructions.len() {
+		instruction = body_instructions.get($place) ?? crash "Versioning.is_receiver_use: a place"
+		match instruction {
+			Binary(_, _) =>
+				if $above <= 1 {
+					return False
+				} else {
+					$above = $above - 1
+				}
+			GetIndex(_) =>
+				if $above <= 1 {
+					return $above == 1
+				} else {
+					$above = $above - 1
+				}
+			SetIndex(_) =>
+				if $above <= 2 {
+					return $above == 2
+				} else {
+					$above = $above - 2
+				}
+			Unary(_, _) | GetProperty(_, _) =>
+				if $above == 0 {
+					return False
+				}
+			PushNumber(_) | PushText(_) | PushBoolean(_) | PushNull | PushUndefined => {
+				$above = $above + 1
+			}
+			LoadLocal(_) | LoadBoxed(_) | LoadBuiltin(_) => {
+				$above = $above + 1
+			}
+			_ => return False
+		}
+		$place = $place + 1
+	}
+	False
 }
 
 ## Whether the value the instruction at `at` pushes is next taken as a
@@ -456,8 +579,8 @@ placed_code = |code, chosen_loops| {
 		}
 		size = loop.back - loop.head + 1
 		guard = $place
-		generic = guard + 1
-		fast = generic + size
+		fast = guard + 1
+		generic = fast + size
 		for step in 0..<size {
 			$placed_at = $placed_at.append(generic + step)
 			$landing_places = $landing_places.append(
@@ -469,8 +592,15 @@ placed_code = |code, chosen_loops| {
 			)
 		}
 		leaves = exit_targets(code, loop)
-		exits_start = fast + size
-		$layouts = $layouts.append({ loop, guard, fast, exits_start, leaves })
+		exits_start = generic + size
+		$layouts = $layouts.append({
+			loop,
+			guard,
+			fast,
+			generic,
+			exits_start,
+			leaves,
+		})
 		$place = exits_start + leaves.len()
 		$old = loop.back + 1
 	}
@@ -484,6 +614,7 @@ placed_code = |code, chosen_loops| {
 	var $out = []
 	var $guards = Dict.empty()
 	var $exits = Dict.empty()
+	var $fast = Dict.empty()
 	var $old_at = 0
 	for layout in $layouts {
 		loop = layout.loop
@@ -492,31 +623,43 @@ placed_code = |code, chosen_loops| {
 			$old_at = $old_at + 1
 		}
 		guard_place = $out.len()
-		$out = $out.append(Jump(layout.fast - guard_place - 1))
+		$out = $out.append(Jump(layout.generic - guard_place - 1))
 		$guards = $guards.insert(
 			guard_place,
 			{
 				checked: loop.checked.map(|slot| { from: slot, to: renamed_slot(loop, slot) }),
+				arrays: loop.arrays.map(|slot| { from: slot, to: renamed_slot(loop, slot) }),
 				copied: loop.renamed
-					.keep_if(|(slot, _)| !loop.checked.contains(slot))
+					.keep_if(
+						|
+							(slot, _),
+						| !loop.checked.contains(slot) and !loop.arrays.contains(slot),
+					)
 					.map(|(slot, to)| { from: slot, to }),
-				fast: layout.fast,
+				generic: layout.generic,
 			},
 		)
+		copies_back = loop.written.map(|slot| { from: renamed_slot(loop, slot), to: slot })
+		fast_arrays = loop.arrays.map(|slot| renamed_slot(loop, slot))
 		for old in loop.head..<(loop.back + 1) {
-			$out = $out.append(moved_generic(code, { placement, loop, old }))
+			$fast = $fast.insert(
+				$out.len(),
+				{
+					generic: layout.generic + old - loop.head,
+					copies: copies_back,
+					arrays: fast_arrays,
+				},
+			)
+			$out = $out.append(moved_fast(code, { layout, old }))
 		}
 		for old in loop.head..<(loop.back + 1) {
-			$out = $out.append(moved_fast(code, { layout, old }))
+			$out = $out.append(moved_generic(code, { placement, loop, old }))
 		}
 		for target in layout.leaves {
 			exit_place = $out.len()
 			landing = landing_place(placement, target)
 			$out = $out.append(Jump(landing - exit_place - 1))
-			$exits = $exits.insert(
-				exit_place,
-				loop.written.map(|slot| { from: renamed_slot(loop, slot), to: slot }),
-			)
+			$exits = $exits.insert(exit_place, copies_back)
 		}
 		$old_at = loop.back + 1
 	}
@@ -524,7 +667,15 @@ placed_code = |code, chosen_loops| {
 		$out = $out.append(moved_outside(code, { placement, old: $old_at }))
 		$old_at = $old_at + 1
 	}
-	{ instructions: $out, versions: { guards: $guards, exits: $exits } }
+	{
+		instructions: $out,
+		versions: {
+			guards: $guards,
+			exits: $exits,
+			fast: $fast,
+			flip: False,
+		},
+	}
 }
 
 ## The fast copy's slot for one of the loop's.
@@ -610,6 +761,7 @@ moved_fast : Bytecode.Code,
 		loop : Chosen,
 		guard : U64,
 		fast : U64,
+		generic : U64,
 		exits_start : U64,
 		leaves : List(U64),
 	},

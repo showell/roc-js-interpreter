@@ -1140,7 +1140,7 @@ OperatorLowering :: [].{
 					String => Named("runtime_text_type_string")
 					Boolean => Named("runtime_text_type_boolean")
 					Undefined => Named("runtime_text_undefined")
-					Null | Array | Object => Named("runtime_text_type_object")
+					Null | Array | Object | Int32Items => Named("runtime_text_type_object")
 					Numbers | Integers(_) | Console => Named("runtime_text_type_object")
 					Function(_) | Closure(_) => Named("runtime_text_type_function")
 					Log | Method(_) => Named("runtime_text_type_function")

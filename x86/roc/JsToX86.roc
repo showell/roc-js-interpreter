@@ -8,6 +8,7 @@ app [main!] { js: "../../js/roc/main.roc" }
 #   js-x86 "<program>"
 #   js-x86 "<program>" inlined    # the sites Inlining put in line
 #   js-x86 "<program>" versioned  # the loops Versioning placed twice
+#   js-x86 "<program>" guardsflip # the executable, every side exit also taken often
 #   js-x86 "<program>" labels     # each label's offset in the code
 #   js-x86 "<program>" posts      # how the post-passes ran (RuntimePosts)
 #
@@ -37,7 +38,8 @@ import X86
 
 main! = |arguments| {
 	match (arguments.get(0), arguments.get(1)) {
-		(Ok(src), Err(_)) => write_program!(src)
+		(Ok(src), Err(_)) => write_program!(src, { flip: False })
+		(Ok(src), Ok("guardsflip")) => write_program!(src, { flip: True })
 		(Ok(src), Ok("inlined")) => write_inlined!(src)
 		(Ok(src), Ok("versioned")) => write_versioned!(src)
 		(Ok(src), Ok("labels")) => write_labels!(src)
@@ -45,7 +47,7 @@ main! = |arguments| {
 
 		(Ok(src), Ok(phase)) => write_stopped!(src, phase)
 		_ => {
-			modes = "inlined | versioned | labels | posts | stop=<phase>"
+			modes = "inlined | versioned | guardsflip | labels | posts | stop=<phase>"
 			echo!("usage: js-x86 \"<program>\" [${modes}]\n")
 			Err(Exit(2))
 		}
@@ -91,16 +93,24 @@ stopped_at = |src, phase| {
 			program = Compile.program(tree).map_err(|Unsupported(why)| why)?
 			Ok(program.codes.len())
 		}
-		"stop=lower" => Ok(lowering_of(src)?.statements.len())
-		"stop=assemble" => Ok(code_of(lowering_of(src)?.statements)?.len())
-		"stop=elf" => Ok(Elf.executable(code_of(lowering_of(src)?.statements)?).len())
+		"stop=lower" => Ok(lowering_of(src, { flip: False })?.statements.len())
+		"stop=assemble" => Ok(code_of(lowering_of(src, { flip: False })?.statements)?.len())
+		"stop=elf" => Ok(
+			Elf.executable(code_of(lowering_of(src, { flip: False })?.statements)?).len(),
+		)
 		"stop=hex" => Ok(X86.hex_text(executable_of(src)?).count_utf8_bytes())
 		"stop=runtime-assemble" => Ok(code_of(RuntimeCode.items)?.len())
 		"stop=runtime-posts" => Ok(posts(RuntimeCode.items).len())
-		"stop=jumps-again" => Ok(Jumps.thread_jumps(lowering_of(src)?.statements).len())
-		"stop=forwarding-again" => Ok(Forwarding.forward_loads(lowering_of(src)?.statements).len())
-		"stop=moves-again" => Ok(Moves.trim_moves(lowering_of(src)?.statements).len())
-		"stop=posts-again" => Ok(posts(lowering_of(src)?.statements).len())
+		"stop=jumps-again" => Ok(
+			Jumps.thread_jumps(lowering_of(src, { flip: False })?.statements).len(),
+		)
+		"stop=forwarding-again" => Ok(
+			Forwarding.forward_loads(lowering_of(src, { flip: False })?.statements).len(),
+		)
+		"stop=moves-again" => Ok(
+			Moves.trim_moves(lowering_of(src, { flip: False })?.statements).len(),
+		)
+		"stop=posts-again" => Ok(posts(lowering_of(src, { flip: False })?.statements).len())
 		_ => Err("no phase ${phase}")
 	}
 }
@@ -121,9 +131,17 @@ code_of = |statements|
 		Err(DuplicateLabel(label)) => Err("the label ${label} is marked twice")
 	}
 
-write_program! : Str => Try({}, [Exit(I8)])
-write_program! = |src| {
-	match executable_of(src) {
+## The executable's hex. With `flip`, js-x86's `guardsflip` torture mode,
+## each side exit of a versioned loop's fast copy is also taken at every
+## eighth of its tests the program makes (LoweringBasics.Versions' `flip`),
+## so the exits run and the program must still print node's lines.
+write_program! : Str, { flip : Bool } => Try({}, [Exit(I8)])
+write_program! = |src, { flip }| {
+	executable = match lowering_of(src, { flip: flip }) {
+		Ok(lowered) => code_of(lowered.statements).map_ok(Elf.executable)
+		Err(why) => Err(why)
+	}
+	match executable {
 		Ok(file) => {
 			echo!(X86.hex_text(file))
 			Ok({})
@@ -141,7 +159,7 @@ write_program! = |src| {
 ## bodies placed, for x86/programs.shale's held count.
 write_inlined! : Str => Try({}, [Exit(I8)])
 write_inlined! = |src| {
-	match lowering_of(src) {
+	match lowering_of(src, { flip: False }) {
 		Ok(lowered) => {
 			sites = lowered.inlined.sites.to_str()
 			instructions = lowered.inlined.instructions.to_str()
@@ -160,7 +178,7 @@ write_inlined! = |src| {
 ## instructions their fast copies hold, for x86/programs.shale's held count.
 write_versioned! : Str => Try({}, [Exit(I8)])
 write_versioned! = |src| {
-	match lowering_of(src) {
+	match lowering_of(src, { flip: False }) {
 		Ok(lowered) => {
 			loops = lowered.versioned.loops.to_str()
 			instructions = lowered.versioned.instructions.to_str()
@@ -179,7 +197,7 @@ write_versioned! = |src| {
 ## the whole was passed (RuntimePosts), for x86/programs.shale's check.
 write_posts! : Str => Try({}, [Exit(I8)])
 write_posts! = |src| {
-	match lowering_of(src) {
+	match lowering_of(src, { flip: False }) {
 		Ok(lowered) => {
 			echo!("posts: ${lowered.posts}\n")
 			Ok({})
@@ -196,7 +214,7 @@ write_posts! = |src| {
 ## reading the code back with a disassembler (x86/satrace/TRIAGE.md).
 write_labels! : Str => Try({}, [Exit(I8)])
 write_labels! = |src| {
-	laid = match lowering_of(src) {
+	laid = match lowering_of(src, { flip: False }) {
 		Ok(lowered) =>
 			match Assembly.laid_out(lowered.statements) {
 				Ok(it) => it
@@ -221,12 +239,14 @@ write_labels! = |src| {
 ## The executable a program compiles to, or why it doesn't.
 executable_of : Str -> Try(List(U8), Str)
 executable_of = |src| {
-	lowered = lowering_of(src)?
+	lowered = lowering_of(src, { flip: False })?
 	Ok(Elf.executable(code_of(lowered.statements)?))
 }
 
-## A program's lowering, or why it has none.
-lowering_of : Str -> Try(
+## A program's lowering, its side exits taken often with `flip`
+## (`write_program!`), or why it has none.
+lowering_of : Str,
+{ flip : Bool } -> Try(
 	{
 		statements : List(Assembly.Statement),
 		inlined : { sites : U64, instructions : U64 },
@@ -235,7 +255,7 @@ lowering_of : Str -> Try(
 	},
 	Str,
 )
-lowering_of = |src| {
+lowering_of = |src, { flip }| {
 	tree = match Parser.program_of(src, Core) {
 		Ok(parsed) => parsed
 		Err(fault) => {
@@ -247,7 +267,7 @@ lowering_of = |src| {
 		Ok(compiled) => compiled
 		Err(Unsupported(why)) => return Err(why)
 	}
-	match Lowering.program_lowering(program) {
+	match Lowering.program_lowering_with(program, { flip: flip }) {
 		Ok(lowered) => Ok(lowered)
 		Err(Refused(why)) => Err("refused: ${why}")
 	}
