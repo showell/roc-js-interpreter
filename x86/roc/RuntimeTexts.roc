@@ -130,6 +130,10 @@ texts = [
 	),
 	("runtime_text_no_heap", "x86: the heap could not be mapped\n"),
 	(Heap.bad_header_text, "x86: the heap walk found a block whose header is wrong\n"),
+	(
+		Heap.bad_element_text,
+		"x86: the heap walk found an array's item that its element kind doesn't hold\n",
+	),
 	("runtime_text_heap_counts", "heap: "),
 	("runtime_text_heap_allocations", " allocations, "),
 	("runtime_text_heap_collections", " collections, "),

@@ -102,10 +102,18 @@ Runtime :: [].{
 	get_property : Str
 	get_property = "runtime_get_property"
 
-	## The routine that makes an array of `rdi` items: the array in `rax`,
-	## the address of its items, for the caller to fill, in `rdx`.
+	## The routine that makes an array of `rdi` items, of the element kind
+	## Values (`Heap.ElementKind`), since its caller fills them with any
+	## values: the array in `rax`, the address of its items, for the caller
+	## to fill, in `rdx`.
 	new_array : Str
 	new_array = "runtime_new_array"
+
+	## The same for an array of the element kind Int32, whose caller fills
+	## its items with whole numbers of 32 bits alone, or makes none, as an
+	## array literal does.
+	new_int32_array : Str
+	new_int32_array = "runtime_new_int32_array"
 
 	## The routine that makes an empty object, in `rax`.
 	new_object : Str
@@ -1388,28 +1396,34 @@ item_address_items = [
 ## array at `rdi`, its new length in `rax`.
 container_items : List(Assembly.Statement)
 container_items = {
-	new_array = [
-		Emit.mark(Runtime.new_array),
-		Emit.save(Rdi),
-		Emit.mov(Rcx, Rdi),
-		Emit.cmp_imm(Rcx, 4),
-		Emit.jcc(Ae, "runtime_new_array_sized"),
-		Emit.imm(Rcx, 4),
-		Emit.mark("runtime_new_array_sized"),
-		Emit.save(Rcx),
-		Emit.mov(Rdi, Rcx),
-		Emit.shl(Rdi, 3),
-		Emit.plus_imm(Rdi, 24),
-		Emit.call(Heap.allocate(Array)),
-		Emit.restore(Rcx),
-		Emit.restore(Rdx),
-		Emit.store(Emit.mem(Rax, 0), Rdx),
-		Emit.store(Emit.mem(Rax, 8), Rcx),
-		Emit.lea(Rdx, Emit.mem(Rax, 24)),
-		Emit.store(Emit.mem(Rax, 16), Rdx),
-	]
-		.concat(RuntimeBuilders.boxed_items(Boxing.array_tag))
-		.append(Emit.ret)
+	# The record's block is the array's kind; the two routines differ only
+	# in it.
+	new_array_of = |{ label, kind }|
+		[
+			Emit.mark(label),
+			Emit.save(Rdi),
+			Emit.mov(Rcx, Rdi),
+			Emit.cmp_imm(Rcx, 4),
+			Emit.jcc(Ae, "${label}_sized"),
+			Emit.imm(Rcx, 4),
+			Emit.mark("${label}_sized"),
+			Emit.save(Rcx),
+			Emit.mov(Rdi, Rcx),
+			Emit.shl(Rdi, 3),
+			Emit.plus_imm(Rdi, 24),
+			Emit.call(Heap.allocate(kind)),
+			Emit.restore(Rcx),
+			Emit.restore(Rdx),
+			Emit.store(Emit.mem(Rax, 0), Rdx),
+			Emit.store(Emit.mem(Rax, 8), Rcx),
+			Emit.lea(Rdx, Emit.mem(Rax, 24)),
+			Emit.store(Emit.mem(Rax, 16), Rdx),
+		]
+			.concat(RuntimeBuilders.boxed_items(Boxing.array_tag))
+			.append(Emit.ret)
+	new_array = new_array_of({ label: Runtime.new_array, kind: Array }).concat(
+		new_array_of({ label: Runtime.new_int32_array, kind: Int32Array }),
+	)
 	new_object = [
 		Emit.mark(Runtime.new_object),
 		Emit.imm(Rdi, 40 + 4 * 16),
@@ -1687,8 +1701,16 @@ container_items = {
 		Emit.zero(Rax),
 		Emit.ret,
 	]
+	# The element kind is kept before the item is stored, so a collection
+	# while the items grow, which walks the heap under `gcalways`, finds it
+	# true.
 	push_item = [
 		Emit.mark("runtime_push_item"),
+		Emit.byte_load(Rcx, Heap.element_kind_place),
+		Emit.cmp_imm(Rcx, Heap.element_code(Values)),
+		Emit.jcc(E, "runtime_push_item_kept"),
+		Emit.call(Heap.keep_item_kind),
+		Emit.mark("runtime_push_item_kept"),
 		Emit.load(Rcx, Emit.mem(Rdi, 0)),
 		Emit.load(R8, Emit.mem(Rdi, 8)),
 		Emit.cmp(Rcx, R8),
@@ -1866,6 +1888,8 @@ container_items = {
 		])
 		.concat(item_address_items)
 		.concat([
+			Emit.mov(Rsi, Rdx),
+			Emit.call(Heap.keep_item_kind),
 			Emit.store(Emit.mem(R8, 0), Rdx),
 			Emit.ret,
 			Emit.mark("runtime_set_index_append"),

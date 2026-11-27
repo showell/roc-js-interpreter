@@ -71,6 +71,7 @@ import js.Bytecode
 import Assembly
 import Boxing
 import Emit
+import Heap
 import LoweringBasics
 import RuntimeBuilders
 import X86
@@ -372,12 +373,15 @@ IndexLowering :: [].{
 	## `receiver[index] = ` the value at `value_place`, the array changed in place, when the
 	## receiver is an array and the index a whole number below its length,
 	## else `slow_items`, the routine's call (an append among what it does).
+	## The array's element kind is kept true of the item by what it is known
+	## to be (`stored`, `Heap.kind_kept_items`).
 	item_write_items : LoweringBasics.Site,
 	{
 		kinds : (LoweringBasics.Kind, LoweringBasics.Kind),
 		receiver : X86.Mem,
 		index : X86.Mem,
 		value_place : X86.Mem,
+		stored : Heap.ItemStored,
 		checks : IndexLowering.Checks,
 		slow_items : List(Assembly.Statement),
 	} -> List(Assembly.Statement)
@@ -388,6 +392,7 @@ IndexLowering :: [].{
 			receiver,
 			index,
 			value_place,
+			stored,
 			checks,
 			slow_items,
 		},
@@ -403,12 +408,15 @@ IndexLowering :: [].{
 		}) {
 			Ok(addressed) =>
 				addressed
-					.concat([
-						Emit.load(Rax, value_place),
-						Emit.store(item_place, Rax),
-						Emit.jmp(done_label),
-						Emit.mark(slow_label),
-					])
+					.concat([Emit.load(Rax, value_place), Emit.store(item_place, Rax)])
+					.concat(
+						Heap.kind_kept_items({
+							bits: Rax,
+							stored,
+							label: LoweringBasics.inner_label(site, "item"),
+						}),
+					)
+					.concat([Emit.jmp(done_label), Emit.mark(slow_label)])
 					.concat(slow_items)
 					.append(Emit.mark(done_label))
 			Err(Untested) => slow_items

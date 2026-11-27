@@ -72,3 +72,4 @@ rel32  -- a 32-bit relative offset, as the manual's opcode tables name it
 abi    -- the System V ABI, ELF's name for Linux's calling convention
 len    -- Roc's own field, `List.sublist`'s `{ start, len }`
 cmov   -- an instruction, conditional move, by the manual's mnemonic
+int32  -- a whole number of 32 bits, ECMAScript's ToInt32's and V8's name, the element kind x86/SPECIALIZATION.md names

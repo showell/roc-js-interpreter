@@ -118,6 +118,7 @@ import Emit
 import KnownFunctions
 import LoweringBasics
 import FieldSlots
+import Heap
 import MethodTables
 import ObjectTable
 import CallLowering
@@ -2443,6 +2444,34 @@ literal_array_kind = |site, { item_kinds, unconverted }| {
 	}
 }
 
+## The element kind an array literal's items hold, as far as their kinds
+## say (`Heap.ElementKind`): Int32 when each was an `Integer` within 32 bits
+## before it was made a double (`unconverted`), or there are none; Values
+## when one is known to be no number; else `Found`, as the program runs.
+literal_element : {
+	item_kinds : List(LoweringBasics.Kind),
+	unconverted : List(LoweringBasics.Kind),
+} -> [Int32, Values, Found]
+literal_element = |{ item_kinds, unconverted }| {
+	is_int32 = |kind|
+		match kind {
+			Integer(range) => range.low >= -2147483648 and range.high <= 2147483647
+			_ => False
+		}
+	may_be_number = |kind|
+		match kind {
+			Number | Integer(_) | Value => True
+			_ => False
+		}
+	if unconverted.all(is_int32) {
+		Int32
+	} else if item_kinds.all(may_be_number) {
+		Found
+	} else {
+		Values
+	}
+}
+
 ## An item just read from an array of numbers, at `place`: from an array of
 ## whole numbers, its double made the `Integer` it is (exact: every item is a
 ## whole number within its range), else the known number it is.
@@ -2498,6 +2527,21 @@ array_kind = |kind|
 		Array
 	} else {
 		kind
+	}
+
+## What an item written into an array of the kind `array`, of the kind
+## `stored`, is known to be,
+## for the code that keeps the array's element kind true
+## (`Heap.ItemStored`): an item of an array of whole numbers within 32 bits
+## is one (the walk widens the array's kind before it would store another,
+## `integer_items_widened`), so every element kind holds it.
+item_stored : { array : LoweringBasics.Kind, stored : LoweringBasics.Kind } -> Heap.ItemStored
+item_stored = |{ array, stored }|
+	match (array, stored) {
+		(Integers(range), _) if range.low >= -2147483648 and range.high <= 2147483647 => InKind
+		(_, Number) | (_, Integer(_)) => Number
+		(_, Value) => Value
+		_ => NotNumber
 	}
 
 ## How many values on top of the stack an instruction takes as values (a
@@ -2744,10 +2788,22 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 		}
 		MakeArray(count) => {
 			base = depth - count
-			made = LoweringBasics.arguments_array_items(site, { base, count })
-				.append(Emit.store(LoweringBasics.stack_place(site.code, base), Rax))
 			item_kinds = state.stack_kinds.drop_first(base)
 			made_of = { item_kinds, unconverted: unconverted.drop_first(base) }
+			# The array starts at the element kind its items hold (`Heap`'s
+			# header): known here, or found from them as the program runs.
+			kinded =
+				match literal_element(made_of) {
+					Int32 => LoweringBasics.array_made_items(
+						site,
+						{ base, count, made_by: Runtime.new_int32_array },
+					)
+					Values => LoweringBasics.arguments_array_items(site, { base, count })
+					Found => LoweringBasics.arguments_array_items(site, { base, count }).append(
+						Emit.call(Heap.find_element_kind),
+					)
+				}
+			made = kinded.append(Emit.store(LoweringBasics.stack_place(site.code, base), Rax))
 			Ok(
 				LoweringBasics.falling(
 					made,
@@ -2817,7 +2873,7 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 			LoweringBasics.falling(
 				[
 					Emit.zero(Rdi),
-					Emit.call(Runtime.new_array),
+					Emit.call(Runtime.new_int32_array),
 					Emit.store(next_place, Rax),
 				],
 				LoweringBasics.with_top(state, Array),
@@ -2953,6 +3009,7 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 									receiver: top_place(2),
 									index: top_place(1),
 									value_place: top_place(0),
+									stored: item_stored({ array: written, stored: value }),
 									checks: if LoweringBasics.holds_numbers(written) {
 										IndexLowering.checks_for(checked, instruction)
 									} else {

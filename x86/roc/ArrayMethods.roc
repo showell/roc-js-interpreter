@@ -962,6 +962,13 @@ sort_items = {
 			Emit.load(R9, Emit.mem(Rdi, 0)),
 			Emit.load(R10, RuntimeBuilders.local(32)),
 			Emit.load(R11, RuntimeBuilders.local(24)),
+			# An `undefined` put after the items sorted makes the array's
+			# element kind Values.
+			Emit.cmp(R9, R11),
+			Emit.jcc(E, "runtime_sort_kinded"),
+			Emit.imm(Rax, Heap.element_code(Values)),
+			Emit.byte_store(Heap.element_kind_place, Al),
+			Emit.mark("runtime_sort_kinded"),
 			Emit.zero(Rcx),
 			Emit.mark("runtime_sort_copied"),
 			Emit.cmp(Rcx, R9),
@@ -1188,6 +1195,21 @@ edit_items = {
 				Emit.minus(Rcx, Rax),
 				Emit.shl(Rcx, 3),
 				Instruction(RepMovsb),
+				# The array's element kind kept true of each item put in.
+				Emit.load(Rdi, RuntimeBuilders.local(8)),
+				Emit.load(R10, RuntimeBuilders.local(16)),
+				Emit.load(R11, Emit.mem(R10, 16)),
+				Emit.plus_imm(R11, 16),
+				Emit.load(Rcx, RuntimeBuilders.local(56)),
+				Emit.mark("runtime_splice_kind"),
+				Emit.test(Rcx, Rcx),
+				Emit.jcc(E, "runtime_splice_kinded"),
+				Emit.load(Rsi, Emit.mem(R11, 0)),
+				Emit.call(Heap.keep_item_kind),
+				Emit.plus_imm(R11, 8),
+				Emit.minus_imm(Rcx, 1),
+				Emit.jmp("runtime_splice_kind"),
+				Emit.mark("runtime_splice_kinded"),
 				Emit.load(Rax, RuntimeBuilders.local(48)),
 			])
 			.concat(RuntimeBuilders.unboxed_items(Rax))

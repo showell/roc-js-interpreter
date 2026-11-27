@@ -3,10 +3,12 @@
 -- the repository's root:
 --
 --   shale x86/collector.shale                      # the four races, this tree's js-x86, 7 runs each
+--   shale x86/collector.shale races=fib,bank,fourteen,bigdaddy,sat runs=5
 --   shale x86/collector.shale races=bigdaddy rounds=300,10000 runs=3 node=1
 --
 -- Each race (fib at N = 100,000, bank at 2,000,000 transfers, fourteen and
--- big daddy at `rounds=` rounds, 300 unset) is compiled by each driver and
+-- big daddy at `rounds=` rounds, 300 unset, and the SAT race, named only
+-- when asked, at its small workload) is compiled by each driver and
 -- run `runs=` times, the contestants alternated, niced, one at a time, under
 -- /usr/bin/time for the peak resident memory. Every contestant's output must
 -- be the first's. The table gives each one's medians of wall time, CPU time
@@ -60,11 +62,15 @@ function races(names, rounds)
       for r in split(rounds, ",") do
         push(out, {name = name, size = r, text = set_const(read("x86/bigdaddy/bigdaddy_race.js"), "ROUNDS", tonumber(r))})
       end
+    elseif name == "sat" then
+      local text = read("x86/satrace/sat.js")
+      if re_find(text, "\nconst WORKLOAD = \"[a-z]+\";") == nil then fail(WHO .. ": no line `const WORKLOAD = \"<word>\";` in x86/satrace/sat.js to set") end
+      push(out, {name = name, size = "small", text = re_replace(text, "\nconst WORKLOAD = \"[a-z]+\";", "\nconst WORKLOAD = \"small\";")})
     elseif has_key(fixed, name) then
       local f = fixed[name]
       push(out, {name = name, size = "" .. f.n, text = set_const(read(f.path), f.name, f.n)})
     else
-      fail(WHO .. ": no race named " .. name .. ": fib, bank, fourteen or bigdaddy")
+      fail(WHO .. ": no race named " .. name .. ": fib, bank, fourteen, bigdaddy or sat")
     end
   end
   return out

@@ -839,8 +839,19 @@ LoweringBasics :: [].{
 		base : U64,
 		count : U64,
 	} -> List(Assembly.Statement)
-	arguments_array_items = |site, { base, count }| {
-		var $filled = [Emit.imm(Rdi, count.to_i64_wrap()), Emit.call(Runtime.new_array)]
+	arguments_array_items = |site, { base, count }|
+		LoweringBasics.array_made_items(site, { base, count, made_by: Runtime.new_array })
+
+	## The same, the array made by the routine `made_by`, `Runtime.new_array`
+	## or another of its shape.
+	array_made_items : LoweringBasics.Site,
+	{
+		base : U64,
+		count : U64,
+		made_by : Str,
+	} -> List(Assembly.Statement)
+	array_made_items = |site, { base, count, made_by }| {
+		var $filled = [Emit.imm(Rdi, count.to_i64_wrap()), Emit.call(made_by)]
 		for item in 0..<count {
 			$filled = $filled.concat([
 				Emit.load(Rcx, LoweringBasics.stack_place(site.code, base + item)),

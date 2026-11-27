@@ -8,13 +8,25 @@
 ## them and a block starts at an address that is a multiple of its size. A
 ## block bigger than 32768 bytes takes whole pages of its own, as many as
 ## it needs, its block starting at its first page. Every block starts with
-## its **header**, 8 bytes: its kind (`Heap.BlockKind`'s code, 1 to 13) in the
+## its **header**, 8 bytes: its kind (`Heap.BlockKind`'s code, 1 to 15) in the
 ## top 16 bits, the collector's mark in bit 47 (set only while a collection
 ## runs), and the bytes asked for, rounded up to 8, in the low 47. What the
 ## allocator answers is the address past the header, so a string's length
 ## is at the answer, as before, and its header 8 bytes below it. **A block
 ## not taken has the header 0**, and its contents are 0 but for the free
 ## list's link 8 bytes in, so a block the allocator answers is all 0.
+##
+## **AN ARRAY'S HEADER SAYS WHAT ITS ITEMS ARE** (`Heap.ElementKind`): its
+## record's block is an `Int32Array` (every item a double holding a whole
+## number from -2^31 to 2^31 - 1, never -0), a `NumbersArray` (every item a
+## double) or an `Array` (any values). The items stay NaN-boxed values
+## whichever it is, so every routine reads them as it would any array's. A
+## kind only falls, from Int32 to Numbers to Values, and every store keeps
+## it true (`Heap.kind_kept_items`, `Heap.keep_item_kind`): a store of a
+## number that isn't such a whole number lowers Int32 to Numbers, and a
+## store of anything but a number lowers either to Values. The kind's code
+## fits the header's byte 6, so a lowering is one byte stored. The heap
+## walk holds every Int32 and Numbers array's items to its kind.
 ##
 ## `r15` holds the heap's state for the whole run (`state_size` bytes,
 ## mapped with the rest), laid out as these places say: the next free page,
@@ -115,6 +127,11 @@ Heap :: [].{
 		# A routine's list of strings' addresses, raw, as `join` and
 		# console.log keep the texts they put together.
 		Texts,
+		# An array's record, as `Array`'s, whose items are all numbers.
+		NumbersArray,
+		# An array's record, as `Array`'s, whose items are all whole numbers
+		# of 32 bits.
+		Int32Array,
 	]
 
 	## Every kind, in the order of their codes.
@@ -133,6 +150,8 @@ Heap :: [].{
 		Iterator,
 		Timer,
 		Texts,
+		NumbersArray,
+		Int32Array,
 	]
 
 	## A kind's code in a header's top 16 bits: 1 and on, so no header is 0.
@@ -152,7 +171,117 @@ Heap :: [].{
 			Iterator => 11
 			Timer => 12
 			Texts => 13
+			NumbersArray => 14
+			Int32Array => 15
 		}
+
+	## What every item of an array holds, as its record's header says (the
+	## module's header): its codes fall as the kind does, Int32 the highest.
+	ElementKind := [Int32, Numbers, Values]
+
+	## The code of an element kind's block kind, which its header holds.
+	element_code : Heap.ElementKind -> I64
+	element_code = |element|
+		match element {
+			Int32 => Heap.kind_code(Int32Array)
+			Numbers => Heap.kind_code(NumbersArray)
+			Values => Heap.kind_code(Array)
+		}
+
+	## The header's byte that holds the element kind's code, of the array
+	## whose record's address is in `rdi` (the header's byte 6, which holds a
+	## kind's code below 256 whole). Every routine and store that keeps the
+	## kind has the record there.
+	element_kind_place : X86.Mem
+	element_kind_place = Emit.mem(Rdi, -2)
+
+	## What an item stored in an array is known to be before the program
+	## runs, which decides the code that keeps the array's element kind true:
+	## `InKind`, an item every element kind holds (an `Integer` within 32
+	## bits); `Number`, a double; `Value`, any value; `NotNumber`, a value
+	## known to be no number.
+	ItemStored : [InKind, Number, Value, NotNumber]
+
+	## The statements that keep the element kind of the array whose record's
+	## address is in `rdi` true of the item whose bits are in `bits`, stored
+	## or about to be, known to be `stored`: they lower the kind where the
+	## item doesn't fit it. `label` starts their labels' names. They change
+	## `rcx`, `rdx`, `xmm0` and `xmm1`, so `bits` may be neither `rcx` nor
+	## `rdx`.
+	kind_kept_items : {
+		bits : X86.Register,
+		stored : Heap.ItemStored,
+		label : Str,
+	} -> List(Assembly.Statement)
+	kind_kept_items = |{ bits, stored, label }| {
+		place = Heap.element_kind_place
+		kept = "${label}_kind_kept"
+		lowered = "${label}_kind_lowered"
+		to_numbers = "${label}_kind_numbers"
+		to_values = "${label}_kind_values"
+		# A whole number of 32 bits, not -0: its integer is its low 32 bits
+		# sign-extended, and the double made back from it has its bits.
+		int32_tested = [
+			Emit.to_xmm(Xmm0, bits),
+			Instruction(Cvttsd2si({ to: Rcx, from: Xmm0 })),
+			Instruction(Movsxd({ to: Rdx, from: Rcx })),
+			Emit.cmp(Rdx, Rcx),
+			Emit.jcc(Ne, to_numbers),
+			Instruction(Cvtsi2sd({ to: Xmm1, from: Rcx })),
+			Instruction(MovqFromXmm({ to: Rdx, from: Xmm1 })),
+			Emit.cmp(Rdx, bits),
+			Emit.jcc(E, kept),
+			Emit.mark(to_numbers),
+			Emit.imm(Rdx, Heap.element_code(Numbers)),
+		]
+		match stored {
+			InKind => []
+			NotNumber => [Emit.imm(Rdx, Heap.element_code(Values)), Emit.byte_store(place, Dl)]
+			Number =>
+				[
+					Emit.byte_load(Rdx, place),
+					Emit.cmp_imm(Rdx, Heap.element_code(Int32)),
+					Emit.jcc(Ne, kept),
+				]
+					.concat(int32_tested)
+					.concat([Emit.byte_store(place, Dl), Emit.mark(kept)])
+			Value =>
+				[
+					Emit.byte_load(Rdx, place),
+					Emit.cmp_imm(Rdx, Heap.element_code(Values)),
+					Emit.jcc(E, kept),
+					Emit.mov(Rcx, bits),
+					Emit.shr(Rcx, Boxing.tag_shift),
+					Emit.cmp_imm(Rcx, Boxing.first_tag),
+					Emit.jcc(Ae, to_values),
+					Emit.cmp_imm(Rdx, Heap.element_code(Numbers)),
+					Emit.jcc(E, kept),
+				]
+					.concat(int32_tested)
+					.concat([
+						Emit.jmp(lowered),
+						Emit.mark(to_values),
+						Emit.imm(Rdx, Heap.element_code(Values)),
+						Emit.mark(lowered),
+						Emit.byte_store(place, Dl),
+						Emit.mark(kept),
+					])
+		}
+	}
+
+	## The routine that keeps the element kind of the array whose record's
+	## address is in `rdi` true of the value in `rsi`, as
+	## `Heap.kind_kept_items` does. It keeps every register.
+	keep_item_kind : Str
+	keep_item_kind = "runtime_keep_item_kind"
+
+	## The routine that gives the array whose boxed bits are in `rax`, its
+	## items just made, the element kind they hold: Int32 when each is a whole
+	## number of 32 bits, else Numbers when each is a number, else Values. It
+	## keeps `rax`, and changes `rcx`, `rdx`, `rsi`, `rdi`, `r8`, `r9`, `xmm0`
+	## and `xmm1`.
+	find_element_kind : Str
+	find_element_kind = "runtime_find_element_kind"
 
 	## The routine that takes `rdi` bytes of the heap for a block of `kind`,
 	## the address past its header in `rax`, the block's bytes all 0. It
@@ -188,6 +317,11 @@ Heap :: [].{
 	## The text the walk stops with.
 	bad_header_text : Str
 	bad_header_text = "runtime_text_bad_header"
+
+	## The text the walk stops with at an array's item that its element kind
+	## doesn't hold.
+	bad_element_text : Str
+	bad_element_text = "runtime_text_bad_element"
 
 	## The walk's mode, which the start sets from the program's first
 	## argument: 0 none, 1 a walk at the exit and at a stop (`heapwalk`), 2
@@ -305,6 +439,8 @@ Heap :: [].{
 	items : List(Assembly.Statement)
 	items = [
 		entry_items,
+		keep_item_kind_items,
+		find_element_kind_items,
 		allocate_items,
 		take_pages_items,
 		threshold_items,
@@ -333,6 +469,8 @@ kind_word = |kind|
 		Iterator => "iterator"
 		Timer => "timer"
 		Texts => "texts"
+		NumbersArray => "numbers_array"
+		Int32Array => "int32_array"
 	}
 
 ## Where a block's trace starts, in bytes past its header: from there to
@@ -355,6 +493,8 @@ trace_from = |kind|
 		Iterator => From(0)
 		Timer => From(0)
 		Texts => From(0)
+		NumbersArray => From(16)
+		Int32Array => From(16)
 	}
 
 ## What a kind's code is multiplied by in a header: its place, the top 16
@@ -570,6 +710,67 @@ threshold_items = [
 	Emit.store(threshold_place, Rax),
 	Emit.ret,
 ]
+
+## `runtime_keep_item_kind`: `Heap.kind_kept_items` of the record in `rdi`
+## and the value in `rsi`, with the registers it changes saved around it.
+keep_item_kind_items : List(Assembly.Statement)
+keep_item_kind_items =
+	[
+		Emit.mark(Heap.keep_item_kind),
+		Emit.save(Rcx),
+		Emit.save(Rdx),
+		Instruction(MovqFromXmm({ to: Rcx, from: Xmm0 })),
+		Emit.save(Rcx),
+		Instruction(MovqFromXmm({ to: Rcx, from: Xmm1 })),
+		Emit.save(Rcx),
+	]
+		.concat(
+			Heap.kind_kept_items({
+				bits: Rsi,
+				stored: Value,
+				label: Heap.keep_item_kind,
+			}),
+		)
+		.concat([
+			Emit.restore(Rcx),
+			Emit.to_xmm(Xmm1, Rcx),
+			Emit.restore(Rcx),
+			Emit.to_xmm(Xmm0, Rcx),
+			Emit.restore(Rdx),
+			Emit.restore(Rcx),
+			Emit.ret,
+		])
+
+## `runtime_find_element_kind`: the kind set to Int32, then kept true of
+## each item in turn, `r8` the item's address and `r9` the items left.
+find_element_kind_items : List(Assembly.Statement)
+find_element_kind_items =
+	[
+		[Emit.mark(Heap.find_element_kind), Emit.mov(Rdi, Rax)],
+		RuntimeBuilders.unboxed_items(Rdi),
+		[
+			Emit.imm(Rcx, Heap.element_code(Int32)),
+			Emit.byte_store(Heap.element_kind_place, Cl),
+			Emit.load(R8, Emit.mem(Rdi, 16)),
+			Emit.load(R9, Emit.mem(Rdi, 0)),
+			Emit.mark("runtime_find_element_kind_item"),
+			Emit.test(R9, R9),
+			Emit.jcc(E, "runtime_find_element_kind_found"),
+			Emit.load(Rsi, Emit.mem(R8, 0)),
+		],
+		Heap.kind_kept_items({
+			bits: Rsi,
+			stored: Value,
+			label: Heap.find_element_kind,
+		}),
+		[
+			Emit.plus_imm(R8, 8),
+			Emit.minus_imm(R9, 1),
+			Emit.jmp("runtime_find_element_kind_item"),
+			Emit.mark("runtime_find_element_kind_found"),
+			Emit.ret,
+		],
+	].join()
 
 ## Each kind's entry: its header bits in `rax`, then the shared path.
 entry_items : List(Assembly.Statement)
@@ -1399,6 +1600,8 @@ walk_items = [
 	block_check_items,
 	[Emit.mark("runtime_heap_bad")],
 	RuntimeBuilders.stopping_items(Heap.bad_header_text),
+	[Emit.mark("runtime_heap_bad_element")],
+	RuntimeBuilders.stopping_items(Heap.bad_element_text),
 ].join()
 
 ## `runtime_heap_lists`: each class's free list (its offset in `r10`), every
@@ -1509,9 +1712,52 @@ page_mark_items = [
 ## `rdi` bytes with its header and at most the block size. The block's
 ## first byte past the header and its last byte must each find the block
 ## by `Heap.block_start`. It counts the block, its bytes asked and its
-## block size. It changes `rax`, `rcx`, `rdx` and `rdi`.
+## block size. An Int32 or a Numbers array's items, from its items' address
+## to its length, must each be a number, and an Int32 array's a whole
+## number of 32 bits that isn't -0. It changes `rax`, `rcx`, `rdx`, `rsi`,
+## `rdi`, `xmm0` and `xmm1`.
 block_check_items : List(Assembly.Statement)
 block_check_items = [
+	block_header_check_items,
+	[
+		Emit.load(Rax, Emit.mem(R9, 0)),
+		Emit.shr(Rax, 48),
+		Emit.cmp_imm(Rax, Heap.element_code(Numbers)),
+		Emit.jcc(B, "runtime_heap_block_checked"),
+		Emit.load(Rcx, Emit.mem(R9, 8)),
+		Emit.load(Rdi, Emit.mem(R9, 24)),
+		Emit.mark("runtime_heap_block_item"),
+		Emit.test(Rcx, Rcx),
+		Emit.jcc(E, "runtime_heap_block_checked"),
+		Emit.load(Rdx, Emit.mem(Rdi, 0)),
+		Emit.mov(Rsi, Rdx),
+		Emit.shr(Rsi, Boxing.tag_shift),
+		Emit.cmp_imm(Rsi, Boxing.first_tag),
+		Emit.jcc(Ae, "runtime_heap_bad_element"),
+		Emit.cmp_imm(Rax, Heap.element_code(Int32)),
+		Emit.jcc(Ne, "runtime_heap_block_next"),
+		Emit.to_xmm(Xmm0, Rdx),
+		Instruction(Cvttsd2si({ to: Rsi, from: Xmm0 })),
+		Instruction(Movsxd({ to: Rdx, from: Rsi })),
+		Emit.cmp(Rdx, Rsi),
+		Emit.jcc(Ne, "runtime_heap_bad_element"),
+		Instruction(Cvtsi2sd({ to: Xmm1, from: Rsi })),
+		Instruction(MovqFromXmm({ to: Rsi, from: Xmm1 })),
+		Emit.load(Rdx, Emit.mem(Rdi, 0)),
+		Emit.cmp(Rsi, Rdx),
+		Emit.jcc(Ne, "runtime_heap_bad_element"),
+		Emit.mark("runtime_heap_block_next"),
+		Emit.plus_imm(Rdi, 8),
+		Emit.minus_imm(Rcx, 1),
+		Emit.jmp("runtime_heap_block_item"),
+		Emit.mark("runtime_heap_block_checked"),
+		Emit.ret,
+	],
+].join()
+
+## The header's checks of `runtime_heap_block`.
+block_header_check_items : List(Assembly.Statement)
+block_header_check_items = [
 	Emit.mark("runtime_heap_block"),
 	Emit.mov(Rcx, Rax),
 	Emit.shr(Rcx, 48),
@@ -1553,10 +1799,15 @@ block_check_items = [
 	Emit.call(Heap.block_start),
 	Emit.cmp(Rax, R9),
 	Emit.jcc(Ne, "runtime_heap_bad"),
-	Emit.ret,
 ]
 
-expect Heap.kinds.map(Heap.kind_code) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+expect Heap.kinds.map(Heap.kind_code) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+# A kind only falls, so its codes fall with it, and each fits the header's
+# byte that `Heap.element_kind_place` names.
+expect {
+	codes = [Int32, Numbers, Values].map(Heap.element_code)
+	codes == [15, 14, 2] and codes.all(|code| code < 256)
+}
 expect word_bits("heapwalk") == 0x6b6c617770616568
 # The state's places fit before the first page's room, and every
 # displacement past `r15` fits 32 bits.
