@@ -4,17 +4,24 @@ A small book about [roc-js-interpreter](https://github.com/showell/roc-js-interp
 
 ## Introduction
 
-roc-js-interpreter holds two programs that run one subset of JavaScript, both written in [Roc](https://www.roc-lang.org/). `js-x86`, in `x86/`, is an ahead-of-time compiler: it turns a program into a static Linux x86-64 executable. `js-vm`, in `js/`, is an interpreter: it turns the program into bytecode and runs that on a virtual machine. The two share a front end, the lexer, the parser, the resolver and the bytecode compiler, so they read a program's text the same way.
+roc-js-interpreter holds two programs that run one subset of JavaScript, and [Roc](https://www.roc-lang.org/) is the language of both. `js-x86`, in `x86/`, is an ahead-of-time compiler: it turns a program into a static Linux x86-64 executable. `js-vm`, in `js/`, is an interpreter: it turns the program into bytecode and runs that on a virtual machine. The two share a front end (the lexer, the parser, the resolver and the bytecode compiler), so they read a program's text the same way.
 
-This book is for a reader who knows programming and is new to this codebase, and above all for one curious about writing a language's tools in a language that has only values. AI coding agents (Claude) wrote the code, with human supervision, starting on 2026-11-23 (`30837f8e`).
+AI coding agents (Claude) wrote the code, with human supervision, starting on 2026-11-23 (`30837f8e`). This book is the record of that work and a reference for whoever guides it next. Every claim in it names the commit or file that backs it. Its central finding is about Roc itself: Roc writes a list in place only while one owner holds it, and a second owner turns each write into a copy of the whole list. Both programs were shaped around that rule, and a reader steering either one needs to know where it bites.
+
+The book is written for a reader who knows programming and is new to this codebase, and above all for one curious about writing a language's tools in a language that has only values.
 
 ### What it runs
 
 The subset is real JavaScript: numbers, strings, arrays, objects, closures, `let` and `const`, `try` and `finally`, `switch`, destructuring, optional chains, spread, Maps and Sets, and the timers. Classes run too, as syntax sugar the parser writes as plain functions (`0b6d8deb`). `this` outside a class's code, `new` on a program's own function and prototypes stay outside it, and `js/README.md` says why: each would make every call carry a receiver or every property read walk a prototype chain.
 
-The interpreter runs all 63 programs of the corpus in `js/tests/`, and the compiler 51 of them (`x86/README.md`, "The corpus", 2026-11-27).
+Where the two programs stood on 2026-11-27, on the 63 programs of the corpus in `js/tests/`:
 
-### Who judges it
+| program | folder | corpus programs it runs as node does | held there by | source |
+|---|---|---|---|---|
+| `js-vm`, the interpreter | `js/` | 63 of 63 | `js/oracle.shale` | `js/README.md` |
+| `js-x86`, the compiler | `x86/` | 51 of 63 | `x86/programs.shale` | `x86/README.md`, "The corpus" |
+
+### Node as the oracle
 
 Every program in the subset is real JavaScript, so node is a free oracle, and it judges both programs.
 
@@ -37,7 +44,14 @@ digraph {
 }
 ```
 
-`js/oracle.shale` runs each program in `js/tests/` through node 22 and through `js-vm`, and the two transcripts, exit codes included, must match byte for byte; `x86/programs.shale` holds each executable's output and exit code to node's the same way. A program outside the subset gets an error that names what it used: each program in `js/tests/refused/` names, on its first line, the message `js-vm` must end with. The corpus grew from 32 programs and 25 refusals on the first day (`278631d8`) to 63 and 79 by 2026-11-27 (`js/README.md`, its status line). Program 54, `54-big-daddy.js`, is a day in a small city that uses every feature of the subset, and it is also the playground's "all features" sample (`7d6a472f`, `cc904c2a`).
+`js/oracle.shale` runs each program in `js/tests/` through node 22 and through `js-vm`, and the two transcripts, exit codes included, must match byte for byte. `x86/programs.shale` holds each executable's output and exit code to node's the same way. A program outside the subset gets an error that names what it used: each program in `js/tests/refused/` names, on its first line, the message `js-vm` must end with. The corpus grew over the five days:
+
+| when | corpus programs | refused programs | source |
+|---|---|---|---|
+| the first day | 32 | 25 | `278631d8` |
+| 2026-11-27 | 63 | 79 | `js/README.md`, its status line |
+
+Program 54, `54-big-daddy.js`, is a day in a small city that uses every feature of the subset, and it is also the playground's "all features" sample (`7d6a472f`, `cc904c2a`).
 
 ### The playground
 
@@ -55,15 +69,24 @@ The project began as a folder of [roc-apps](https://github.com/showell/roc-apps)
 
 ### The order of the book
 
-{{chapter How it got here}} is the project's short history. Part I is the machinery the two programs share: {{chapter The front end}}, and {{chapter Roc's copy rule}}, which both lean on. Part II is the compiler, from {{chapter The compiler to x86-64}} on. For Roc it is the simpler program, one pure function from a program's text to an executable's bytes, so it comes first. Part III is the interpreter, from {{chapter The interpreter}} on, which carries what the compiler hands to the processor: the program's effects, a heap, a collector and a page. Part IV, from {{chapter Why a compiler suits Roc}} on, is what building the two taught about Roc.
+{{chapter How it got here}} is the project's short history. Four parts follow it:
+
+| part | starts at | what it covers |
+|---|---|---|
+| I: Shared machinery | {{chapter The front end}} | the front end, and {{chapter Roc's copy rule}}, which both programs lean on |
+| II: The compiler | {{chapter The compiler to x86-64}} | one pure function from a program's text to an executable's bytes, the simpler program for Roc, so it comes first |
+| III: The interpreter | {{chapter The interpreter}} | what the compiler hands to the processor: the program's effects, a heap, a collector and a page |
+| IV: What Roc taught | {{chapter Why a compiler suits Roc}} | the lessons about Roc, its two builds and its build times |
+
+A reader who came for the copy cliff can read four chapters in order: {{chapter Roc's copy rule}}, {{chapter Memory strategy}}, {{chapter The garbage collector}} and {{chapter Handing the machine on}}.
 
 ## Motivation
 
-The main reason is to push Roc on performance. An interpreter is a hard workload for a language of values: its heap must stay unique to be written in place, its machine record is handed on at every step, and it allocates all the time. The compiler pushes from the other side: Roc writes every byte of its executables, which race node and Roc's own LLVM build ({{chapter Three compilers, one race}}).
+The main reason is to push Roc on performance. An interpreter is a hard workload for a language of values. Its heap must keep a single owner to be written in place ({{chapter Roc's copy rule}}), its machine record is handed on at every step, and it allocates all the time. The compiler pushes from the other side: Roc writes every byte of its executables, which race node and Roc's own LLVM build ({{chapter The fib race}}).
 
-It stress-tests Roc's toolchain too. RC1's release builds are slow, the work turned up list-copy bugs that went upstream, and compile-time evaluation can run a program during `roc check`.
+It stress-tests Roc's toolchain too. The project builds with RC1, a release candidate of Roc, whose release builds are slow. The work turned up list-copy bugs that went upstream, and compile-time evaluation can run a program during `roc check`.
 
-It teaches what copies. {{chapter Roc's copy rule}} and the habits of {{chapter Handing the machine on}} are meant for any Roc user's code.
+It teaches what copies. {{chapter Roc's copy rule}} and the habits of {{chapter Handing the machine on}} apply to any Roc user's code.
 
 A pure functional language hosting a mutable, effectful one is a consequence of the project, not its goal. An underlying goal is to see how far AI coding agents, with human supervision, can take a Roc project. And it is fun to build things in Roc.
 
@@ -73,15 +96,47 @@ The book is written for the Roc community first.
 
 ## How it got here
 
-This chapter is the history, a section a day. The interpreter came first, and the compiler was built on its front end.
+The whole project took five days, 2026-11-23 to 2026-11-27, and this chapter gives one section to each. The interpreter came first, and the compiler was built on its front end. Every step names its commit, so a reader can check out the code as it stood that day.
+
+The five days
+```dot
+digraph {
+  rankdir=TB;
+  node [shape=box, style=rounded];
+  d23 [label="11-23: a tree-walker"];
+  d24 [label="11-24: the VM;\nthe first executable"];
+  d25 [label="11-25: the compiler\non the corpus"];
+  d26 [label="11-26: method tables;\nRoc joins the race"];
+  d27 [label="11-27: a collector for\nthe compiled programs"];
+  d23 -> d24 -> d25 -> d26 -> d27;
+}
+```
 
 ### 2026-11-23: a tree-walker
 
-The first interpreter walked the tree (`30837f8e`), its whole state one value threaded through the walk: the heap, the scopes, the output and the step count. The same day it gained the node oracle, a wasm page with an editor and a Run button (`6a0ea512`), exact allocation counts (`84263a4b`), variables resolved to slots before the run (`920cda0c`), a canvas behind a host of effects (`65a8d71a`), and timers and clicks on one queue with a virtual clock (`941e9e67`). By the end of the day the walker passed 50 of 50 corpus programs and 44 of 44 refusals.
+The first interpreter walked the tree (`30837f8e`). Its whole state was one value threaded through the walk: the heap, the scopes, the output and the step count. It grew fast that day:
+
+| what the walker gained on its first day | commit |
+|---|---|
+| the node oracle, and a wasm page with an editor and a Run button | `6a0ea512` |
+| exact allocation counts | `84263a4b` |
+| variables resolved to slots before the run | `920cda0c` |
+| a canvas behind a host of effects | `65a8d71a` |
+| timers and clicks on one queue, with a virtual clock | `941e9e67` |
+
+By the end of the day the walker passed 50 of 50 corpus programs and 44 of 44 refusals.
 
 ### 2026-11-24: the VM, and the compiler's first programs
 
-The bytecode VM was built beside the walker in three rounds. The first (`fe85d386`) matched node on 37 of 50 programs and refused the other 13; the second (`60466bc7`, `b69660c4`) added exceptions, `switch`, destructuring, Maps and Sets and the timers, and reached 50 of 50; the third (`abb4fc0a`) added a mark-sweep collector, which took the heap programs' peaks of 40 to 164 MB down to about 4 MB (`62110109`). The playground moved onto the VM (`fd9fb4e4`), and the walker was deleted (`aef0658b`). The page gained a memory view (`668c52ca`), a speed fix brought the VM's machine record under 256 bytes (`3aba5cf7`), and classes came as syntax sugar (`0b6d8deb`). The project moved from roc-apps to its own repository the same day.
+The bytecode VM was built beside the walker in three rounds:
+
+| round | commits | what it added | where it stood after |
+|---|---|---|---|
+| first | `fe85d386` | the VM itself | matched node on 37 of 50 programs, refused the other 13 |
+| second | `60466bc7`, `b69660c4` | exceptions, `switch`, destructuring, Maps and Sets, the timers | 50 of 50 |
+| third | `abb4fc0a` | a mark-sweep collector | the heap programs' peaks of 40 to 164 MB down to about 4 MB (`62110109`) |
+
+The playground moved onto the VM (`fd9fb4e4`), and the walker was deleted (`aef0658b`). The page gained a memory view (`668c52ca`), a speed fix brought the VM's machine record under 256 bytes (`3aba5cf7`), and classes came as syntax sugar (`0b6d8deb`). The project moved from roc-apps to its own repository the same day.
 
 At 20:39 UTC the compiler made its first executable, a hello world (`c3ff721`), and 47 minutes later it compiled a recursive `fib` to node's answer (`0c5ea7e`).
 
@@ -99,7 +154,7 @@ The compiled programs' heap gained a header on every block and pages of one bloc
 
 ## The front end
 
-Both programs start from one front end: four stages, each a module in `js/roc/`, that turn a program's text into bytecode. This chapter follows a program through them, to the point where the two programs part.
+Both programs start from one front end: four stages, each a module in `js/roc/`, that turn a program's text into bytecode. A new piece of the language lands here first, and both programs see it at once. This chapter follows a program through the four stages, to the point where the two programs part.
 
 ### Four stages, two back ends
 
@@ -122,10 +177,14 @@ digraph {
 }
 ```
 
-- **`Lexer.roc`** makes tokens, each with its line and column.
-- **`Parser.roc`** reads them into `Ast.roc`'s tree by recursive descent, and lays out each scope's names as it goes. It also writes each class as plain functions, through `ClassDesugaring.roc`.
-- **`Resolve.roc`** places every name before the run: each read, write and declaration learns how many scopes out its variable lives and where it sits there. Each back end then reads a variable by its place, and only `Resolve` compares variables' names.
-- **`Compile.roc`** lays out each function's frame and makes each function, and the program itself, a flat list of `Bytecode.roc`'s instructions. Every jump is relative to the instruction after it, so a piece of compiled code means the same wherever it lands.
+| stage | what it does |
+|---|---|
+| `Lexer.roc` | makes tokens, each with its line and column |
+| `Parser.roc` | reads them into `Ast.roc`'s tree by recursive descent, and lays out each scope's names as it goes; it also writes each class as plain functions, through `ClassDesugaring.roc` |
+| `Resolve.roc` | places every name before the run: each read, write and declaration learns how many scopes out its variable lives and where it sits there |
+| `Compile.roc` | lays out each function's frame, and makes each function, and the program itself, a flat list of `Bytecode.roc`'s instructions |
+
+Each technique is a standard one. Recursive descent is the classic hand-written parser. Resolving names to a scope depth and an index before the run is the lexical addressing of Scheme compilers (Abelson and Sussman, *Structure and Interpretation of Computer Programs*, second edition, 1996, section 5.5.6). After it, each back end reads a variable by its place, and only `Resolve` compares variables' names. Every jump in the bytecode is relative to the instruction after it, so a piece of compiled code means the same wherever it lands.
 
 From there the bytecode goes one of two ways. In `js-vm`, `Vm.roc` runs it on a stack machine ({{chapter The interpreter}}). In `js-x86`, `x86/roc/Lowering.roc` turns it into machine code ({{chapter The compiler to x86-64}}).
 
@@ -145,13 +204,42 @@ A method is one function for the whole class, made once, and its first parameter
 
 ## Roc's copy rule
 
-Both programs lean on one rule of Roc's. The interpreter keeps a JavaScript program's heap in one Roc list, which many of its instructions write; the compiler builds an executable's bytes by appending to one list. Each is fast only while Roc writes its list in place, and this chapter states when Roc does. {{chapter Handing the machine on}} gives the three habits the interpreter took from it.
+Roc has only values, yet it writes a list in place whenever it safely can. Both programs depend on that. The interpreter keeps a JavaScript program's heap in one Roc list, which many of its instructions write; the compiler builds an executable's bytes by appending to one list. Each is fast only while Roc writes its list in place. This chapter states when Roc does, and when it quietly copies the list first. Every later chapter that weighs a cost comes back to it, and {{chapter Handing the machine on}} gives the three habits the interpreter took from it.
 
 ### When a write copies
 
 Roc writes a list in place only while the list has a single owner, and a copy is silent. On RC1 every copy is a use after a consume: a write (`List.set`, `append`, `Dict.insert`) takes the value, and something still reads the old one after it. The copy allocates the whole list again on every such write, so its cost grows with the list.
 
-Each shape below is a loop in roc-apps' `tools/copy_shapes/CopyShapes.roc`, held to its count of allocations a write in the release and dev builds (`expected.txt` and `expected-dev.txt` beside it, measured on RC1). The listings are lines of those loops, each loop's call of itself written on one line; each copying shape sits beside its twin that writes in place.
+This book calls that drop the copy cliff. A loop that writes in place pays O(1) a write; the same loop with a second owner pays O(n) a write, and the code reads the same either way.
+
+One write, two outcomes
+```dot
+digraph {
+  rankdir=LR;
+  node [shape=box, style=rounded];
+  one [label="xs: one owner"];
+  two [label="xs: two owners"];
+  place [label="written in place\nO(1)"];
+  copy [label="copied whole,\nthen written: O(n)"];
+  one -> place [label="xs.set(j, i)"];
+  two -> copy [label="xs.set(j, i)"];
+}
+```
+
+The technique behind the rule is reference counting with in-place update of a value held once, as in Lean 4 (Ullrich and de Moura, "Counting Immutable Beans", 2019) and Koka's Perceus (Reinking, Xie, de Moura and Leijen, 2021).
+
+Each shape below is a loop in roc-apps' `tools/copy_shapes/CopyShapes.roc`, held to its count of allocations a write in the release and dev builds (`expected.txt` and `expected-dev.txt` beside it, measured on RC1). The listings are lines of those loops, each loop's call of itself written on one line; each copying shape sits beside its twin that writes in place. In brief:
+
+| the shape that copies | it copies in | its twin, written in place |
+|---|---|---|
+| `get-after-set` | every build | `set-restored` |
+| `closure-called-after` | every build | `closure-called-before` |
+| `nested-get-then-set` | every build | `nested-update` |
+| `dict-length-after-insert` | every build | - |
+| `dict-get-then-insert` | every build | `dict-take-then-insert` |
+| `helper-length-after-set` | the dev build | `helper-length-before-set` |
+| `helper-reads-record` | the dev build | `index-bound-before` |
+| `str-list-restored` | the dev build | `str-list-or-crash` |
 
 ### Shapes that copy in every build
 
@@ -216,7 +304,7 @@ dict_take_then_insert(i + 1, steps, size, d0.insert(0, l.set(j, i) ?? l), sum + 
 
 ### Shapes that copy in the dev build only
 
-In the dev build a helper stays a call that owns its arguments; the release build specializes it first, and writes in place.
+In the dev build a helper stays a call that owns its arguments. The release build specializes the helper first, and writes in place. These shapes still matter: a dev-only copy often becomes a release copy once the code around it changes ({{chapter Dev and release builds disagree}}).
 
 **A helper that reads its list after writing it:**
 
@@ -382,11 +470,11 @@ One-shot node, start-up included, is faster at the large sizes too: in the table
 
 **Most of V8's warm-up happens inside the first call.** At the large sizes the first run is already close to the steady time, because V8 optimizes a hot loop while it is still running (on-stack replacement). collatz's steady time came out slower than its first run in both runs, about 475 ms against about 370; `x86/BENCH.md` leaves the cause unexplored.
 
-### The fib race
+### The one tuned program
 
-These four programs are measured as they came. One program was tuned for: the fib race, which {{chapter Three compilers, one race}} follows.
+These four programs are measured as they came. One program was tuned for: the fib race, which {{chapter The fib race}} follows.
 
-## Three compilers, one race
+## The fib race
 
 `x86/race/fib_race.js` computes F(740000) with the ordinary iterative algorithm. Its numbers are arrays of base-10^7 limbs, added one into the other in place. Three contestants run it, one after another, each timed from outside as its whole process (`shale x86/race.shale`):
 
