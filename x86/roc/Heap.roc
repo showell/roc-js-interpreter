@@ -193,7 +193,10 @@ Heap :: [].{
 	## argument: 0 none, 1 a walk at the exit and at a stop (`heapwalk`), 2
 	## a walk and its counts written at the exit (`heapstat`), 3 a collection
 	## at every allocation, each followed by a walk, and a walk at the exit
-	## and at a stop (`gcalways`, the torture tier's).
+	## and at a stop (`gcalways`, the torture tier's), 4 the same but with a
+	## collection each time `sample_bytes` more are taken (`gcsample`, the
+	## torture tier's for a program too big for a collection at every
+	## allocation).
 	mode_place : X86.Mem
 	mode_place = Emit.mem(R15, 16)
 
@@ -218,6 +221,10 @@ Heap :: [].{
 
 	collections_place : X86.Mem
 	collections_place = Emit.mem(R15, 104)
+
+	## The blocks allocated in the whole run, large ones among them.
+	allocations_place : X86.Mem
+	allocations_place = Emit.mem(R15, 144)
 
 	## The bytes of the heap: the program stops, out of memory, past them.
 	## The mapping reserves nothing (`MAP_NORESERVE`), so only the pages a
@@ -279,8 +286,15 @@ Heap :: [].{
 		Emit.mark("runtime_heap_mode_always"),
 		Emit.imm(Rax, word_bits("gcalways")),
 		Emit.cmp(Rcx, Rax),
-		Emit.jcc(Ne, "runtime_heap_moded"),
+		Emit.jcc(Ne, "runtime_heap_mode_sample"),
 		Emit.imm(Rax, torture_mode),
+		Emit.store(Heap.mode_place, Rax),
+		Emit.jmp("runtime_heap_moded"),
+		Emit.mark("runtime_heap_mode_sample"),
+		Emit.imm(Rax, word_bits("gcsample")),
+		Emit.cmp(Rcx, Rax),
+		Emit.jcc(Ne, "runtime_heap_moded"),
+		Emit.imm(Rax, sampled_mode),
 		Emit.store(Heap.mode_place, Rax),
 		Emit.mark("runtime_heap_moded"),
 		Emit.call("runtime_gc_threshold"),
@@ -357,14 +371,28 @@ mark_bit = 0x800000000000
 asked_shift : U8
 asked_shift = 17
 
-## The mode of the torture tier.
+## The modes of the torture tier: a collection at every allocation, and one
+## each time `sample_bytes` more are taken.
 torture_mode : I64
 torture_mode = 3
+
+sampled_mode : I64
+sampled_mode = 4
+
+## The bytes taken between two collections in the sampled mode: a page's
+## worth of blocks.
+sample_bytes : I64
+sample_bytes = page_size
 
 ## The threshold's floor: a program that keeps little collects once this
 ## many bytes are taken since the last collection.
 least_threshold : I64
 least_threshold = 8 * 1024 * 1024
+
+## How many times the live bytes the last collection found the threshold is,
+## when that passes `least_threshold`.
+growth : I64
+growth = 2
 
 ## A page's size, and the bits an address within one takes.
 page_size : I64
@@ -400,8 +428,8 @@ large_rest = 0x81
 ## since the last collection with those it found live, the threshold, the
 ## live bytes the last collection found, the first free pages' run, the
 ## sweep's run being made and its pages, the collections run, the most
-## pages reached, the walk's free blocks and free pages, and the stack's
-## base.
+## pages reached, the walk's free blocks and free pages, the stack's base
+## and the blocks allocated.
 next_page_place : X86.Mem
 next_page_place = Emit.mem(R15, 0)
 
@@ -441,7 +469,7 @@ stack_base_place = Emit.mem(R15, 136)
 ## Each class's 32 bytes: its next block (0), its block size (8) and its
 ## free list's first block (16).
 classes_place : I64
-classes_place = 144
+classes_place = 152
 
 class_bytes : I64
 class_bytes = 32
@@ -513,15 +541,17 @@ page_number_items = |{ to, from }| [
 	Emit.shr(to, page_bits),
 ]
 
-## The threshold the bytes taken must pass for a collection: twice the
-## live bytes the last collection found (0 before one), at least
-## `least_threshold`; 0 in the torture tier, so every allocation collects:
+## The threshold the bytes taken must pass for a collection: `growth` times
+## the live bytes the last collection found (0 before one), at least
+## `least_threshold`; in the torture tier 0, so every allocation collects,
+## or in its sampled mode the live bytes and `sample_bytes`:
 ## `runtime_gc_threshold`. It changes `rax` and `rcx`.
 threshold_items : List(Assembly.Statement)
 threshold_items = [
 	Emit.mark("runtime_gc_threshold"),
 	Emit.load(Rax, live_place),
-	Emit.plus(Rax, Rax),
+	Emit.imm(Rcx, growth),
+	Instruction(Imul({ to: Rax, from: Rcx })),
 	Emit.imm(Rcx, least_threshold),
 	Emit.cmp(Rax, Rcx),
 	Emit.jcc(Ae, "runtime_gc_threshold_floored"),
@@ -529,8 +559,13 @@ threshold_items = [
 	Emit.mark("runtime_gc_threshold_floored"),
 	Emit.load(Rcx, Heap.mode_place),
 	Emit.cmp_imm(Rcx, torture_mode),
-	Emit.jcc(Ne, "runtime_gc_threshold_set"),
+	Emit.jcc(B, "runtime_gc_threshold_set"),
+	Emit.jcc(Ne, "runtime_gc_threshold_sampled"),
 	Emit.zero(Rax),
+	Emit.jmp("runtime_gc_threshold_set"),
+	Emit.mark("runtime_gc_threshold_sampled"),
+	Emit.load(Rax, live_place),
+	Emit.plus_imm(Rax, sample_bytes),
 	Emit.mark("runtime_gc_threshold_set"),
 	Emit.store(threshold_place, Rax),
 	Emit.ret,
@@ -563,6 +598,9 @@ allocate_items = [
 	Emit.mark("runtime_allocate_kind"),
 	Emit.save(Rcx),
 	Emit.save(Rdx),
+	Emit.load(Rdx, Heap.allocations_place),
+	Emit.plus_imm(Rdx, 1),
+	Emit.store(Heap.allocations_place, Rdx),
 	Emit.plus_imm(Rdi, 7),
 	Emit.bit_and_imm(Rdi, -8),
 	Emit.lea(Rcx, Emit.mem(Rdi, 7)),
@@ -885,7 +923,7 @@ collect_items = {
 			Emit.call("runtime_gc_sweep"),
 			Emit.load(Rax, Heap.mode_place),
 			Emit.cmp_imm(Rax, torture_mode),
-			Emit.jcc(Ne, "runtime_gc_walked"),
+			Emit.jcc(B, "runtime_gc_walked"),
 			Emit.call(Heap.walk),
 			Emit.mark("runtime_gc_walked"),
 		],
@@ -1522,7 +1560,7 @@ expect Heap.kinds.map(Heap.kind_code) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
 expect word_bits("heapwalk") == 0x6b6c617770616568
 # The state's places fit before the first page's room, and every
 # displacement past `r15` fits 32 bits.
-expect state_size == 144 + 32 * 12 + 32768
+expect state_size == 152 + 32 * 12 + 32768
 # A header's bytes asked lie below its mark: the heap holds no block of
 # 2^47 bytes.
 expect Heap.mapped_size < mark_bit

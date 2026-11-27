@@ -26,13 +26,15 @@
 --     run the same way, and the ones that print what node prints must be
 --     exactly those x86/corpus.txt lists, one a line: a program that stops
 --     matching fails, and so does one that starts to, until the list (and
---     the commit that moves it) says so.
+--     the commit that moves it) says so; and four of them are held to
+--     their `heapstat` lines too (HEAP_HELD, below).
 -- Each executable runs with `heapwalk` (HEAP_WALK, below), which checks every
 -- block's header in its heap at its exit and at a stop, and again with
 -- `gcalways` (TORTURE, below), the torture tier: a collection at every
 -- allocation, each followed by the walk, so a root the collector misses or a
 -- pointer its trace skips frees a block still in use, and the output stops
--- being node's.
+-- being node's. A program of TORTURE_SAMPLED runs with `gcsample` there
+-- instead: a collection each time 64 KiB more of the heap are taken.
 -- Nothing is skipped: the run fails unless every program passes, and a
 -- folder with no program in it fails too.
 --
@@ -56,12 +58,22 @@ const HEAP_WALK = "heapwalk"
 -- And again with this one: the collector runs at every allocation, and the
 -- heap is walked after each collection.
 const TORTURE = "gcalways"
--- The programs too big for it: a collection at each of join.js's 420,000
--- allocations, over a heap of 335 pages, takes minutes. Each is still held
--- to node with HEAP_WALK, and collects there as its heap grows.
--- The SAT race at its small size makes millions of allocations too, and
--- collecting at each runs past the timeout.
-const TORTURE_SKIPPED = {"x86/tests/join.js", "x86/satrace/sat.js"}
+-- The programs too big for it, which run with SAMPLED instead: a collection
+-- at each of join.js's 620,000 allocations, over a heap of 335 pages, takes
+-- minutes, and the SAT race's 270,000 at its small size, over 329 pages,
+-- run past the timeout.
+const SAMPLED = "gcsample"
+const TORTURE_SAMPLED = {"x86/tests/join.js", "x86/satrace/sat.js"}
+-- The heapstat lines of four corpus programs that make garbage, held
+-- exactly: what each allocates, collects and keeps live to its exit
+-- (x86/COLLECTOR.md, "Lane 3", reads them beside the interpreter's). A
+-- commit that moves one says why.
+const HEAP_HELD = {
+  ["33-string-append.js"] = "heap: 96 allocations, 0 collections, 4 pages at most; live at the exit: 13 blocks, 296 bytes asked, 464 bytes in blocks, 3 pages",
+  ["55-garbage.js"] = "heap: 9077 allocations, 0 collections, 17 pages at most; live at the exit: 74 blocks, 4424 bytes asked, 5824 bytes in blocks, 6 pages",
+  ["57-map-set-churn.js"] = "heap: 50646 allocations, 0 collections, 57 pages at most; live at the exit: 51 blocks, 266504 bytes asked, 400896 bytes in blocks, 15 pages",
+  ["60-many-instances.js"] = "heap: 14160 allocations, 0 collections, 28 pages at most; live at the exit: 191 blocks, 16008 bytes asked, 23840 bytes in blocks, 11 pages",
+}
 -- The races held here, each at a small size: its file, and the `const` line
 -- the copy sets. The SAT race's small workload restarts and reduces once
 -- (hole7), so its executable runs every part of the solver, in about 2 s.
@@ -105,10 +117,11 @@ function held_to_node(exe, dir, js_path, copy?)
   if n.code ~= 0 then return "node exited " .. n.code .. ": " .. trim(n.out) end
   if r.ended ~= "exit" or r.code ~= 0 then return "the executable ended " .. r.ended .. " " .. r.code .. ": " .. trim(r.out) end
   if r.out ~= n.out then return "it printed " .. json_write(r.out) .. ", node " .. json_write(n.out) end
-  if has_item(TORTURE_SKIPPED, js_path) then return nil end
-  local t = executable_run(path, TORTURE)
-  if t.ended ~= "exit" or t.code ~= 0 then return "with " .. TORTURE .. ", the executable ended " .. t.ended .. " " .. t.code .. ": " .. trim(t.out) end
-  if t.out ~= n.out then return "with " .. TORTURE .. ", it printed " .. json_write(t.out) .. ", node " .. json_write(n.out) end
+  local mode = TORTURE
+  if has_item(TORTURE_SAMPLED, js_path) then mode = SAMPLED end
+  local t = executable_run(path, mode)
+  if t.ended ~= "exit" or t.code ~= 0 then return "with " .. mode .. ", the executable ended " .. t.ended .. " " .. t.code .. ": " .. trim(t.out) end
+  if t.out ~= n.out then return "with " .. mode .. ", it printed " .. json_write(t.out) .. ", node " .. json_write(n.out) end
   return nil
 end
 
@@ -183,6 +196,10 @@ function corpus_check(exe, dir)
     local why = held_to_node(exe, dir, p)
     yield()
     local name = basename(p)
+    if why == nil and has_key(HEAP_HELD, name) then
+      local s = lines(trim(executable_run(executable_path(dir, p), "heapstat").out))
+      if s[#s] ~= HEAP_HELD[name] then why = "its heapstat line is " .. json_write(s[#s]) .. ", HEAP_HELD holds " .. json_write(HEAP_HELD[name]) end
+    end
     if why == nil then
       push(matched, name)
       if not has_key(listed_set, name) then push(wrong, p .. ": it matches node, and " .. CORPUS .. " doesn't list it") end
@@ -246,7 +263,7 @@ function main()
   local corpus = corpus_check(exe, dir)
   if #corpus.wrong > 0 and not REPORT then fail(WHO .. ": the corpus differs from " .. CORPUS .. ":\n" .. join(corpus.wrong, "\n")) end
   print("x86/programs: " .. inlined .. " across x86/tests/")
-  print("x86/programs: " .. TORTURE .. " held every program but " .. join(TORTURE_SKIPPED, ", ") .. " to node too")
+  print("x86/programs: " .. TORTURE .. " held every program to node too, " .. SAMPLED .. " in its place for " .. join(TORTURE_SAMPLED, ", "))
   print("x86/programs: " .. #held .. " programs and " .. #RACES .. " race at a small size printed what node prints, " .. #refused .. " came to their refusals, and " .. corpus.matched .. " of the corpus's " .. corpus.all .. " match node, held exactly to " .. CORPUS)
 end
 

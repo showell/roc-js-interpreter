@@ -603,10 +603,12 @@ output_items = [
 
 ## `runtime_heap_exit`: the heap walked at the exit when the program's first
 ## argument asked for it (`Heap.mode_place`), the mode cleared first so a
-## stop the walk makes doesn't walk again; with `heapstat`, its counts are
-## written after the program's own output, a line:
-## `heap: <n> blocks, <n> bytes asked, <n> bytes in blocks, <n> pages, <n>
-## pages at most, <n> collections`.
+## stop the walk makes doesn't walk again. With `heapstat`, a last
+## collection comes first, left out of the count, so the walk's blocks are
+## those still reached at the exit, and the counts are written after the
+## program's own output, a line: `heap: <n> allocations, <n> collections,
+## <n> pages at most; live at the exit: <n> blocks, <n> bytes asked, <n>
+## bytes in blocks, <n> pages`.
 heap_exit_items : List(Assembly.Statement)
 heap_exit_items = {
 	counted = |{ place, text }| [
@@ -628,6 +630,13 @@ heap_exit_items = {
 			Emit.zero(Rcx),
 			Emit.store(Heap.mode_place, Rcx),
 			Emit.save(Rax),
+			Emit.cmp_imm(Rax, 2),
+			Emit.jcc(Ne, "runtime_heap_exit_walk"),
+			Emit.call(Heap.collect),
+			Emit.load(Rax, Heap.collections_place),
+			Emit.minus_imm(Rax, 1),
+			Emit.store(Heap.collections_place, Rax),
+			Emit.mark("runtime_heap_exit_walk"),
 			Emit.call(Heap.walk),
 			Emit.restore(Rax),
 			Emit.cmp_imm(Rax, 2),
@@ -637,12 +646,13 @@ heap_exit_items = {
 			Emit.plus_imm(Rsi, 8),
 			Emit.call(write),
 		],
+		counted({ place: Heap.allocations_place, text: "runtime_text_heap_allocations" }),
+		counted({ place: Heap.collections_place, text: "runtime_text_heap_collections" }),
+		counted({ place: Heap.peak_place, text: "runtime_text_heap_peak" }),
 		counted({ place: Heap.blocks_place, text: "runtime_text_heap_blocks" }),
 		counted({ place: Heap.asked_place, text: "runtime_text_heap_asked" }),
 		counted({ place: Heap.held_place, text: "runtime_text_heap_held" }),
 		counted({ place: Heap.pages_place, text: "runtime_text_heap_pages" }),
-		counted({ place: Heap.peak_place, text: "runtime_text_heap_peak" }),
-		counted({ place: Heap.collections_place, text: "runtime_text_heap_collections" }),
 		[Emit.mark("runtime_heap_exit_done"), Emit.ret],
 	].join()
 }

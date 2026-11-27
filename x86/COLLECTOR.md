@@ -8,7 +8,7 @@ This is the agreed design for the compiled programs' garbage collector. Steve ac
 - a GC-torture tier in the gate, which collects at every allocation, at small sizes;
 - lane 1 starts on a quiet tree, not beside other compiler lanes.
 
-Lanes 1 and 2 are in (2026-11-27): headers and size-class pages, then the mark, the sweep and the torture tier; "Lane 1, as built" and "Lane 2, as built" at the end say what each is and what it cost. Trigger tuning (lane 3) and the book (lane 4) are not done yet.
+All four lanes are in (2026-11-27): headers and size-class pages, then the mark, the sweep and the torture tier, then the trigger's measurement and the book; "Lane 1, as built", "Lane 2, as built" and "Lane 3" at the end say what each is and what it cost.
 
 ## Why now
 
@@ -115,3 +115,70 @@ Fib, bank and fourteen never reach the threshold, so they pay only the allocator
 **Big daddy past 300 rounds** (this lane's executables, niced, the box loaded): 1,000 rounds 7.2 s wall, 5.5 s CPU, 499 collections; 3,000 rounds 25.5 s wall, 15.9 s CPU, 1,499 collections; 10,000 rounds, the race's full size, 58.9 s wall, 47.5 s CPU, 4,999 collections, its ledgers node's (LEDGERS["10000"]). Each held at most 135 pages (8.8 MB): about 5.5 ms of CPU a round at every size, so the collector's cost doesn't grow with the run.
 
 **For lane 3:** the floor (8 MiB) sets big daddy's pace, one collection about every two rounds while its live heap is about 5 MB; the doubling rule alone would collect more often. A collection's sweep visits every block of every page, so its cost follows the heap's pages, not the live bytes; a page's free blocks could be swept lazily, at its allocation. Pages wholly free are kept, not given back to the kernel (`madvise`); the peak is small enough now that it hasn't mattered. Runs of free pages coalesce only at a sweep.
+
+## Lane 3: the trigger, the register roots, the sampled torture and the counts (2026-11-27)
+
+`shale x86/collector.shale` is the measurement, re-runnable: each race compiled by one or more drivers (`drivers=label:path,...` on stdin, js-x86 executables; this tree's own unset), run niced and alternated under `/usr/bin/time`, the medians of wall time, CPU time and peak resident memory, node beside them with `node=1`, and each executable's `heapstat` line. The figures below are preliminary: two other lanes were running, and the load was 1.9 to 3.0.
+
+**The trigger.** The threshold is `max(growth × live, floor)` (`Heap.roc`'s `growth` and `least_threshold`). Six settings, each its own driver, big daddy run by each in turn. At 300 rounds, 5 runs each (load 2.6 to 3.0):
+
+| floor, growth | wall | CPU | peak RSS | collections | pages at most |
+|---|---|---|---|---|---|
+| 8 MiB, 2x | 2,899 ms | 1,435 ms | 8.8 MB | 149 | 135 |
+| 16 MiB, 2x | 2,874 ms | 1,383 ms | 17.3 MB | 73 | 265 |
+| 32 MiB, 2x | 2,958 ms | 1,432 ms | 33.9 MB | 36 | 519 |
+| 64 MiB, 2x | 2,996 ms | 1,491 ms | 67.5 MB | 18 | 1,031 |
+| 8 MiB, 3x | 2,932 ms | 1,425 ms | 8.8 MB | 149 | 135 |
+| 16 MiB, 4x | 2,957 ms | 1,440 ms | 17.3 MB | 73 | 265 |
+| node | 2,190 ms | 1,209 ms | 92.0 MB | | |
+
+At 10,000 rounds, the full size, 3 runs each (load 3.0 to 1.9; the wall times spread with the load, so CPU is the guide):
+
+| floor, growth | wall | CPU | peak RSS | collections | pages at most |
+|---|---|---|---|---|---|
+| 2 MiB, 2x | 56.3 s | 50.8 s | 3.3 MB | 22,534 | 50 |
+| 4 MiB, 2x | 92.3 s | 50.5 s | 4.6 MB | 10,261 | 71 |
+| 8 MiB, 2x | 73.9 s | 52.3 s | 8.8 MB | 4,999 | 135 |
+| 16 MiB, 2x | 50.8 s | 48.6 s | 17.3 MB | 2,462 | 265 |
+| 32 MiB, 2x | 57.4 s | 50.0 s | 34.1 MB | 1,218 | 521 |
+| 64 MiB, 2x | 50.2 s | 48.5 s | 67.6 MB | 606 | 1,032 |
+| node | 24.3 s | 21.6 s | 109.7 MB | | |
+
+- **CPU doesn't follow the floor.** From 2 to 64 MiB the CPU stays within 48.5 to 52.3 s, a spread of 8% with no order to it, while the collections fall 37-fold and the peak grows 20-fold. A collection's cost is its sweep, which visits every page, and its mark, which visits what is live; big daddy's live heap is under 2.7 MiB at every collection (8 MiB at 3x collects exactly as 8 MiB at 2x, so 3 × live never passed 8 MiB), so the mark is small, and the pages swept come to about the same in all: fewer collections each sweep proportionally more pages (149 × 135 is 20,115 and 18 × 1,031 is 18,558 at 300 rounds).
+- **The growth never binds on big daddy:** 3x and 4x collect as 2x with the same floor.
+- **The choice: keep 8 MiB and 2x.** A bigger floor buys nothing measurable and doubles the peak each step; a smaller one saves 4 to 5 MB at two to four times the collections, and each collection's fixed costs (the stack's scan, every page swept) grow with a program's stack and heap, which big daddy's are too small to show. At 8 MiB big daddy peaks at 8.8 MB, about a twelfth of node's 109.7 MB at the same size. The doubling stays the design's rule; `growth` is now a named constant beside the floor.
+- **Later, unmeasured:** a lazy sweep (a page's free blocks found when its class next needs one) and giving wholly free runs of pages back to the kernel (`madvise`). The peak RSS is already small, and the CPU shows no cost of the sweep that the floor moves, so neither is worth its code yet. Where the compiled day's 5 ms goes against node's 2.2 ms is the race's question (`x86/bigdaddy/README.md`): the collector's share is not separated from the program's here.
+
+**A register-only root: no program reaches one, and the plants say why.** Lane 2 left every register out of the scan and nothing failed. The reason is three rules, each of which keeps a copy of every live block on the stack at every allocation:
+
+1. **The compiled code keeps every value in its frame.** The lowering moves every value through its slot, Forwarding keeps every store and forgets every holding at a call, and Registers stores `r9` to `r11` and `rbx` to their places before every call (`Registers.roc`'s header, "What the frame still holds"). So at any call into the runtime, the program's values are on the stack.
+2. **The allocator pushes `rcx` and `rdx` before it may collect** (and `rsi` on its large path), so whatever those hold is a stack word at the collection.
+3. **A runtime routine pushes, or keeps in its frame, every block it holds across an allocation in another register,** with one exception: `runtime_items_of` (`LanguageRoutines.roc`), a string's characters made an array, holds the new array in `r11` while it allocates each character's string. It also holds the array's items' address, inside the same block, in `rdx`, which the allocator pushes.
+
+The plants, each run over x86/tests/ under `gcalways` and taken out (a scratch script, 66 programs, join.js aside):
+- **every register left out** (the scan starting past the 27 words pushed): 0 of 66 failed, as in lane 2;
+- **every register left out, and the allocator's pushed `rcx` and `rdx` too** (the scan starting 3 words further): 4 failed, collections.js, parameters.js and spreads.js stopping at the walk and coercion.js printing otherwise, each through `runtime_items_of`'s array;
+- **the allocator's `rcx` and `rdx` left out, the registers scanned:** 0 failed;
+- **the allocator's `rcx` and `rdx` left out, every register scanned but `r11`:** the same 4 failed.
+
+So the collector's pushed `r11` is a root that holds a live block, and the torture tier sees it go, but only once the allocator's copy of `rdx` is hidden too. No test can fail by dropping registers alone while rule 3 holds. A routine that kept a block in `rbx`, `rsi`, `r8` to `r11` or an xmm register alone across an allocation would be the first; `runtime_items_of` would be one if it indexed the array through `r11` and kept no `rdx`, and the tier would then hold the register scan. That change would shape the runtime toward a test, so it is left as a choice for Steve.
+
+**join.js and the SAT race under torture.** `gcsample`, a fourth mode, collects each time 64 KiB more are taken since the last collection (`Heap.sample_bytes`), with the walk after each, as `gcalways` does. x86/programs.shale runs TORTURE_SAMPLED's programs with it in `gcalways`'s place: join.js (620,174 allocations, 335 pages at most) in about 1.8 s of CPU, and the SAT race at its small size (267,792 allocations, 329 pages) in about 2.2 s. TORTURE_SKIPPED is gone: every program the gate runs is collected under one of the two.
+
+**The counts against the interpreter's.** `heapstat` now writes the allocations of the whole run and, after a last collection that it leaves out of the count, what is live at the exit: `heap: <n> allocations, <n> collections, <n> pages at most; live at the exit: <n> blocks, <n> bytes asked, <n> bytes in blocks, <n> pages`. `shale x86/collector.shale counts=1` sets it beside js-vm's `--counts` (its dev build: the steps, the heap's cells, the cells live at the end, the collections):
+
+| program | compiled: allocations, collections, live blocks at the exit | js-vm: cells, live at the end, collections |
+|---|---|---|
+| big daddy, 30 rounds | 1,470,541, 14, 1,029 | 2,118, 330, 252 |
+| 33-string-append | 96, 0, 13 | 61, 52, 0 |
+| 55-garbage | 9,077, 0, 74 | 1,099, 115, 25 |
+| 57-map-set-churn | 50,646, 0, 51 | 158, 74, 0 |
+| 60-many-instances | 14,160, 0, 191 | 1,024, 149, 7 |
+
+The two count different things, so neither number checks the other directly; each is plausible for its representation:
+- **A VM cell is an object, an instance, an array, a function, its environment, a captured variable's box, a Map, a Set, an iterator, an error, or one of the builtins** (`js/roc/Heap.roc`'s `Cell`); a string is a Roc value inside one, never a cell. A compiled block is any of the 13 kinds, strings first: every string made (each `String(n)`, each concatenation, each character) is a block, an array that grows is a record and then a list of items, an object a record, its entries and, from 8 keys, its table. So the compiled program allocates many more: big daddy's census writes and parses 200 lines of text a day.
+- **The VM's heap holds its library and every function made:** each builtin function and namespace (`Math`, `String.fromCharCode`) is a cell, and a function made is a `Fun` cell and an `Environment` cell. The compiled program's builtins are code, and a function known before the run sits in the read-only segment, no block. So 33-string-append, a few strings, keeps 52 cells live and 13 blocks.
+- **The VM's live count is exact; the compiled one is conservative,** every word of the stack that looks like a block's address counted. Both include what the program's globals still reach.
+- **The collections differ by the triggers:** the VM collects at twice what it kept and at least 1,024 cells (`Machine.roc`'s `is_collection_due`), so a program of a few thousand cells collects a few times; the compiled program first collects past 8 MiB, which these four corpus programs never take.
+
+Both are stable: each compiled line came out the same in 5 runs, the heap's address moving with each. x86/programs.shale holds the four corpus programs' lines exactly (HEAP_HELD).
