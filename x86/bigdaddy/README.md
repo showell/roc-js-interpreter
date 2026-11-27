@@ -60,7 +60,7 @@ I stopped there, so whatever lay past 4 was not known then. The guesses made the
 
 So the compiled day costs about 5 ms to node's warm 2.4 ms: about twice node, once node's start (about 0.13 s) is paid. At 30 rounds the start hides it. Which stage dominates is not measured yet.
 
-**What's next at the race's size is memory.** No collector runs, and a day allocates about 2 to 3.5 MB: 300 rounds fit the heap of 1 GiB, and past about 600 (600, 800, 1,000, 1,500 and 2,000 were tried on the split copy) the executable stops with `x86: out of memory: the heap of 1 GiB is full, and no collector runs yet`. 10,000 rounds would need some 20 to 35 GB. That is the collector's milestone, not a method or an instruction.
+**Memory was the race's wall until the collector** (x86/COLLECTOR.md, lane 2). A day allocates about 2 to 3.5 MB, and with no collector 300 rounds filled most of the heap and past about 600 the executable stopped, out of memory. With it, the race runs at its full size: 10,000 rounds print node's ledgers in about 47 s of CPU (2026-11-27, a loaded box), the heap never past 135 pages (8.8 MB), about one collection every two rounds.
 
 **54 compiles too** and stops where node prints its first fraction, the crow's 7.07 (milestone 4, number printing), so it stays out of the corpus (x86/README.md's table).
 

@@ -5,7 +5,7 @@
 -- one's whole run. check.shale does not run it: its numbers are timings.
 -- From the repository's root:
 --
---   shale x86/bigdaddy.shale                  # the file's own ROUNDS, 300, about 1.1 s under node (the heap holds about 600 until the collector lands)
+--   shale x86/bigdaddy.shale                  # the file's own ROUNDS, 300, about 1.1 s under node
 --   shale x86/bigdaddy.shale size=small       # 30 rounds, about 0.3 s under node, for tuning
 --   shale x86/bigdaddy.shale rounds=500       # any count of at least 1
 --   shale x86/bigdaddy.shale runs=5           # five runs of each in turn, and the medians
