@@ -208,7 +208,11 @@ versions_tried = |program, { lowered, inlined }| {
 		Ok(found) => found
 		Err(_) => return unversioned
 	}
-	known = { program, makers, statics: KnownFunctions.statics_of(program, makers) }
+	known = {
+		program,
+		makers,
+		statics: KnownFunctions.statics_of(program, makers),
+	}
 	var $cells = []
 	for index in 0..<program.codes.len() {
 		$cells = $cells.append(KnownFunctions.celled_slots(known, index))
@@ -218,7 +222,10 @@ versions_tried = |program, { lowered, inlined }| {
 	if versioning.loops == 0 {
 		return unversioned
 	}
-	match items_with_numbers(versioning.program, { arrays: lowered.rule, versions: versioning.versions }) {
+	match items_with_numbers(
+		versioning.program,
+		{ arrays: lowered.rule, versions: versioning.versions },
+	) {
 		Ok(again) => {
 			statements: again.statements,
 			inlined,
@@ -499,7 +506,11 @@ items_with_numbers = |program, { arrays, versions }| {
 						program_statements: $items,
 						tail_statements: literal_statements(literals).concat(closures),
 					})
-					Ok({ statements: posted.statements, posts: posted.way, heads: $heads })
+					Ok({
+						statements: posted.statements,
+						posts: posted.way,
+						heads: $heads,
+					})
 				}
 				Err(refused) => Err(refused)
 			}
@@ -1332,7 +1343,9 @@ code_walk = |context, { heads, doubted, demoted }| {
 											},
 										) {
 											Ok(done) => done
-											Err(refused) => return Ok(Halted({ refused, calls: $calls }))
+											Err(refused) => return Ok(
+												Halted({ refused, calls: $calls }),
+											)
 										}
 								}
 						}
@@ -1500,7 +1513,18 @@ versioned_items = |site, { instruction, state, demoted, pending }| {
 			match (versions.exits.get(site.at), instruction) {
 				(Ok(copies), Jump(skip)) => {
 					target = LoweringBasics.forward(site, skip)
-					Ok(exit_items(site, { state, copies, demoted, target, waiting: pending.get(target) }))
+					Ok(
+						exit_items(
+							site,
+							{
+								state,
+								copies,
+								demoted,
+								target,
+								waiting: pending.get(target),
+							},
+						),
+					)
 				}
 				(Ok(_), _) => crash "Lowering.versioned_items: an exit is a jump"
 				(Err(_), _) => Err(Unversioned)
@@ -1539,7 +1563,10 @@ guard_items = |site, { state, guard, demoted }| {
 					failed,
 				}),
 			)
-			$slots = $slots.set(to, Ready(int32_integer)) ?? crash "Lowering.guard_items: a fast slot"
+			$slots = $slots.set(
+				to,
+				Ready(int32_integer),
+			) ?? crash "Lowering.guard_items: a fast slot"
 		} else {
 			$items = $items.concat(
 				LoweringBasics.copy_items({
@@ -1560,7 +1587,10 @@ guard_items = |site, { state, guard, demoted }| {
 		$slots = $slots.set(to, held(from)) ?? crash "Lowering.guard_items: a fast slot"
 	}
 	{
-		statements: $items.concat([JmpTo(LoweringBasics.place_label(site.context, guard.fast)), Mark(failed)]),
+		statements: $items.concat([
+			JmpTo(LoweringBasics.place_label(site.context, guard.fast)),
+			Mark(failed),
+		]),
 		falls: Falls(state),
 		branch: Branch({ target: guard.fast, state: { ..state, slots: $slots } }),
 		result: GivesNothing,
@@ -1576,7 +1606,11 @@ int32_integer = Integer({ low: -2147483648, high: 2147483647 })
 ## isn't one. The double made back from its 32-bit integer has its bits only
 ## then: a value that is no number is a NaN to `cvttsd2si`, which gives
 ## 0x80000000, and -0 comes back as 0.
-int32_tested_items : { from : X86.Mem, to : X86.Mem, failed : Str } -> List(Assembly.Statement)
+int32_tested_items : {
+	from : X86.Mem,
+	to : X86.Mem,
+	failed : Str,
+} -> List(Assembly.Statement)
 int32_tested_items = |{ from, to, failed }| [
 	Emit.load(Rax, from),
 	Emit.to_xmm(Xmm0, Rax),
@@ -1627,7 +1661,9 @@ exit_items = |site, { state, copies, demoted, target, waiting }| {
 				$slots = $slots.set(to, Ready(Number)) ?? crash "Lowering.exit_items: a slot"
 			}
 			_ => {
-				$items = $items.concat(LoweringBasics.copy_items({ from: from_place, to: to_place }))
+				$items = $items.concat(
+					LoweringBasics.copy_items({ from: from_place, to: to_place }),
+				)
 				$slots = $slots.set(to, kind) ?? crash "Lowering.exit_items: a slot"
 			}
 		}
@@ -3989,8 +4025,14 @@ keeps_numbers = |source_lines| {
 		Ok(compiled) => compiled
 		Err(_) => crash "Lowering.keeps_numbers: a program that compiles"
 	}
-	plain = items_with_numbers(program, { arrays: AnyItems, versions: plain_versions_of(program) }) ?? crash "Lowering.keeps_numbers: it lowers"
-	match items_with_numbers(program, { arrays: NumberItems, versions: plain_versions_of(program) }) {
+	plain = items_with_numbers(
+		program,
+		{ arrays: AnyItems, versions: plain_versions_of(program) },
+	) ?? crash "Lowering.keeps_numbers: it lowers"
+	match items_with_numbers(
+		program,
+		{ arrays: NumberItems, versions: plain_versions_of(program) },
+	) {
 		Ok(items) => items.statements.len() != plain.statements.len()
 		Err(_) => False
 	}
@@ -4068,8 +4110,14 @@ keeps_integers = |source_lines| {
 		Ok(compiled) => compiled
 		Err(_) => crash "Lowering.keeps_integers: a program that compiles"
 	}
-	doubles = items_with_numbers(program, { arrays: NumberItems, versions: plain_versions_of(program) }) ?? crash "Lowering.keeps_integers: it lowers"
-	match items_with_numbers(program, { arrays: IntegerItems, versions: plain_versions_of(program) }) {
+	doubles = items_with_numbers(
+		program,
+		{ arrays: NumberItems, versions: plain_versions_of(program) },
+	) ?? crash "Lowering.keeps_integers: it lowers"
+	match items_with_numbers(
+		program,
+		{ arrays: IntegerItems, versions: plain_versions_of(program) },
+	) {
 		Ok(items) => items.statements.len() != doubles.statements.len()
 		Err(_) => False
 	}

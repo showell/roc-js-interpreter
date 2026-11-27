@@ -153,7 +153,16 @@ code_versioned = |code, { heads, cells, left }| {
 		inside_chosen = $chosen.any(|chosen| head >= chosen.head and back <= chosen.back)
 		size = back - head + 1
 		if !inside_chosen and $used + size <= budget {
-			match loop_choice(code, { head, back, heads, cells, frame: $frame }) {
+			match loop_choice(
+				code,
+				{
+					head,
+					back,
+					heads,
+					cells,
+					frame: $frame,
+				},
+			) {
 				Ok(chosen) => {
 					$chosen = $chosen.append(chosen)
 					$used = $used + size
@@ -164,7 +173,12 @@ code_versioned = |code, { heads, cells, left }| {
 		}
 	}
 	if $chosen.is_empty() {
-		return { code, versions: LoweringBasics.plain_versions, loops: 0, instructions: 0 }
+		return {
+			code,
+			versions: LoweringBasics.plain_versions,
+			loops: 0,
+			instructions: 0,
+		}
 	}
 	placed = placed_code(code, $chosen.sort_with(|a, b| place_order(a.head, b.head)))
 	{
@@ -230,15 +244,19 @@ loop_choice = |code, { head, back, heads, cells, frame }| {
 			return Err(NotVersioned)
 		}
 		crossing = match jump_target(instruction, at) {
-			Ok(target) => (inside(at) and target < head) or (!inside(at) and inside(target) and target != head)
+			Ok(target) => {
+				leaves_backwards = inside(at) and target < head
+				enters_inside = !inside(at) and inside(target) and target != head
+				leaves_backwards or enters_inside
+			}
 			Err(NoJump) => False
 		}
 		if crossing {
 			return Err(NotVersioned)
 		}
 	}
-	body = code.ops.sublist({ start: head, len: back - head + 1 })
-	written = written_slots(body)
+	body_instructions = code.ops.sublist({ start: head, len: back - head + 1 })
+	written = written_slots(body_instructions)
 	if written.any(|slot| cells.contains(slot)) {
 		return Err(NotVersioned)
 	}
@@ -247,7 +265,7 @@ loop_choice = |code, { head, back, heads, cells, frame }| {
 			Ok(Ready(kind)) => Ok(kind)
 			_ => Err(NotReady)
 		}
-	numeric = numeric_slots(body)
+	numeric = numeric_slots(body_instructions)
 	invariant = numeric.keep_if(
 		|slot|
 			!written.contains(slot) and !cells.contains(slot) and kind_at_head(slot) == Ok(Value),
@@ -258,7 +276,10 @@ loop_choice = |code, { head, back, heads, cells, frame }| {
 	counters = numeric.keep_if(
 		|slot| {
 			kind = kind_at_head(slot)
-			written.contains(slot) and read_first(body, slot) and (kind == Ok(Value) or kind == Ok(Number))
+			written.contains(slot) and read_first(
+				body_instructions,
+				slot,
+			) and (kind == Ok(Value) or kind == Ok(Number))
 		},
 	)
 	renamed_slots = written.concat(invariant)
@@ -285,9 +306,9 @@ is_copyable = |instruction|
 
 ## The slots the instructions write, each once, in the order first written.
 written_slots : List(Bytecode.Op) -> List(U64)
-written_slots = |body| {
+written_slots = |body_instructions| {
 	var $out = []
-	for instruction in body {
+	for instruction in body_instructions {
 		match written_slot(instruction) {
 			Ok(slot) =>
 				if !$out.contains(slot) {
@@ -311,8 +332,8 @@ written_slot = |instruction|
 ## Whether the first of the instructions that names `slot` reads it (so the
 ## loop reads what it held before it was entered), not writes it.
 read_first : List(Bytecode.Op), U64 -> Bool
-read_first = |body, slot| {
-	for instruction in body {
+read_first = |body_instructions, slot| {
+	for instruction in body_instructions {
 		match instruction {
 			LoadLocal(read) if read == slot => return True
 			UpdateLocal({ slot: stepped, step: _ }) if stepped == slot => return True
@@ -327,12 +348,12 @@ read_first = |body, slot| {
 ## The slots some `LoadLocal` of the instructions pushes a value that is
 ## used as a number (`is_numeric_use`), each once.
 numeric_slots : List(Bytecode.Op) -> List(U64)
-numeric_slots = |body| {
+numeric_slots = |body_instructions| {
 	var $out = []
-	for (instruction, at) in body.map_with_index(|instruction, at| (instruction, at)) {
+	for (instruction, at) in body_instructions.map_with_index(|instruction, at| (instruction, at)) {
 		match instruction {
 			LoadLocal(slot) =>
-				if !$out.contains(slot) and is_numeric_use(body, at) {
+				if !$out.contains(slot) and is_numeric_use(body_instructions, at) {
 					$out = $out.append(slot)
 				}
 			_ => {}
@@ -347,11 +368,11 @@ numeric_slots = |body| {
 ## index. Its depth below the top is followed through the pushes and the
 ## operators above it.
 is_numeric_use : List(Bytecode.Op), U64 -> Bool
-is_numeric_use = |body, at| {
+is_numeric_use = |body_instructions, at| {
 	var $above = 0
 	var $place = at + 1
-	while $place < body.len() {
-		instruction = body.get($place) ?? crash "Versioning.is_numeric_use: a place"
+	while $place < body_instructions.len() {
+		instruction = body_instructions.get($place) ?? crash "Versioning.is_numeric_use: a place"
 		match instruction {
 			Binary(operator, _) =>
 				if $above <= 1 {
@@ -537,7 +558,10 @@ moved_outside = |code, { placement, old }| {
 	instruction = code.ops.get(old) ?? crash "Versioning.moved_outside: a place"
 	at = placement.placed_at.get(old) ?? crash "Versioning.moved_outside: a placed place"
 	match jump_target(instruction, old) {
-		Ok(target) => jump_with_target(instruction, { at, target: landing_place(placement, target) })
+		Ok(target) => jump_with_target(
+			instruction,
+			{ at, target: landing_place(placement, target) },
+		)
 		Err(NoJump) => instruction
 	}
 }
@@ -570,7 +594,10 @@ moved_generic = |code, { placement, loop, old }| {
 			inner = placement.placed_at.get(target) ?? crash "Versioning.moved_generic: a target"
 			jump_with_target(instruction, { at, target: inner })
 		}
-		Ok(target) => jump_with_target(instruction, { at, target: landing_place(placement, target) })
+		Ok(target) => jump_with_target(
+			instruction,
+			{ at, target: landing_place(placement, target) },
+		)
 		Err(NoJump) => instruction
 	}
 }
