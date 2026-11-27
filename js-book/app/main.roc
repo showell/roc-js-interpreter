@@ -68,15 +68,22 @@ shot_html = |{ words, body }| {
 	} else if caption.is_empty() {
 		Refused("the shot `${words}` needs its caption as the fence's body")
 	} else {
-		Html("<figure class=\"shot\"><img src=\"shots/${words}.png\" alt=\"${caption}\" style=\"display: block; max-width: 100%; height: auto; margin: 0 auto;\"><figcaption>${caption}</figcaption></figure>")
+		img = "<img src=\"shots/${words}.png\" alt=\"${caption}\" style=\"${shot_style}\">"
+		Html("<figure class=\"shot\">${img}<figcaption>${caption}</figcaption></figure>")
 	}
 }
+
+## A shot's layout: as wide as the column allows, at most its own width, centered.
+shot_style : Str
+shot_style = "display: block; max-width: 100%; height: auto; margin: 0 auto;"
 
 ## Whether a shot's name is one word of lowercase letters, digits and dashes.
 is_shot_name : Str -> Bool
 is_shot_name = |name| {
 	bytes = name.to_utf8()
-	!bytes.is_empty() and bytes.all(|b| (b >= 'a' and b <= 'z') or (b >= '0' and b <= '9') or b == '-')
+	is_lower = |byte| byte >= 'a' and byte <= 'z'
+	is_digit = |byte| byte >= '0' and byte <= '9'
+	!bytes.is_empty() and bytes.all(|byte| is_lower(byte) or is_digit(byte) or byte == '-')
 }
 
 ## Where the pre-step leaves the drawings.
@@ -212,7 +219,11 @@ expect [
 	"js",
 	"",
 ].all(|language| colored_code({ language, code: "a < b" }) == Plain)
-expect shot_html({ words: "a-1", body: "A <b>\n" }) == Html("<figure class=\"shot\"><img src=\"shots/a-1.png\" alt=\"A &lt;b&gt;\" style=\"display: block; max-width: 100%; height: auto; margin: 0 auto;\"><figcaption>A &lt;b&gt;</figcaption></figure>")
+expect {
+	img = "<img src=\"shots/a-1.png\" alt=\"A &lt;b&gt;\" style=\"${shot_style}\">"
+	shot_html({ words: "a-1", body: "A <b>\n" })
+		== Html("<figure class=\"shot\">${img}<figcaption>A &lt;b&gt;</figcaption></figure>")
+}
 expect
 	[
 		{ words: "", body: "x" },
