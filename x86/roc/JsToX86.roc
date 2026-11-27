@@ -15,11 +15,22 @@ app [main!] { js: "../../js/roc/main.roc" }
 # turns the hex back into the file. A program the parser refuses, one the
 # bytecode compiler refuses, and one that uses what the lowering doesn't
 # compile yet each end with a line `js-x86: <why>` and exit 1.
+#
+#   js-x86 "<program>" stop=<phase>
+#
+# runs the compile only as far as one phase and prints one number of what
+# it made, for x86/buildtime.shale's phase profile (x86/buildrace/PROFILE.md):
+# the time of each phase is the difference of two such runs. The phases are
+# in `stopped_at`.
 import js.Compile
 import js.Parser
 import Assembly
 import Elf
+import Forwarding
+import Jumps
 import Lowering
+import Moves
+import RuntimeCode
 import X86
 
 main! = |arguments| {
@@ -27,12 +38,80 @@ main! = |arguments| {
 		(Ok(src), Err(_)) => write_program!(src)
 		(Ok(src), Ok("inlined")) => write_inlined!(src)
 		(Ok(src), Ok("labels")) => write_labels!(src)
+		(Ok(src), Ok(phase)) => write_stopped!(src, phase)
 		_ => {
-			echo!("usage: js-x86 \"<program>\" [inlined | labels]\n")
+			echo!("usage: js-x86 \"<program>\" [inlined | labels | stop=<phase>]\n")
 			Err(Exit(2))
 		}
 	}
 }
+
+## The line `<phase>: <number>` for a compile stopped after `phase`.
+write_stopped! : Str, Str => Try({}, [Exit(I8)])
+write_stopped! = |src, phase| {
+	match stopped_at(src, phase) {
+		Ok(number) => {
+			echo!("${phase}: ${number.to_str()}\n")
+			Ok({})
+		}
+		Err(why) => {
+			echo!("js-x86: ${why}\n")
+			Err(Exit(1))
+		}
+	}
+}
+
+## A compile run as far as `phase`, and a number of what that phase made
+## (so no phase's work can be left out as unused): `stop=start` does
+## nothing, `parse`, `compile`, `lower` (Lowering with its post-passes),
+## `assemble`, `elf` and `hex` each run the phases before them too. The
+## rest measure one piece: `runtime-assemble` encodes the runtime's fixed
+## statements alone, `runtime-posts` runs the post-passes over them alone,
+## and `jumps-again`, `forwarding-again`, `moves-again` and `posts-again`
+## lower the program and then run that post-pass (or all four, in
+## Lowering's order) over its statements once more.
+stopped_at : Str, Str -> Try(U64, Str)
+stopped_at = |src, phase| {
+	match phase {
+		"stop=start" => Ok(0)
+		"stop=parse" => {
+			match Parser.program_of(src, Core) {
+				Ok(_) => Ok(1)
+				Err(fault) => Err(fault.why)
+			}
+		}
+		"stop=compile" => {
+			tree = Parser.program_of(src, Core).map_err(|fault| fault.why)?
+			program = Compile.program(tree).map_err(|Unsupported(why)| why)?
+			Ok(program.codes.len())
+		}
+		"stop=lower" => Ok(lowering_of(src)?.statements.len())
+		"stop=assemble" => Ok(assembled(lowering_of(src)?.statements)?.len())
+		"stop=elf" => Ok(Elf.executable(assembled(lowering_of(src)?.statements)?).len())
+		"stop=hex" => Ok(X86.hex_text(executable_of(src)?).count_utf8_bytes())
+		"stop=runtime-assemble" => Ok(assembled(RuntimeCode.items)?.len())
+		"stop=runtime-posts" => Ok(posts(RuntimeCode.items).len())
+		"stop=jumps-again" => Ok(Jumps.thread_jumps(lowering_of(src)?.statements).len())
+		"stop=forwarding-again" => Ok(Forwarding.forward_loads(lowering_of(src)?.statements).len())
+		"stop=moves-again" => Ok(Moves.trim_moves(lowering_of(src)?.statements).len())
+		"stop=posts-again" => Ok(posts(lowering_of(src)?.statements).len())
+		_ => Err("no phase ${phase}")
+	}
+}
+
+## Lowering's post-passes, in its order.
+posts : List(Assembly.Statement) -> List(Assembly.Statement)
+posts = |statements|
+	Jumps.thread_jumps(Moves.trim_moves(Forwarding.forward_loads(Jumps.thread_jumps(statements))))
+
+## The code for `statements`, or why it has none.
+assembled : List(Assembly.Statement) -> Try(List(U8), Str)
+assembled = |statements|
+	match Assembly.assemble(statements) {
+		Ok(code) => Ok(code)
+		Err(UnknownLabel(label)) => Err("no label ${label}")
+		Err(DuplicateLabel(label)) => Err("the label ${label} is marked twice")
+	}
 
 write_program! : Str => Try({}, [Exit(I8)])
 write_program! = |src| {
@@ -99,11 +178,7 @@ write_labels! = |src| {
 executable_of : Str -> Try(List(U8), Str)
 executable_of = |src| {
 	lowered = lowering_of(src)?
-	match Assembly.assemble(lowered.statements) {
-		Ok(code) => Ok(Elf.executable(code))
-		Err(UnknownLabel(label)) => Err("no label ${label}")
-		Err(DuplicateLabel(label)) => Err("the label ${label} is marked twice")
-	}
+	Ok(Elf.executable(assembled(lowered.statements)?))
 }
 
 ## A program's lowering, or why it has none.

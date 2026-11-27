@@ -1,0 +1,241 @@
+-- budget: steps=2000000000 arena_bytes=1500000000 output_bytes=400000 changes=100000
+-- x86/buildtime.shale: where js-x86's build time goes, and whether a change
+-- to the compiler changed what it writes. x86/buildrace/PROFILE.md holds its
+-- results. From the repository's root:
+--
+--   shale x86/buildtime.shale                          # every part, this tree's release js-x86
+--   shale x86/buildtime.shale parts=phases runs=5
+--   shale x86/buildtime.shale parts=identity save=build:scratch/buildtime/base.tsv
+--   shale x86/buildtime.shale parts=identity against=build:scratch/buildtime/base.tsv
+--
+-- `exe=` is a js-x86 by its Shale path; unset, this tree's release build
+-- (the prelude's `built_roc`, made only when its cache holds none). The
+-- parts (`parts=`, any of these, all three unset):
+--
+-- - `phases`: each race (fib, bank, fourteen, big daddy, sat) compiled as far
+--   as each phase (js-x86's `stop=<phase>`, JsToX86.roc's `stopped_at`), and
+--   the whole compile, `runs` times each (5); the medians of CPU and wall
+--   time, and each phase's own CPU time, the difference from the phase
+--   before it. `start` is the process's start and exit alone.
+-- - `scaling`: a made-up program of N small functions, for N in `sizes`
+--   (25,50,100,200), each lowered (`stop=lower`) and compiled whole, so a
+--   phase whose time grows faster than the program shows.
+-- - `identity`: every program in x86/tests/, x86/tests/refused/, js/tests/
+--   and the five races compiled, its output's sha256 and exit code written to
+--   `save=` (a TSV), or held to `against=`'s, each one that differs named.
+--
+-- Everything runs niced (19), one program at a time, and each table says the
+-- load average before it, since other work on the box moves every number.
+
+use("./executables.shale")
+
+const WHO = "x86/buildtime.shale"
+const JS_X86_APP = "x86/roc/JsToX86.roc"
+
+const RACES = {
+  {name = "fib", js = "x86/race/fib_race.js"},
+  {name = "bank", js = "x86/bank/bank_race.js"},
+  {name = "fourteen", js = "x86/fourteen/fourteen.js"},
+  {name = "bigdaddy", js = "x86/bigdaddy/bigdaddy_race.js"},
+  {name = "sat", js = "x86/satrace/sat.js"},
+}
+
+-- The phases, in order: each runs the ones before it.
+const PHASES = {"start", "parse", "compile", "lower", "assemble", "elf", "hex"}
+
+-- The pieces, each timed on its own.
+const PIECES = {"runtime-assemble", "runtime-posts", "jumps-again", "forwarding-again", "moves-again", "posts-again"}
+
+function load_average()
+  local u = trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out)
+  local m = re_find(u, "load average: (.*)$")
+  if m == nil then return u end
+  return m.group
+end
+
+function median(list)
+  local sorted = {}
+  for x in list do push(sorted, x) end
+  sort(sorted)
+  return sorted[(#sorted + 1) // 2]
+end
+
+-- One run of the driver: its CPU and wall time, or a stop when it fails.
+function timed(exe, text, mode)
+  local argv = {exe, text}
+  if mode ~= "" then push(argv, mode) end
+  local r = run(argv, {timeout_ms = 120000, whole = 8000000, nice = 19, want = WANT_DRIVER})
+  if r.ended ~= "exit" or r.code ~= 0 then fail(WHO .. ": js-x86 " .. mode .. " failed: " .. sub(r.out, 1, 300)) end
+  return {cpu = r.cpu_ms, ms = r.ms}
+end
+
+-- `runs` runs: the medians of CPU and wall time.
+function medians(exe, text, mode, runs)
+  local cpu = {}
+  local ms = {}
+  for i = 1, runs do
+    local t = timed(exe, text, mode)
+    push(cpu, t.cpu)
+    push(ms, t.ms)
+  end
+  return {cpu = median(cpu), ms = median(ms)}
+end
+
+function part_phases(exe, runs)
+  print("")
+  print("## Phases (median of " .. runs .. ", ms), load " .. load_average())
+  print("")
+  local head = "| program |"
+  local rule = "|---|"
+  for p in PHASES do
+    head = head .. " " .. p .. " |"
+    rule = rule .. "---|"
+  end
+  head = head .. " whole (wall) |"
+  rule = rule .. "---|"
+  print("Each phase's own CPU time: the median CPU of a run stopped after it, less the one before.")
+  print("")
+  print(head)
+  print(rule)
+  local pieces = {}
+  for race in RACES do
+    local text = read(race.js)
+    local row = "| " .. race.name .. " |"
+    local before = 0
+    for p in PHASES do
+      local t = medians(exe, text, "stop=" .. p, runs)
+      if p == "start" then row = row .. " " .. t.cpu .. " |" else row = row .. " " .. (t.cpu - before) .. " |" end
+      before = t.cpu
+    end
+    local whole = medians(exe, text, "", runs)
+    row = row .. " " .. whole.cpu .. " (" .. whole.ms .. ") |"
+    print(row)
+    local prow = "| " .. race.name .. " |"
+    for p in PIECES do
+      local t = medians(exe, text, "stop=" .. p, runs)
+      prow = prow .. " " .. t.cpu .. " |"
+    end
+    push(pieces, prow)
+    yield()
+  end
+  print("")
+  print("The pieces, each a run's whole CPU time (start-up included):")
+  print("")
+  local phead = "| program |"
+  local prule = "|---|"
+  for p in PIECES do
+    phead = phead .. " " .. p .. " |"
+    prule = prule .. "---|"
+  end
+  print(phead)
+  print(prule)
+  for r in pieces do print(r) end
+  print("load after: " .. load_average())
+  return nil
+end
+
+-- A made-up program of `n` small functions, each calling the one before:
+-- the same shape at every size, so its time grows with `n` alone.
+function made_program(n)
+  local parts = {}
+  push(parts, "function f0(x) { return x + 1; }")
+  for i = 1, n do
+    local prev = "f" .. (i - 1)
+    push(parts, "function f" .. i .. "(x) {\n  let total = 0;\n  for (let k = 0; k < 3; k++) {\n    if (x > k) { total = total + " .. prev .. "(x - k) * 2; } else { total = total - k; }\n  }\n  const label = \"f" .. i .. ":\" + total;\n  return label.length + total;\n}")
+  end
+  push(parts, "console.log(f" .. n .. "(4));")
+  return join(parts, "\n")
+end
+
+function part_scaling(exe, runs, sizes)
+  print("")
+  print("## Scaling (median of " .. runs .. " CPU ms), load " .. load_average())
+  print("")
+  print("| functions | source bytes | start | lower | whole | lower per function |")
+  print("|---|---|---|---|---|---|")
+  for n in sizes do
+    local text = made_program(n)
+    local start = medians(exe, text, "stop=start", runs)
+    local lower = medians(exe, text, "stop=lower", runs)
+    local whole = medians(exe, text, "", runs)
+    print("| " .. n .. " | " .. #text .. " | " .. start.cpu .. " | " .. lower.cpu .. " | " .. whole.cpu .. " | " .. ((lower.cpu - start.cpu) * 1000 // n) .. " µs |")
+  end
+  print("load after: " .. load_average())
+  return nil
+end
+
+function identity_programs()
+  local out = {}
+  for p in glob("x86/tests/*.js") do push(out, p) end
+  for p in glob("x86/tests/refused/*.js") do push(out, p) end
+  for p in glob("js/tests/*.js") do push(out, p) end
+  for r in RACES do push(out, r.js) end
+  return out
+end
+
+function sha256(text)
+  local r = must(run({"sha256sum"}, {stdin = text, timeout_ms = 60000, tail = 2}))
+  return sub(trim(r.out), 1, 64)
+end
+
+function part_identity(exe, save, against)
+  print("")
+  print("## Identity, load " .. load_average())
+  local rows = {}
+  local made = 0
+  for p in identity_programs() do
+    local r = driver_run(exe, read(p))
+    if r.code == 0 then made = made + 1 end
+    push(rows, p .. "\t" .. r.code .. "\t" .. sha256(r.out))
+    yield()
+  end
+  local text = join(rows, "\n") .. "\n"
+  print(#rows .. " programs, " .. made .. " compiled to an executable, " .. (#rows - made) .. " refused")
+  if save ~= "" then
+    mkdir(dirname(save))
+    if exists(save) then remove(save) end
+    create(save, text)
+    print("saved " .. save)
+  end
+  if against ~= "" then
+    local want = {}
+    for l in lines(read(against)) do
+      local f = split(l, "\t")
+      if #f == 3 then want[f[1]] = f[2] .. "\t" .. f[3] end
+    end
+    local differ = 0
+    for l in rows do
+      local f = split(l, "\t")
+      local got = f[2] .. "\t" .. f[3]
+      if get(want, f[1], "") ~= got then
+        differ = differ + 1
+        print("DIFFERS " .. f[1])
+      end
+    end
+    print(differ .. " of " .. #rows .. " differ from " .. against)
+    if differ > 0 then fail(WHO .. ": " .. differ .. " programs' output moved") end
+  end
+  return nil
+end
+
+function main()
+  local parts = set_of(split(arg("parts", "phases,scaling,identity"), ","))
+  for p in keys(parts) do
+    if not has_item({"phases", "scaling", "identity"}, p) then fail(WHO .. ": parts= is phases, scaling or identity, not " .. p) end
+  end
+  local runs = arg("runs", 5)
+  local given = arg("exe", "")
+  local exe = ""
+  if given == "" then exe = built_roc(WHO, JS_X86_APP, "js-x86", "speed") else exe = real(given) end
+  print("# js-x86 build time: " .. exe .. "; load " .. load_average())
+  if has_key(parts, "phases") then part_phases(exe, runs) end
+  if has_key(parts, "scaling") then
+    local sizes = {}
+    for s in split(arg("sizes", "25,50,100,200"), ",") do push(sizes, tonumber(s)) end
+    part_scaling(exe, runs, sizes)
+  end
+  if has_key(parts, "identity") then part_identity(exe, arg("save", ""), arg("against", "")) end
+  return nil
+end
+
+main()
