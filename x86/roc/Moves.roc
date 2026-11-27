@@ -548,9 +548,13 @@ reverse_statements = |statements| {
 ## and any unnamed labels after it (kept later in the reversed list) kept.
 drop_last_instruction : List(Assembly.Statement) -> List(Assembly.Statement)
 drop_last_instruction = |kept| {
+	# `kept` is read only before `$rest` takes it, so `$rest` is its one
+	# owner and each `drop_last` is in place: a read of `kept` after would
+	# copy the walk's statements on every join (x86/buildrace/PROFILE.md).
+	walk = kept.len() + 1
 	var $marks = []
 	var $rest = kept
-	for _ in 0..<kept.len() {
+	for _ in 0..<walk {
 		match $rest.last() {
 			Ok(Instruction(_)) => {
 				return $rest.drop_last(1).concat(reverse_statements($marks))
@@ -560,11 +564,11 @@ drop_last_instruction = |kept| {
 				$rest = $rest.drop_last(1)
 			}
 			Err(_) => {
-				return kept
+				return reverse_statements($marks)
 			}
 		}
 	}
-	kept
+	crash "Moves.drop_last_instruction: the walk ends at an instruction or the start"
 }
 
 ## A copy from one whole register to another, by their units' numbers (an
