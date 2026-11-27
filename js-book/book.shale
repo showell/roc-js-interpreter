@@ -16,7 +16,11 @@
 -- (book_builder/tools/draw_diagrams.shale) into build/prepared/, as
 -- diagram-N.dot and diagram-N.svg, where the app reads them. It also writes
 -- the appendix's listings there from js/'s folders (write_listings, below),
--- so a new sample or test is in the book at its next build.
+-- so a new sample or test is in the book at its next build, and each
+-- console sample's output, as js-vm's dev build prints it then. The pictures
+-- the manuscript's ```shot fences name come from js-book/shots/ (taken by
+-- js-book/canvas_shots.mjs, checked in): each named one must be there, and
+-- each one there must be named, and they go beside the pages.
 --
 -- Then the book builder's tools/build_book.shale runs the app's expects, held
 -- to exactly APP_TESTS, builds the app into book_builder/zig-out/js-book, on
@@ -34,6 +38,9 @@ const PREPARED = "js-book/build/prepared"
 const OUT = "js-book/build/book"
 const REPORT = "js-book/build/report.txt"
 const SHOTS = "js-book/build/shots"
+const PICTURES = "js-book/shots"
+const GITHUB = "https://github.com/showell/roc-js-interpreter/blob/master/"
+const VM_WANT = "js-vm: each console sample's output for the appendix"
 const NEXT = "build:roc-apps/next"
 const DEST_NAME = "js-book"
 const STAGED_NAME = "js-book.staging"
@@ -43,7 +50,7 @@ const DRAW = "book_builder/tools/draw_diagrams.shale"
 const MOVE = "book_builder/tools/move_stage.shale"
 const CHECKER = "book_builder/tools/book_check.mjs"
 const BUILD = "book_builder/tools/build_book.shale"
-const APP_TESTS = 5
+const APP_TESTS = 7
 const DOT_WANT = "graphviz: a book's diagrams, drawn at build time"
 const CHECK_WANT = "script: book_check.mjs drives the staged pages in headless Chromium"
 
@@ -81,27 +88,76 @@ function titled_sections(folder)
   return sections
 end
 
+-- A console sample's section, then what js-vm (`exe`) prints for it, its
+-- exit code said when it isn't 0.
+function printed_section(exe, file)
+  local first = lines(read(file))[1]
+  local r = run({exe, read(file)}, {timeout_ms = 30000, whole = 200000, want = VM_WANT})
+  if r.ended ~= "exit" then fail("book: js-vm on " .. file .. " ended by " .. r.ended) end
+  local said = "What js-vm prints"
+  if r.code ~= 0 then said = said .. ", then exits " .. r.code end
+  return sample_section(sub(first, 4, #first), file) .. "\n```text " .. said .. "\n" .. trim(r.out) .. "\n```\n"
+end
+
 -- Writes listing-samples.md, listing-corpus.md and listing-refused.md, the
 -- lines the app puts in place of the manuscript's `{{listing NAME}}` lines:
 -- every sample the playground offers, in the page's order, each titled by
--- its first line as js/build.shale titles it; then every program of
--- js/tests/ and of js/tests/refused/. Each file is quoted by the builder's
--- own include, so the book quotes it as it stands.
-function write_listings()
+-- its first line as js/build.shale titles it, each console sample followed
+-- by what js-vm prints for it; then a table of the programs of js/tests/,
+-- each linked to its file, and the refused programs of js/tests/refused/
+-- with the message each must end with (its first line). Each sample is quoted
+-- by the builder's own include, so the book quotes it as it stands.
+function write_listings(exe)
   if not contains(read("js/web/js_page.js"), PAGE_ORDER) then fail("book: js/web/js_page.js no longer lists its samples in the order write_listings follows") end
   local canvas = titled_sections("js/canvas")
   local samples = {canvas[1]}
   for s in featured_samples() do push(samples, sample_section(s.title, s.file)) end
   for s in drop(canvas, 1) do push(samples, s) end
-  for s in titled_sections("js/console") do push(samples, s) end
+  for f in glob("js/console/*.js") do push(samples, printed_section(exe, f)) end
   create(PREPARED .. "/listing-samples.md", join(samples, "\n"))
-  local corpus = {}
-  for f in glob("js/tests/*.js") do push(corpus, "{{file " .. f .. "}}\n") end
-  create(PREPARED .. "/listing-corpus.md", join(corpus, "\n"))
-  local refused = {}
-  for f in glob("js/tests/refused/*.js") do push(refused, "{{file " .. f .. "}}\n") end
-  create(PREPARED .. "/listing-refused.md", join(refused, "\n"))
-  print("book: the appendix lists " .. #samples .. " samples, " .. #corpus .. " programs and " .. #refused .. " refused")
+  local corpus = {"| program | lines |", "|---|---|"}
+  for f in glob("js/tests/*.js") do push(corpus, "| [" .. basename(f) .. "](" .. GITHUB .. f .. ") | " .. count_lines(f) .. " |") end
+  create(PREPARED .. "/listing-corpus.md", join(corpus, "\n") .. "\n")
+  local refused = {"```text The refused programs, each with its message"}
+  local count = 0
+  for f in glob("js/tests/refused/*.js") do
+    local m = re_find(lines(read(f))[1], "^// refused: (.+)$")
+    if m == nil then fail("book: " .. f .. " has no first line `// refused: <message>`") end
+    push(refused, basename(f) .. "\n    " .. m.group)
+    count = count + 1
+  end
+  push(refused, "```")
+  create(PREPARED .. "/listing-refused.md", join(refused, "\n") .. "\n")
+  print("book: the appendix lists " .. #samples .. " samples, " .. (#corpus - 2) .. " programs and " .. count .. " refused")
+end
+
+-- The names of the manuscript's ```shot fences.
+function shots_named()
+  local names = {}
+  for m in re_find_all(read(SOURCE), "\n```shot ([a-z0-9-]+)\n") do push(names, m.group) end
+  return names
+end
+
+-- Every picture the manuscript names, put in `out`'s shots/, after each is
+-- held to js-book/shots/: a name with no file, or a file no fence names,
+-- stops the build.
+function pictures_placed(out)
+  local named = shots_named()
+  local wrong = {}
+  for n in named do
+    if not exists(PICTURES .. "/" .. n .. ".png") then push(wrong, n .. ": named by a ```shot fence, with no " .. PICTURES .. "/" .. n .. ".png") end
+  end
+  for f in glob(PICTURES .. "/*") do
+    if not has_item(named, sub(basename(f), 1, #basename(f) - 4)) then push(wrong, f .. ": no ```shot fence names it") end
+  end
+  if #wrong > 0 then
+    for w in wrong do print("  " .. w) end
+    fail("book: the pictures and the manuscript disagree, so /" .. DEST_NAME .. "/ is left as it was")
+  end
+  mkdir(out .. "/shots")
+  for n in named do copy(PICTURES .. "/" .. n .. ".png", out .. "/shots/" .. n .. ".png") end
+  print("book: " .. #named .. " pictures of the playground")
+  return nil
 end
 
 -- Every commit the manuscript cites resolves: a short hash in backticks is
@@ -156,7 +212,7 @@ function main()
   check_citations()
   if exists(PREPARED) then remove_tree(PREPARED) end
   mkdir(PREPARED)
-  write_listings()
+  write_listings(built_roc("book", "js/roc/JsVm.roc", "js-vm", "dev"))
   local drawn = must(run({"shale", "--root", ".", DRAW, "source=" .. HERE .. "/" .. SOURCE, "prepared=" .. HERE .. "/" .. PREPARED}, {cwd = ROC_APPS, timeout_ms = 120000, tail = 20, want = DOT_WANT}))
   for l in lines(drawn.out) do
     if starts_with(l, "draw_diagrams: ") then print("book: " .. sub(l, 16) .. " in " .. drawn.ms .. " ms") end
@@ -175,6 +231,7 @@ function main()
     print(trim(built.out))
     fail("book: build_book.shale stopped, so /" .. DEST_NAME .. "/ is left as it was")
   end
+  pictures_placed(OUT)
   local staging = NEXT .. "/" .. STAGED_NAME
   if exists(staging) then remove_tree(staging) end
   copy(OUT, staging)

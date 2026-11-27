@@ -5,7 +5,9 @@
 ## Graphviz into `js-book/build/prepared/`, and this app reads the drawings
 ## through the platform, and a missing one stops the build, named. The
 ## pre-step also writes the appendix's listings there, which this app puts in
-## the manuscript before the builder reads it.
+## the manuscript before the builder reads it. A ```shot fence is a picture
+## of the playground from js-book/shots/, which the pre-step puts beside the
+## pages.
 app [main!] {
 	bb: "../../../roc-apps/book_builder/builder/main.roc",
 	pf: platform "../../../roc-apps/book_builder/platform/main.roc",
@@ -13,6 +15,7 @@ app [main!] {
 }
 
 import pf.Book
+import bb.BookText
 import bb.Builder
 import bb.Diagrams
 import bb.Fences
@@ -36,7 +39,7 @@ main! = |_folder| {
 	)?
 	manuscript = insert_listings!(found.manuscript)?
 	Builder.build!(
-		{ ..settings, fence_hooks: [Diagrams.hook(drawn)] },
+		{ ..settings, fence_hooks: [Diagrams.hook(drawn), shot_hook] },
 		|path|
 			if path == manuscript_path {
 				Ok(manuscript)
@@ -48,6 +51,33 @@ main! = |_folder| {
 
 manuscript_path : Str
 manuscript_path = "js-book/book.md"
+
+## The book's pictures of the playground. A fence ```shot NAME, its body the
+## picture's caption, is `NAME.png` of js-book/shots/ (js-book/canvas_shots.mjs
+## takes them), which book.shale copies beside the pages and holds to the
+## manuscript: every shot named has its file, and every file is named.
+shot_hook : Fences.Hook
+shot_hook = { language: "shot", html_of: shot_html }
+
+## A shot's figure, or why the build stops.
+shot_html : Fences.Fence -> [Html(Str), Refused(Str)]
+shot_html = |{ words, body }| {
+	caption = BookText.escaped_text(body.trim())
+	if !is_shot_name(words) {
+		Refused("a shot is named by lowercase letters, digits and dashes, not `${words}`")
+	} else if caption.is_empty() {
+		Refused("the shot `${words}` needs its caption as the fence's body")
+	} else {
+		Html("<figure class=\"shot\"><img src=\"shots/${words}.png\" alt=\"${caption}\" style=\"display: block; max-width: 100%; height: auto; margin: 0 auto;\"><figcaption>${caption}</figcaption></figure>")
+	}
+}
+
+## Whether a shot's name is one word of lowercase letters, digits and dashes.
+is_shot_name : Str -> Bool
+is_shot_name = |name| {
+	bytes = name.to_utf8()
+	!bytes.is_empty() and bytes.all(|b| (b >= 'a' and b <= 'z') or (b >= '0' and b <= '9') or b == '-')
+}
 
 ## Where the pre-step leaves the drawings.
 prepared_folder : Str
@@ -182,6 +212,21 @@ expect [
 	"js",
 	"",
 ].all(|language| colored_code({ language, code: "a < b" }) == Plain)
+expect shot_html({ words: "a-1", body: "A <b>\n" }) == Html("<figure class=\"shot\"><img src=\"shots/a-1.png\" alt=\"A &lt;b&gt;\" style=\"display: block; max-width: 100%; height: auto; margin: 0 auto;\"><figcaption>A &lt;b&gt;</figcaption></figure>")
+expect
+	[
+		{ words: "", body: "x" },
+		{ words: "A", body: "x" },
+		{ words: "a b", body: "x" },
+		{ words: "a/b", body: "x" },
+		{ words: "a", body: " \n" },
+	].all(
+		|fence|
+			match shot_html(fence) {
+				Refused(_) => Bool.True
+				Html(_) => Bool.False
+			},
+	)
 expect listing_of("{{listing corpus}}") == Ok("corpus")
 expect
 	[

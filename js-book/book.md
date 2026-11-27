@@ -303,7 +303,7 @@ The two NaNs the processor makes lie below every tag, so a value is a number exa
 
 ### The runtime
 
-Every executable carries the runtime, about 24 KB of machine code (`let x = 1;` compiled to 24,407 bytes on 2026-11-27, measured for this book with that day's js-x86, as `x86/README.md` records): the start, the allocator, buffered output, `console.log`'s writing of values as node writes them, the array methods, the Maps and Sets, and the timers. It is written in Roc too, as lists of `Assembly` statements, one instruction a line through the short builders of `Emit.roc`. Here is the allocator, from `Heap.roc`:
+Every executable carries the runtime, about 24 KB of machine code (`let x = 1;` compiles to 24,407 bytes, 2026-11-27, `x86/README.md`): the start, the allocator, buffered output, `console.log`'s writing of values as node writes them, the array methods, the Maps and Sets, and the timers. It is written in Roc too, as lists of `Assembly` statements, one instruction a line through the short builders of `Emit.roc`. Here is the allocator, from `Heap.roc`:
 
 {{function x86/roc/Heap.roc allocate_items}}
 
@@ -329,7 +329,7 @@ The executables beat `node file.js` on small programs, and most of that win is n
 
 ### Where the numbers come from
 
-Every number in this chapter is from `x86/BENCH.md` (`68f420b`), which `shale x86/bench.shale` measures; the one from `x86/README.md` says so. The timings stay outside `check.shale`, since the box is too noisy to gate on. They are one sample from one day, 2026-11-25, on the 2-core development box with node v22.23.2, and the book quotes them as recorded there. They were taken before the in-line paths of {{chapter What the compiler leaves to an optimizer}} (`17cb2b0`, `d6ecebd`), the integer kind and the register passes, and the four programs are unmeasured since. A rerun on a quiet box will replace the table; until then it is the record of 2026-11-25 and says nothing of the compiler since.
+Every number in this chapter is from `x86/BENCH.md` (`68f420b`), which `shale x86/bench.shale` measures; the one from `x86/README.md` says so. The timings stay outside `check.shale`, since the box is too noisy to gate on. They are one sample from one day, 2026-11-25, on the 2-core development box with node v22.23.2, and the book quotes them as recorded there. They were taken before the in-line paths of {{chapter What the compiler leaves to an optimizer}} (`17cb2b0`, `d6ecebd`), the integer kind and the register passes, and the four programs are unmeasured since. A rerun on a quiet box will replace the table; until then it is the record of 2026-11-25, and speaks for that day's compiler alone.
 
 Each program in `x86/bench/` defines `work(n)`:
 
@@ -470,6 +470,16 @@ Everything a run holds is one record, `Machine.Machine`, handed to each instruct
 
 The boxes in it are the subject of {{chapter Handing the machine on}}: each boxed part is one that most instructions leave alone.
 
+### Where its time goes
+
+The interpreter has yet to be profiled instruction by instruction. What is known, as of 2026-11-27:
+
+- Beside the compiler it is slow: at the small sizes of `x86/BENCH.md` the release VM takes 25 to 110 times the executable's time, and on fib(30), 1.6 million calls, about 220 times (`x86/README.md`).
+- Each instruction is a fetch, a match in `dispatch!` and a handler's call, and the handler copies the 248-byte machine record on the way in, with eight vector moves ({{chapter Handing the machine on}}). The one profile taken, `perf record` of fib's release build on 2026-11-24, found `memcpy` at 16% of the time with the record at 312 bytes, and absent at 248 (`js/README.md`).
+- Every instruction also passes the collector's check and the step count, and a property read or write searches the object's own properties, O(p) ({{chapter Memory strategy}}).
+
+Measuring further is left for later. `perf` is closed to an unprivileged user on the development box (`perf_event_paranoid` is 4, `x86/buildrace/PROFILE.md`), and the samplers that profiled the compiler's code there, one by ptrace and one built into the executables (`x86/satrace/TRIAGE.md`), have only been pointed at the compiler so far.
+
 ## A canvas in the browser
 
 ### What a program sees
@@ -487,9 +497,17 @@ That is the whole of it: a program draws, listens and waits, and the page's DOM,
 
 {{file js/canvas/7-click-dots.js}}
 
+```shot click-dots
+The click-dots sample after six clicks on its canvas (js-book/canvas_shots.mjs, 2026-11-27).
+```
+
 ### The page
 
-The page is `js/web/`. `js_page.js` makes everything the page shows, its styles included, so the HTML is only a door: an editor, the canvas and the console. `js_runner.js` loads `js.wasm`, the interpreter compiled from Roc, starts a program, then calls it a frame at a time, about 30 times a second. Each frame is a tick of the program's clock (`Vm.tick!`) that runs the clicks queued since the last tick, the timers due and `frame(t)`. `js_painter.js` paints each effect's line on a 2D canvas as it arrives, and the browser shows the canvas when the frame's call returns. The page's JavaScript only loads, ticks and paints; the program itself runs in the wasm.
+The page is `js/web/`. `js_page.js` makes everything the page shows, its styles included, so the HTML is only a door: an editor, the canvas and the console. `js_runner.js` loads `js.wasm`, the interpreter compiled from Roc, starts a program, then calls it a frame at a time, about 30 times a second. Each frame is a tick of the program's clock (`Vm.tick!`) that runs the clicks queued since the last tick, the timers due and `frame(t)`. `js_painter.js` paints each effect's line on a 2D canvas as it arrives, and the browser shows the canvas when the frame's call returns. The page's JavaScript only loads, ticks and paints; the program itself runs in the wasm. What reaches the canvas is the program's drawing alone, as here for the fractal tree sample:
+
+```shot fractal-tree
+The fractal tree sample's canvas, each branch two smaller ones (js-book/canvas_shots.mjs, 2026-11-27).
+```
 
 One frame on the page
 ```dot
@@ -718,7 +736,12 @@ Between two instructions every value the program holds is in the machine. The on
 
 ### Garbage you can watch
 
-Two samples show the collector at work. `js/tests/55-garbage.js` makes 1,800 short-lived pieces, an object, an array and a closure each, in 12 rounds, so the memory view's sawtooth shows its teeth; node holds it like every corpus program, and the page lists it third (`a57db770`). `onCollect(fn)` is a playground extra, like `onClick` and outside JavaScript: its handler hears each collection after the sweep, as an event that runs between instructions, as a timer does. Node keeps its own collector hidden from a program, so the canvas log `9-garbage-heard` holds that sample, in `js-canvas` and on the page (`aa391df8`). The handler sits in the boxed event queue, so a program that ignores `onCollect` pays one match inside each collection and runs every instruction as before.
+Two samples show the collector at work. `js/tests/55-garbage.js` makes 1,800 short-lived pieces, an object, an array and a closure each, in 12 rounds, so the memory view's sawtooth shows its teeth; node holds it like every corpus program, and the page lists it third (`a57db770`). Here is the memory view's top chart after one run on the page: the cells in use climb as the program allocates and drop at each collection, a dashed line, and the dots are what each collection kept.
+
+```shot garbage-memory
+The memory view's chart of the cells in use over one run of the garbage sample (js-book/canvas_shots.mjs, 2026-11-27).
+```
+ `onCollect(fn)` is a playground extra, like `onClick` and outside JavaScript: its handler hears each collection after the sweep, as an event that runs between instructions, as a timer does. Node keeps its own collector hidden from a program, so the canvas log `9-garbage-heard` holds that sample, in `js-canvas` and on the page (`aa391df8`). The handler sits in the boxed event queue, so a program that ignores `onCollect` pays one match inside each collection and runs every instruction as before.
 
 ### Two collectors, two worlds
 
@@ -860,7 +883,7 @@ The compiler's whole work is `executable_of`, from the program's text to the exe
 
 {{function x86/roc/JsToX86.roc executable_of}}
 
-Its type, `Str -> Try(List(U8), Str)`, has Roc's thin arrow: a pure function. Each stage it calls, through `lowering_of`, is pure too: `Parser.program_of`, `Compile.program`, `Lowering.program_lowering`, `Assembly.assemble` and `Elf.executable`. Across the 23,712 lines of `x86/roc/`, five definitions carry the `!` of an effect: `main!` and `write_program!` in each of the two drivers, `JsToX86.roc` and `Hello.roc`, which print the bytes, and `JsToX86.roc`'s `write_inlined!`, which prints the count of inlined calls (counted for this chapter on 2026-11-27).
+Its type, `Str -> Try(List(U8), Str)`, has Roc's thin arrow: a pure function. Each stage it calls, through `lowering_of`, is pure too: `Parser.program_of`, `Compile.program`, `Lowering.program_lowering`, `Assembly.assemble` and `Elf.executable`. Across the 25,708 lines of `x86/roc/`, seven definitions carry the `!` of an effect: `main!` and `write_program!` in each of the two drivers, `JsToX86.roc` and `Hello.roc`, which print the bytes, and three more in `JsToX86.roc` that print what a developer asks for: `write_inlined!` the count of inlined calls, `write_stopped!` a compile stopped at one phase, for timing it, and `write_labels!` each label's offset, for reading the code back (counted for this chapter on 2026-11-27).
 
 Who does the program's effects
 ```dot
@@ -921,6 +944,10 @@ At a helper's boundary the dev build keeps a call that owns its arguments, where
 
 ## Build times
 
+This chapter is about two kinds of build: Roc building the two programs, and js-x86 building a JavaScript program.
+
+### Roc building the interpreter
+
 RC1's release builds were the project's slowest loop, against under a second for a dev build of the same code (the message of roc-apps' tag `rc1-slow-release-build`). The walker's release build grew with the language:
 
 | the walker's release build | time | source |
@@ -949,6 +976,21 @@ The interpreter works RC1's release pipeline harder than most Roc projects do. J
 
 He put the three together at about 12 times faster for this repository's code specifically (Zulip, #off topic > LLVM). They are expected to merge after Roc 0.10, so every build time above is RC1's own.
 
+### js-x86 building a program, preliminary, as of 2026-11-27
+
+The compiler turns the question around: how long from a program's source to an executable on the disk? `x86/buildrace.shale` times js-x86 against `roc build` of the same race written in Roc, at `--opt=dev` and at `--opt=speed`, the build that makes the fast executable the races run (`x86/buildrace/README.md`). These numbers are preliminary: the box was shared with other lanes, and a run on a quiet box will replace them. They are wall times of warm runs at a load of 1.0 to 1.3, after the build-time fixes of 2026-11-27 (`x86/buildrace/PROFILE.md`, "The build race, before and after"):
+
+| race | js-x86 (its driver alone) | `--opt=dev`, cold / warm | `--opt=speed`, warm |
+|---|---|---|---|
+| fib | 63 ms (55) | 0.05 s / 0.03 s | 1.07 to 1.79 s |
+| bank | 94 ms (81) | 0.09 to 0.11 s / 0.03 s | 3.4 to 3.8 s |
+| fourteen | 44 ms (37) | 0.05 to 0.06 s / 0.02 to 0.03 s | 0.72 to 0.75 s |
+| big daddy | 454 ms (444) | - | - |
+
+js-x86 builds a race 15 to 50 times faster than `--opt=speed`, and is level with Roc's cold dev build; Roc's warm dev build is faster still. What the dev build makes is another thing: each of its executables is about 2.3 MB, against 32 to 180 KB at `--opt=speed`, and runs 10 to 25 times slower (`x86/RC2.md`). Big daddy, which has its race in JavaScript alone, shows the compile growing with the program.
+
+Almost all of js-x86's time is its lowering and the passes after it, and for a small race about 20 ms of its 40 to 50 go to passes over the runtime's own statements, which every program carries (`x86/buildrace/PROFILE.md`, "What is left"). js-x86 itself is built once by Roc's release build, in about 250 s of CPU under RC1 or RC2 (`x86/RC2.md`).
+
 ## How it is tested
 
 A check is trusted once it has been seen to fail. Each check below holds the code to a fixed answer, and each count is exact.
@@ -959,7 +1001,7 @@ A check is trusted once it has been seen to fail. Each check below holds the cod
 
 ### The compiler's checks
 
-`x86/programs.shale`, also a tier of `check.shale`, compiles each program in `x86/tests/` and holds what its executable prints, and its exit code, to node's; each program in `x86/tests/refused/` names the refusal `js-x86` must print or the line its executable must stop with. Then it holds the corpus to `x86/corpus.txt`, the list of programs whose executables match node, so a program that starts or stops matching fails the gate until the list moves. It holds the count of calls the inliner puts in line across `x86/tests/` exactly (its `INLINED`), and runs every executable with `heapwalk`, which checks every block's header at the exit (`x86/COLLECTOR.md`). `x86/hello.shale` runs the backend's 134 expects, the encoder's 119 among them, each holding one instruction's bytes, and `x86/fib.shale` the compiler's 225 (each script's `EXPECTS`, held exactly).
+`x86/programs.shale`, also a tier of `check.shale`, compiles each program in `x86/tests/` and holds what its executable prints, and its exit code, to node's; each program in `x86/tests/refused/` names the refusal `js-x86` must print or the line its executable must stop with. Then it holds the corpus to `x86/corpus.txt`, the list of programs whose executables match node, so a program that starts or stops matching fails the gate until the list moves. It holds the count of calls the inliner puts in line across `x86/tests/` exactly (its `INLINED`), and runs every executable with `heapwalk`, which checks every block's header at the exit (`x86/COLLECTOR.md`). `x86/hello.shale` runs the backend's 134 expects, the encoder's 119 among them, each holding one instruction's bytes, and `x86/fib.shale` the compiler's 230 (each script's `EXPECTS`, held exactly, as of 2026-11-27).
 
 ### Controls held exactly
 
@@ -1010,6 +1052,19 @@ The language itself is fairly complete: numbers, strings, arrays, objects, closu
 
 The parser refuses these forms, each with a message that names it: getters and setters, `#private` names, class fields, static blocks, computed method names, class expressions, `this` outside a class's code or in a static method, `super` misused, a constructor that returns a value, `extends` of anything but a class declared above, a class's name declared again or assigned, `new` on a program's own function, `var`, `in`, `eval`, regular expressions, async and modules. A run refuses `==` and the other coercions, and the rest of `js/README.md`'s list, "The subset", where only the run can see them.
 
+### The compiler
+
+The compiler runs the same subset less completely, and says where. A program it has yet to compile is refused by name before a byte is written; what only a value can decide stops the executable with a line `x86: ... is not compiled yet` and exit 1 (`x86/README.md`). As of 2026-11-27:
+
+- It matches node on 51 of the 63 corpus programs; {{chapter The compiler to x86-64}} gives the first reason each of the other 12 meets.
+- `console.log` writes a number only when it is an integer of at most 2^53, `NaN`, an infinity or -0. Fractions wait on milestone 4's shortest round-trip printing; four corpus programs stop there, three on a fraction and one on an integer past 2^53.
+- `Math.sin`, `cos`, `tan` and `atan` are refused, since node's last digits are those of V8's port of fdlibm; so are `Number`, `JSON`, `new Date()` and the array methods `at`, `fill` and `flat`.
+- A string must be ASCII: a length here counts bytes, where JavaScript counts UTF-16 units.
+- An uncaught error stops the executable with exit 1, where node also prints its report of the source line; `console.log` of an error, or of an array or object of more than 100 items, stops it too.
+- `%` of fractions, and `**` with a fraction, a negative exponent or a power past 2^53, stop the executable.
+- A recursion goes deeper than node's: node throws between 9,000 and 10,000 calls of a one-line recursion, the executable between 80,000 and 90,000, so a program between the two runs here and throws in node.
+- The heap is 2 GiB; past it the program stops with a line saying the heap is full.
+
 ### Other
 
 - `js-vm` takes the program as one command-line argument, limited to 128 KiB (`js/README.md`, "Pitfalls").
@@ -1017,7 +1072,7 @@ The parser refuses these forms, each with a message that names it: getters and s
 
 ## Appendix A: The playground's samples
 
-Each of these runs in [the playground](https://roc.lynrummy.com/js/), where it can be changed and run again.
+Each of these runs in [the playground](https://roc.lynrummy.com/js/), where it can be changed and run again. Each console sample is followed by what js-vm prints for it, made when the book is built.
 
 {{listing samples}}
 
@@ -1025,12 +1080,12 @@ Each of these runs in [the playground](https://roc.lynrummy.com/js/), where it c
 
 ### The corpus
 
-Each program prints what node prints, and `js/oracle.shale` holds the VM to it.
+Each program prints what node prints, and `js/oracle.shale` holds the VM to it. Each name links to the program; the three the playground features are in full in Appendix A.
 
 {{listing corpus}}
 
 ### The refused programs
 
-The VM refuses each program with the message its first line gives.
+The VM refuses each program with the message under its name, which the program's first line gives.
 
 {{listing refused}}
