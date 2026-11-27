@@ -58,6 +58,7 @@ import Moves
 import ObjectTable
 import Runtime
 import RuntimeCode
+import StringMethods
 
 RuntimePosts :: [].{
 
@@ -1024,14 +1025,59 @@ seed = {
 	# A unit holding both code and data (the profiler's return, its path,
 	# then `runtime_write`) is always passed with the program: Jumps keeps
 	# its data wherever it drops its code, which a unit done once doesn't.
-	var $mixed = Set.empty()
+	# So is a shared path's every unit (`shared_paths`), and the units of
+	# the string methods' dispatch and of `filter`, which a program calling
+	# a method of a value whose kind isn't known (big daddy) doesn't fit
+	# beside.
+	var $always = shared_paths
 	for at in 0..<pieces.len() {
 		piece = pieces.get(at) ?? crash "RuntimePosts.seed: a piece"
-		if holds_code(piece) and holds_data(piece) {
-			$mixed = $mixed.insert(at)
+		mixed = holds_code(piece) and holds_data(piece)
+		dispatch = leading_marks(piece).any(|label| always_passed.contains(label))
+		if mixed or dispatch {
+			$always = $always.insert(at)
 		}
 	}
-	seed_over([plain, objects], $mixed)
+	seed_over([plain, objects], $always)
+}
+
+## The labels whose units are always passed with the program, beside the
+## shared paths' (`seed`).
+always_passed : List(Str)
+always_passed = [StringMethods.method_dispatch, Runtime.filter]
+
+## The units of each shared path: two or more entries, each a unit ending
+## with a jump to the label the unit after them starts with, and that unit
+## (the allocator's kind entries and its shared path, the trims and
+## theirs). The last entry a program keeps runs into
+## the path, and which that is depends on the entries it uses, so all are
+## passed with the program.
+shared_paths : Set(U64)
+shared_paths = {
+	var $units = Set.empty()
+	for at in 0..<pieces.len() {
+		piece = pieces.get(at) ?? crash "RuntimePosts.shared_paths: a piece"
+		starts = leading_marks(piece)
+		var $entries = []
+		var $back = at
+		var $open = True
+		while $open and $back > 0 {
+			$back = $back - 1
+			before = pieces.get($back) ?? crash "RuntimePosts.shared_paths: a piece"
+			match last_jump(before) {
+				Ok(label) if starts.contains(label) => {
+					$entries = $entries.append($back)
+				}
+				_ => {
+					$open = False
+				}
+			}
+		}
+		if $entries.len() >= 2 {
+			$units = with_units($units.insert(at), $entries)
+		}
+	}
+	$units
 }
 
 ## The units passed with each program, each's growth from what the others
