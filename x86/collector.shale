@@ -1,0 +1,186 @@
+-- budget: steps=400000000 arena_bytes=400000000
+-- x86/collector.shale: the collector's measurements (x86/COLLECTOR.md). From
+-- the repository's root:
+--
+--   shale x86/collector.shale                      # the four races, this tree's js-x86, 7 runs each
+--   shale x86/collector.shale races=bigdaddy rounds=300,10000 runs=3 node=1
+--
+-- Each race (fib at N = 100,000, bank at 2,000,000 transfers, fourteen and
+-- big daddy at `rounds=` rounds, 300 unset) is compiled by each driver and
+-- run `runs=` times, the contestants alternated, niced, one at a time, under
+-- /usr/bin/time for the peak resident memory. Every contestant's output must
+-- be the first's. The table gives each one's medians of wall time, CPU time
+-- and peak RSS, and the last line its executable's `heapstat` writes (blocks,
+-- pages at most, collections). `node=1` adds node as a contestant, its peak
+-- RSS the reference for a compiled program's. The load average is printed
+-- before and after: the box is shared, so CPU time is the better guide.
+--
+-- The drivers are this tree's js-x86 (dev) unless `drivers=` names others,
+-- on stdin with `--args-stdin`, as `label:path` items with commas between
+-- (a js-x86 executable each, as tools/roc_build.shale's cache holds them),
+-- so two trees, or two settings of x86/roc/Heap.roc, are compared run for
+-- run. Long runs (big daddy at 10,000 rounds takes about a minute a run)
+-- are for a background launch.
+--
+--   shale x86/collector.shale counts=1
+--
+-- is the design's other check: for each program of COUNTED, the compiled
+-- program's `heapstat` line (its allocations, its collections and what is
+-- live at the exit, after a last collection) beside the interpreter's own
+-- collector's `--counts` line (js-vm's dev build: the heap's cells, those
+-- live at the end, the collections), x86/COLLECTOR.md's "Lane 3" reading
+-- them.
+
+use("./executables.shale")
+
+const WHO = "x86/collector.shale"
+const WANT_TIME = "measure: /usr/bin/time, for a contestant's peak resident memory"
+const TIMEOUT_MS = 600000
+-- The programs counted both ways: big daddy at 30 rounds, then four of the
+-- corpus that make garbage.
+const COUNTED = {"bigdaddy-30", "js/tests/33-string-append.js", "js/tests/55-garbage.js", "js/tests/57-map-set-churn.js", "js/tests/60-many-instances.js"}
+const WANT_VM = "js-vm: the interpreter's own collector's counts, beside the compiled program's"
+
+function set_const(text, name, n)
+  local m = re_find(text, "\nconst " .. name .. " = [0-9]+;")
+  if m == nil then fail(WHO .. ": no line `const " .. name .. " = <digits>;` to set") end
+  return re_replace(text, "\nconst " .. name .. " = [0-9]+;", "\nconst " .. name .. " = " .. n .. ";")
+end
+
+-- Each race asked for, at each size asked for: `{name, size, text}`.
+function races(names, rounds)
+  local fixed = {
+    fib = {path = "x86/race/fib_race.js", name = "N", n = 100000},
+    bank = {path = "x86/bank/bank_race.js", name = "TRANSFERS", n = 2000000},
+    fourteen = {path = "x86/fourteen/fourteen.js", name = "ROUNDS", n = 300},
+  }
+  local out = {}
+  for name in split(names, ",") do
+    if name == "bigdaddy" then
+      for r in split(rounds, ",") do
+        push(out, {name = name, size = r, text = set_const(read("x86/bigdaddy/bigdaddy_race.js"), "ROUNDS", tonumber(r))})
+      end
+    elseif has_key(fixed, name) then
+      local f = fixed[name]
+      push(out, {name = name, size = "" .. f.n, text = set_const(read(f.path), f.name, f.n)})
+    else
+      fail(WHO .. ": no race named " .. name .. ": fib, bank, fourteen or bigdaddy")
+    end
+  end
+  return out
+end
+
+-- The drivers: `{label, exe}`, this tree's own unless `drivers=` names some.
+function drivers(named)
+  if named == "" then return {{label = "this tree", exe = built_roc(WHO, "x86/roc/JsToX86.roc", "js-x86", "dev")}} end
+  local out = {}
+  for item in split(named, ",") do
+    local m = re_find(item, "^([^:]+):(.+)$")
+    if m == nil then fail(WHO .. ": a driver is `label:path`, not " .. item) end
+    push(out, {label = m.groups[1], exe = m.groups[2]})
+  end
+  return out
+end
+
+function median(xs)
+  local s = {}
+  for x in xs do push(s, x) end
+  sort(s)
+  return s[(#s + 1) // 2]
+end
+
+-- One run under /usr/bin/time: `{out, ms, cpu_ms, kb}`, the program's output
+-- without time's last line, the peak RSS in KiB.
+function timed(argv, want)
+  local full = {"/usr/bin/time", "-f", "%M"}
+  for a in argv do push(full, a) end
+  local r = run(full, {timeout_ms = TIMEOUT_MS, whole = 400000, want = want, nice = 19})
+  if r.ended ~= "exit" or r.code ~= 0 then fail(WHO .. ": " .. join(argv, " ") .. " ended " .. r.ended .. " " .. get(r, "code", -1) .. ": " .. sub(r.out, #r.out - 400)) end
+  local ls = lines(r.out)
+  local kb = tonumber(trim(ls[#ls]))
+  return {out = join(slice(ls, 1, #ls - 1), "\n"), ms = r.ms, cpu_ms = r.cpu_ms, kb = kb}
+end
+
+-- KiB as MB, to the tenth.
+function mb(kb)
+  local tenths = (kb * 1024 * 10 + 500000) // 1000000
+  return (tenths // 10) .. "." .. (tenths % 10) .. " MB"
+end
+
+function uptime()
+  return trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out)
+end
+
+function main()
+  local runs = arg("runs", 7)
+  local with_node = arg("node", false)
+  local list = races(arg("races", "fib,bank,fourteen,bigdaddy"), arg("rounds", "300"))
+  local ds = drivers(arg("drivers", ""))
+  local dir = executables_dir() .. "/collector"
+  mkdir(dir)
+  print("load before: " .. uptime())
+  local rows = {}
+  for race in list do
+    local tag = race.name .. "-" .. race.size
+    local cs = {}
+    for i = 1, #ds do
+      local path = dir .. "/" .. tag .. "-" .. i
+      written_executable(WHO, ds[i].exe, race.text, path)
+      yield()
+      push(cs, {label = ds[i].label, argv = {real(path)}, want = WANT_BINARY, path = path, wall = {}, cpu = {}, kb = {}})
+    end
+    if with_node then
+      local copy = dir .. "/" .. tag .. ".js"
+      replace(copy, race.text)
+      push(cs, {label = "node", argv = {"node", real(copy)}, want = WANT_NODE, wall = {}, cpu = {}, kb = {}})
+    end
+    for n = 1, runs do
+      local first = nil
+      for c in cs do
+        local r = timed(c.argv, c.want .. "; " .. WANT_TIME)
+        if first == nil then first = r.out end
+        if r.out ~= first then fail(WHO .. ": " .. tag .. ": " .. c.label .. " printed otherwise than " .. cs[1].label) end
+        push(c.wall, r.ms) push(c.cpu, r.cpu_ms) push(c.kb, r.kb)
+        yield()
+      end
+    end
+    for c in cs do
+      local heap = ""
+      if has_key(c, "path") then
+        local s = run({real(c.path), "heapstat"}, {timeout_ms = TIMEOUT_MS, whole = 400000, want = WANT_BINARY, nice = 19})
+        local ls = lines(trim(s.out))
+        heap = ls[#ls]
+      end
+      push(rows, {race = tag, who = c.label, wall = median(c.wall) .. " ms", cpu = median(c.cpu) .. " ms", rss = mb(median(c.kb)), heap = heap})
+    end
+  end
+  print(table(rows, {"race", "who", "wall", "cpu", "rss", "heap"}))
+  print("medians of " .. runs .. "; load after: " .. uptime())
+end
+
+-- Each program of COUNTED compiled and run with `heapstat`, and run by
+-- js-vm with `--counts`: both lines, and each output held to the other.
+function counts_main()
+  local exe = built_roc(WHO, "x86/roc/JsToX86.roc", "js-x86", "dev")
+  local vm = built_roc(WHO, "js/roc/JsVm.roc", "js-vm", "dev")
+  local dir = executables_dir() .. "/collector"
+  mkdir(dir)
+  for name in COUNTED do
+    local text = ""
+    if name == "bigdaddy-30" then text = set_const(read("x86/bigdaddy/bigdaddy_race.js"), "ROUNDS", 30) else text = read(name) end
+    local path = dir .. "/counted-" .. basename(name)
+    written_executable(WHO, exe, text, path)
+    yield()
+    local s = run({real(path), "heapstat"}, {timeout_ms = TIMEOUT_MS, whole = 400000, want = WANT_BINARY, nice = 19})
+    local sl = lines(trim(s.out))
+    local v = run({vm, text, "--counts"}, {timeout_ms = TIMEOUT_MS, whole = 400000, want = WANT_VM, nice = 19})
+    local vl = lines(trim(v.out))
+    local same = join(slice(sl, 1, #sl - 1), "\n") == join(slice(vl, 1, #vl - 1), "\n")
+    print(name .. (same and "" or " (the two printed differently)"))
+    print("  compiled: " .. sl[#sl] .. " (" .. s.cpu_ms .. " ms CPU)")
+    print("  js-vm:    " .. vl[#vl] .. " (" .. v.cpu_ms .. " ms CPU)")
+    yield()
+  end
+end
+
+if arg("counts", false) then counts_main() else main() end
