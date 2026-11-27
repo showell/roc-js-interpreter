@@ -22,7 +22,7 @@
 --     one function, `code_<f>_<from>-<to>`, its own for each driver label,
 --     since a versioned loop renumbers them), the fast path of each
 --     bytecode instruction in the range (from its label to its first `jmp`
---     or its first label of its own, `_slow`, `_read_exit`, `_done`),
+--     or the next label: its own `_slow` or `_read_exit`, or the next place's),
 --     joined in order, read by llvm-mca for the box's CPU (`mcpu=`,
 --     cascadelake: family 6, model 85, stepping 7): its instructions, its
 --     micro-ops, its block reciprocal throughput (the cycles a pass needs
