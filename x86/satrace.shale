@@ -1,0 +1,246 @@
+-- budget: steps=200000000 arena_bytes=1000000000
+-- x86/satrace.shale: the SAT race, x86/satrace/sat.js (rocsat's CDCL solver
+-- in the JavaScript subset), compiled by js-x86, against node and against
+-- rocsat itself, its Roc, built by Roc's release build (LLVM, --opt=speed)
+-- from the rocsat checkout at `rocsat=` (build:rocsat unset) with the Roc
+-- its roc-version pins. Each contestant solves the workload's instances; the
+-- race is the wall time of each one's whole run, in whole hundredths of a
+-- second. check.shale does not run it: its numbers are timings. From the
+-- repository's root:
+--
+--   shale x86/satrace.shale                   # the file's own workload, "race": node about 40 s of CPU
+--   shale x86/satrace.shale workload=small    # x86/programs.shale's, about 1 s under node
+--   shale x86/satrace.shale rounds=2          # each instance solved twice in every contestant
+--   shale x86/satrace.shale runs=3            # three runs of each in turn, and the medians
+--
+-- `workload=` and `rounds=` write a copy of sat.js with its `const WORKLOAD`
+-- and `const ROUNDS` lines changed, under the build mount, and the two JS
+-- contestants run the copy. rocsat reads DIMACS: node runs the copy with
+-- `const MODE = "dimacs"`, which prints each instance's clauses, and each
+-- becomes a file rocsat solves, one run an instance (ROUNDS runs each), its
+-- time the sum of those runs. Where cook-levin's plus_sat is built
+-- (`repos:cook-levin/out/tcc/plus_sat`), each Nibble++ instance's clauses
+-- are held to its `plus_sat search W K`, byte for byte.
+--
+-- Every contestant prints, an instance a line, its verdict and its conflict,
+-- decision and propagation counts; the compiled program's whole output must
+-- be node's, and rocsat's counts (its `c conflicts=...` line) and verdicts
+-- must be node's lines too, its SAT models checked by `rocsat check`. The
+-- contestants run niced (19), one after the other, and the load average is
+-- printed before and after, since these numbers are only as quiet as the box.
+
+use("./executables.shale")
+
+const WHO = "x86/satrace.shale"
+const RACE = "x86/satrace/sat.js"
+const WANT_ROCSAT = "x86: rocsat's release executable, a contestant"
+const WANT_ROC_PIN = "x86: rocsat's pinned Roc, to build its release executable"
+const WANT_PLUS_SAT = "x86: cook-levin's plus_sat, the instances' reference CNFs"
+const TIMEOUT_MS = 600000
+
+-- A contestant's run: its wall time and its output.
+function raced(who, argv, want)
+  local r = run(argv, {timeout_ms = TIMEOUT_MS, whole = 100000, want = want, nice = 19})
+  if r.ended ~= "exit" or r.code ~= 0 then fail(WHO .. ": " .. who .. " ended " .. r.ended .. " " .. get(r, "code", -1) .. ": " .. sub(r.out, 1, 2000)) end
+  return {who = who, out = r.out, ms = r.ms}
+end
+
+-- Milliseconds as seconds, to the hundredth.
+function secs(ms)
+  local hundredths = (ms + 5) // 10
+  local frac = "" .. hundredths % 100
+  if #frac < 2 then frac = "0" .. frac end
+  return (hundredths // 100) .. "." .. frac .. " s"
+end
+
+-- a / b to the hundredth.
+function ratio(a, b)
+  local hundredths = (a * 100 + b // 2) // b
+  local frac = "" .. hundredths % 100
+  if #frac < 2 then frac = "0" .. frac end
+  return (hundredths // 100) .. "." .. frac
+end
+
+function median(list)
+  local sorted = {}
+  for x in list do push(sorted, x) end
+  sort(sorted)
+  return sorted[(#sorted + 1) // 2]
+end
+
+function uptime()
+  return trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out)
+end
+
+-- `text` with its line `const NAME = <old>;` set to `value` (a JS literal).
+function with_const(text, name, value)
+  local pattern = "\nconst " .. name .. " = [^;\n]+;"
+  if re_find(text, pattern) == nil then fail(WHO .. ": " .. RACE .. " has no line `const " .. name .. " = ...;` to set") end
+  return re_replace(text, pattern, "\nconst " .. name .. " = " .. value .. ";")
+end
+
+-- The value of the line `const NAME = <value>;`.
+function const_of(text, name)
+  local m = re_find(text, "\nconst " .. name .. " = ([^;\n]+);")
+  if m == nil then fail(WHO .. ": " .. RACE .. " has no line `const " .. name .. " = ...;`") end
+  return m.group
+end
+
+-- rocsat's release executable for the checkout at `repo`, built under `dir`
+-- once for each of its commits, by the Roc its roc-version pins (fetched to
+-- build:roc-pin-dl, as roc-pin-dl's own folder names it).
+function rocsat_exe(repo, dir)
+  local head = git_head(repo)
+  local exe = dir .. "/rocsat-" .. head
+  if exists(exe) then
+    print("rocsat: reused the release build of " .. head)
+    return real(exe)
+  end
+  local pin = trim(read(repo .. "/roc-version"))
+  local roc = "build:roc-pin-dl/roc_" .. re_replace(pin, "^nightly-", "nightly-linux_x86_64-") .. "/roc"
+  if not exists(roc) then fail(WHO .. ": rocsat pins " .. pin .. ", and " .. roc .. " is not there") end
+  local r = run({real(roc), "build", "--opt=speed", "--output=" .. real(dir) .. "/rocsat-" .. head, "src/main.roc"}, {cwd = repo, timeout_ms = 900000, tail = 20, want = WANT_ROC_PIN, nice = 19})
+  if r.code ~= 0 or not exists(exe) then fail(WHO .. ": rocsat's release build failed:\n" .. trim(r.out)) end
+  print("rocsat: built the release build of " .. head .. " in " .. secs(r.ms))
+  return real(exe)
+end
+
+-- The instances' DIMACS files under `dir`, from node's run of the copy in
+-- "dimacs" mode: a list of {name, path}, in the workload's order.
+function dimacs_files(text, dir)
+  local copy = dir .. "/satrace-dimacs.js"
+  replace(copy, with_const(text, "MODE", "\"dimacs\""))
+  local r = run({"node", real(copy)}, {timeout_ms = TIMEOUT_MS, whole = 200000000, want = WANT_NODE})
+  if r.code ~= 0 then fail(WHO .. ": node's dimacs run exited " .. r.code .. ": " .. sub(r.out, 1, 2000)) end
+  local out = {}
+  for part in split(r.out, "c instance ") do
+    if part ~= "" then
+      local nl = find(part, "\n")
+      local name = sub(part, 1, nl - 1)
+      local path = dir .. "/" .. name .. ".cnf"
+      replace(path, sub(part, nl + 1))
+      push(out, {name = name, path = path})
+    end
+  end
+  return out
+end
+
+-- Each Nibble++ instance (`plus<W>-<K>`) held to plus_sat's clauses, from
+-- its `p cnf` line on; its comment lines are plus_sat's own.
+function plus_sat_held(files)
+  local plus_sat = "repos:cook-levin/out/tcc/plus_sat"
+  if not exists(plus_sat) then
+    print("plus_sat: not built, the Nibble++ instances not held to it")
+    return nil
+  end
+  local held = 0
+  for f in files do
+    local m = re_find(f.name, "^plus([0-9]+)-([0-9]+)$")
+    if m ~= nil then
+      local r = run({real(plus_sat), "search", m.groups[1], m.groups[2]}, {timeout_ms = 60000, whole = 200000000, want = WANT_PLUS_SAT})
+      local at = find(r.out, "p cnf ")
+      if r.code ~= 0 or at == nil then fail(WHO .. ": plus_sat search " .. m.groups[1] .. " " .. m.groups[2] .. " exited " .. r.code) end
+      if sub(r.out, at) ~= read(f.path) then fail(WHO .. ": " .. f.name .. "'s clauses are not plus_sat's") end
+      held = held + 1
+      yield()
+    end
+  end
+  print("plus_sat: " .. held .. " Nibble++ instances hold plus_sat's clauses, byte for byte")
+  return nil
+end
+
+-- rocsat's contestant: each instance solved `rounds` times, one process a
+-- solve. Its time is the sum; its lines are the JS's, from its stats line,
+-- each SAT model checked by `rocsat check` outside the time.
+function rocsat_run(exe, files, rounds, dir)
+  local ms = 0
+  local lines_out = {}
+  for f in files do
+    for round = 1, rounds do
+      local r = run({exe, "solve", real(f.path)}, {timeout_ms = TIMEOUT_MS, whole = 10000000, want = WANT_ROCSAT, nice = 19})
+      if r.ended ~= "exit" or (r.code ~= 10 and r.code ~= 20) then fail(WHO .. ": rocsat on " .. f.name .. " ended " .. r.ended .. " " .. get(r, "code", -1) .. ": " .. sub(r.out, 1, 2000)) end
+      ms = ms + r.ms
+      if round == 1 then
+        local m = re_find(r.out, "c conflicts=([0-9]+) decisions=([0-9]+) propagations=([0-9]+) ")
+        if m == nil then fail(WHO .. ": rocsat printed no stats line for " .. f.name .. ": " .. sub(r.out, 1, 400)) end
+        local line = f.name .. ": "
+        if r.code == 10 then line = line .. "SAT" else line = line .. "UNSAT" end
+        line = line .. ", conflicts " .. m.groups[1] .. ", decisions " .. m.groups[2] .. ", propagations " .. m.groups[3]
+        if r.code == 10 then
+          local model = dir .. "/" .. f.name .. ".model"
+          replace(model, r.out)
+          local c = run({exe, "check", real(f.path), real(model)}, {timeout_ms = 60000, whole = 10000, want = WANT_ROCSAT})
+          if c.code == 0 and trim(c.out) == "c model ok" then line = line .. ", model checked" else line = line .. ", MODEL WRONG" end
+        end
+        push(lines_out, line)
+      end
+      yield()
+    end
+  end
+  return {who = "rocsat", out = join(lines_out, "\n") .. "\n", ms = ms}
+end
+
+-- node's lines without its last (the count of rounds), which rocsat has no
+-- part in.
+function instance_lines(out)
+  local ls = lines(trim(out))
+  local kept = {}
+  for i = 1, #ls - 1 do push(kept, ls[i]) end
+  return join(kept, "\n") .. "\n"
+end
+
+function main()
+  local runs = arg("runs", 1)
+  if runs < 1 then fail(WHO .. ": runs=" .. runs .. " is under 1") end
+  local text = read(RACE)
+  local workload = arg("workload", "")
+  if workload ~= "" then text = with_const(text, "WORKLOAD", "\"" .. workload .. "\"") end
+  local rounds = arg("rounds", 0)
+  if rounds > 0 then text = with_const(text, "ROUNDS", "" .. rounds) end
+  workload = re_replace(const_of(text, "WORKLOAD"), "\"", "")
+  rounds = tonumber(const_of(text, "ROUNDS"))
+  if rounds == nil or rounds < 1 then fail(WHO .. ": ROUNDS is " .. const_of(text, "ROUNDS") .. ", not a count of at least 1") end
+  local exe = built_roc(WHO, "x86/roc/JsToX86.roc", "js-x86", "dev")
+  local dir = executables_dir() .. "/satrace"
+  mkdir(dir)
+  local path = dir .. "/satrace"
+  local copy = dir .. "/satrace.js"
+  replace(copy, text)
+  local bytes = written_executable(WHO, exe, text, path)
+  local roc_exe = rocsat_exe(arg("rocsat", "build:rocsat"), dir)
+  local files = dimacs_files(text, dir)
+  plus_sat_held(files)
+  local node = run({"node", "--version"}, {timeout_ms = 10000, whole = 1000, want = WANT_NODE})
+  local names = {}
+  for f in files do push(names, f.name) end
+  print("workload " .. workload .. ", " .. rounds .. " rounds of " .. join(names, " ") .. "; the executable: " .. bytes .. " bytes; node " .. trim(node.out))
+  print("before: " .. uptime())
+  local times = {compiled = {}, node = {}, roc = {}}
+  for i = 1, runs do
+    local compiled = raced("compiled", {real(path)}, WANT_BINARY)
+    local js = raced("node", {"node", real(copy)}, WANT_NODE)
+    local roc = rocsat_run(roc_exe, files, rounds, dir)
+    push(times.compiled, compiled.ms)
+    push(times.node, js.ms)
+    push(times.roc, roc.ms)
+    local c_ok = "WRONG"
+    if compiled.out == js.out then c_ok = "matched node" end
+    local r_ok = "WRONG"
+    if roc.out == instance_lines(js.out) then r_ok = "matched node's verdicts and counts" end
+    if i == 1 then print(trim(js.out)) end
+    print("compiled: " .. secs(compiled.ms) .. ", " .. c_ok)
+    print("node: " .. secs(js.ms) .. "; compiled/node " .. ratio(compiled.ms, js.ms))
+    print("rocsat: " .. secs(roc.ms) .. ", " .. r_ok .. "; compiled/rocsat " .. ratio(compiled.ms, roc.ms) .. ", node/rocsat " .. ratio(js.ms, roc.ms))
+    if c_ok == "WRONG" then fail(WHO .. ": the compiled program printed " .. json_write(sub(compiled.out, 1, 2000))) end
+    if r_ok == "WRONG" then fail(WHO .. ": rocsat printed " .. json_write(roc.out) .. ", node " .. json_write(instance_lines(js.out))) end
+  end
+  if runs > 1 then
+    local c = median(times.compiled)
+    local j = median(times.node)
+    local k = median(times.roc)
+    print("medians of " .. runs .. ": compiled " .. secs(c) .. ", node " .. secs(j) .. ", rocsat " .. secs(k) .. "; compiled/node " .. ratio(c, j) .. ", compiled/rocsat " .. ratio(c, k))
+  end
+  print("after: " .. uptime())
+end
+
+main()
