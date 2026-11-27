@@ -16,7 +16,7 @@
 # fix double-negative: two negatives where one positive does.
 # keep guarantee: the "no" is the guarantee itself, such as a budget or a confinement: "A script reads no path outside its root."
 # keep caution: warns of a real trap: "Never run `zig build` in the checkout the hook runs."
-# keep motivation: the Motivation chapter's sentences, which say what the project isn't; used for that chapter alone.
+# keep motivation: the Introduction's sentences on why the project exists, which say what it isn't; used for those alone.
 # keep limitations: the Limitations chapter's sentences, which say what the subset leaves out and where it differs from node; used for that chapter alone.
 #
 # Each line below is `kind: the sentence`, the sentence exactly as the lint
@@ -24,7 +24,6 @@
 
 motivation: A pure functional language hosting a mutable, effectful one is a consequence of the project, not its goal.
 motivation: It is not a production JavaScript engine, and it is not for running untrusted code.
-motivation: It is not a race either: node is the oracle for correctness, not the yardstick for speed.
 limitations: The subset covers a part of JavaScript on purpose, and it will never cover every corner of the language.
 limitations: A program that steps outside it is refused with a message naming what it used; it never gets a wrong answer.
 limitations: No corpus program holds this yet.

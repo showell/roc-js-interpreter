@@ -1,6 +1,6 @@
 -- budget: steps=20000000 arena_bytes=400000000 read_bytes=100000000 output_bytes=200000
--- This builds the JavaScript book, JavaScript in Roc: A Compiler and an
--- Interpreter, with the book builder (roc-apps' book_builder/), into the dev
+-- This builds the JavaScript book, Compiling JavaScript in Roc, with the
+-- book builder (roc-apps' book_builder/), into the dev
 -- channel's /js-book/:
 --
 --   cd <roc-js-interpreter checkout> && shale js-book/book.shale
