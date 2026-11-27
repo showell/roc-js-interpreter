@@ -1,4 +1,4 @@
--- budget: steps=900000000 arena_bytes=2000000000 output_bytes=200000 kept_bytes=100000000 machine_bytes=400000000
+-- budget: steps=2000000000 arena_bytes=2000000000 output_bytes=200000 kept_bytes=100000000 machine_bytes=400000000
 -- x86/cost.shale: the deterministic cost tier (x86/COST.md). Numbers that
 -- come from the bytes alone, so the box's load can't move them. From the
 -- repository's root:

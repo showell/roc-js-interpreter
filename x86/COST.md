@@ -23,9 +23,9 @@ The tier can only use what is installed on the box. On 2026-11-27 that was:
 The CPU is a DigitalOcean "DO-Premium-Intel": family 6, model 85, stepping 7,
 which is Cascade Lake. llvm-mca calls it `cascadelake`.
 
-**There is no exact dynamic count on this box.** The tier uses llvm-mca for
-static block costs. A dynamic count needs the executable to count itself,
-designed below as "The counter" but not built. LLVM stays out of the compiler:
+**There is no exact dynamic count on this box from outside.** The tier uses
+llvm-mca for static block costs, and the executable counts itself ("The
+counter", below). LLVM stays out of the compiler:
 llvm-mca only reads our disassembly.
 
 ## What x86/cost.shale measures
@@ -158,28 +158,57 @@ and 3,184 samples, and lane 3 2,618 ms and 2,618 samples. A quiet-box run
 gave 782 ms against 811 ms the other way. The gap between those two
 measurements is the noise this tier is meant to avoid.
 
-## The counter: an exact dynamic count (designed, not built)
+## The counter: an exact dynamic count
+The box can't count a run's instructions from outside it, so the executable
+counts its own: `js-x86 "<program>" counted` (x86/roc/Counter.roc), a mode of
+the compiler beside `labels`, writes a separate executable. The race's build is
+never the counted one: on master 06a4131 and on this branch the five races
+compile to the same bytes (the "same bytes" column, both drivers).
 
-The box can't count a run's instructions from outside it. js-x86 can make the
-executable count them itself, the same way `profile` and `guardsflip` are
-modes of the executable.
-
-| piece | design |
+| piece | as built |
 |---|---|
-| the mode | `js-x86 "<program>" counted` writes an executable with a counter at each label: every bytecode instruction's start (`code_<f>_<n>`), each of its own labels (`_slow`, `_read_exit`, `_done`, the item-kind labels), each runtime routine's entry, and the routines' loop heads, labelled for this |
-| a counter | `inc qword ptr [COUNTS + 8*k]`, one instruction, `k` the label's index in `labels` order. The table is a fixed mapping beside the heap's, as `Heap.spare_place` is for `guardsflip` |
-| flags | `inc` writes the flags. At a label that starts a bytecode instruction they are dead. At a jump target the lowering has to say so, and the mode refuses a label where the flags are live, rather than counting wrong |
-| exactness | the count is exact when every jump target is a label. cost.shale checks this from the disassembly (each `j..` and `call` target is one of the labels) and refuses the count otherwise |
-| the output | at exit (and at a stop), the table is written to `x86.counts`, 8 bytes per label, as `profile` writes `x86.prof` |
-| what cost.shale adds | for each block between two labels, its static instructions (from objdump, without the counter) times its count gives the exact dynamic instruction count per place, per function and for the whole run. Each block's count times its llvm-mca throughput gives a predicted cycle count |
-| deterministic | the program is: the same input runs the same blocks the same number of times. Two things could break that, and `twice=1` would catch either: a hash over heap addresses (the heap's mapping is placed by the kernel), or a collection that a timer schedules |
+| the mode | `js-x86 "<program>" counted` puts a counter at the start of each block of the whole code, the runtime's included: the entry, each run of labels before code (a run is one counter; data's labels are passed by), and the instruction after each conditional jump, its fall through. `js-x86 "<program>" countmap` prints each counter's offset in the uncounted code, and each piece of data's |
+| a counter | `inc qword ptr [0x20000000 + 8*k]`, one instruction, `k` the block's index in the map. The counts are a fixed mapping, as the profiler's are at 0x10000000 |
+| flags | `inc` writes the flags, so each block's start is walked forward, jumps followed, to the first instruction that reads or sets them. Set first: the counter is the `inc` alone. A label nothing names is a place, not a way in, and where its flags are live it is passed by. A way in where they are live keeps them: `pushfq`, `inc`, `popfq`. The design refused these. A small loop has 17 of 1,131 blocks, and the races 21 to 220 of 1,377 to 8,649 (below). Each is a fall through on a chain of jumps after one compare (`ucomisd`, `jp`, `jne`; `cmp`, `jb`, `ja`), or a label such a chain's first jump lands on. Refusing them would refuse every program; keeping the flags counts them exactly. The `pushfq` writes the 8 bytes below `rsp`, where no code here keeps anything (the profiler's signal lands there too) |
+| exactness | cost.shale stops unless every `j..` and `call` to a known target is a block's start, every instruction after a `j..` or a `ret` starts one, and every start begins an instruction. objdump reads a copy of the executable whose data is `nop`s, since it otherwise runs out of step at the code after data |
+| the output | the start maps `x86.counts` (8 bytes per counter) shared, so the file holds the counts at any end: an exit, a stop, a throw nothing catches. Nothing else of the runtime changes |
+| what cost.shale adds | `counted=1`: each block's count times its static instructions is the exact dynamic count per place, per function, in the program's code (`code_*`), in the runtime, and in all. One llvm-mca run reads every block that ran as a code region. Each block's count times that region's block reciprocal throughput, summed, is `predicted_cycles`. That model lets instructions overlap inside a block but not across blocks, and has no caches |
+| the proof | `proof=1`, a tier of check.shale: a loop of 10, 20 and 30 trips (`s = s + i`). Its head runs trips + 1 times, its body trips times, and the program's code runs one trip's static instructions more per trip (15 today: 190, 340 and 490). Two planted faults turned it red: no counter after a conditional jump (the exactness check stopped it) and the counters' addresses halved (the head ran 0 times) |
+| deterministic | `twice=1` runs everything twice and compares each `x86.counts` byte for byte (below) |
 | what it can't give | cache misses. A cache simulator would need each load's address: the counted mode could log the hot loads' addresses for an offline simulation, a later step if the misses turn out to be the question |
-| cost | one memory increment per block. It perturbs time but not the counts, and it is never the race's build: its bytes are a separate executable, as `profile`'s mode is |
+| cost | the counted executable runs 3 to 10 times as long: fib's 3.9 billion blocks are 3.9 billion memory increments. The whole of `counted=1 twice=1` over the five races took about 7.5 minutes |
 
-With the counter, the first table becomes this, with the dynamic counts
-filled in:
+### The counts: the five races at their small sizes (master 06a4131)
 
-| race | driver | instructions run | in the program's code | in the runtime | predicted cycles |
-|---|---|---|---|---|---|
-| SAT small | master | ... | ... | ... | ... |
-| SAT small | lane 3 | ... | ... | ... | ... |
+```
+shale x86/cost.shale counted=1 twice=1
+```
+
+The lane's driver writes master 06a4131's bytes for all five races (the
+"same bytes" column, `drivers=master:...,lane:...`), so these are master's
+counts. `blocks` is the number of counters, and `kept` how many of them keep
+the flags.
+
+| race | blocks | kept | instructions run | in the program's code | in the runtime | predicted cycles |
+|---|---|---|---|---|---|---|
+| fib 100,000 | 1,488 | 21 | 9,565,156,484 | 9,563,968,025 | 1,188,459 | 3,348,644,657 |
+| bank 2,000,000 | 1,943 | 37 | 2,796,465,425 | 2,071,898,105 | 724,567,320 | 782,206,512 |
+| fourteen 300 | 1,377 | 31 | 2,099,668,243 | 2,099,666,405 | 1,838 | 945,880,196 |
+| big daddy 300 | 4,032 | 57 | 6,917,983,458 | 689,041,464 | 6,228,941,994 | 2,008,241,218 |
+| SAT small | 8,649 | 220 | 5,185,320,472 | 3,446,531,235 | 1,738,789,237 | 1,562,486,639 |
+
+**Deterministic:** the `twice=1` run printed `twice: the second pass's tables
+are the first's, byte for byte` and `twice: and each of the 5 x86.counts files
+is the first's, byte for byte`. Neither a hash over heap addresses nor a
+collection a timer schedules moved a count.
+
+**What the counts say at a glance.** Big daddy runs 90% of its instructions in
+the runtime: `runtime_collection_find_next` alone is 26%, and the text compare
+and the collector's sweep come next. SAT small runs a third of its instructions
+in the runtime, mostly the collections' search (`runtime_collection_find_*`,
+26%). Its watch loop in propagate (function 16, `code_16`) runs 42%. Fib and
+fourteen are their own code. `<race>-1.places.txt`, beside each executable,
+lists every place. The predicted cycles are a model. Each block's
+`rthroughput` lets its own passes overlap and no two blocks overlap, and
+there is no cache, so the model is for comparing two builds of one race, not
+a clock.
