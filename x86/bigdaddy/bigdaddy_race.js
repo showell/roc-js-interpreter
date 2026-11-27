@@ -9,7 +9,7 @@
 // SIZE scales one city: the residents, the street map, the sieve and the
 // newsletter all grow with it. ROUNDS is the number of days.
 const SIZE = 10;
-const ROUNDS = 300;
+const ROUNDS = 15000;
 
 // ── Two tools every stage uses: a seeded random source and a checksum ──
 

@@ -14,14 +14,14 @@ The code here was written by AI coding agents (Claude), with human supervision.
 
 From the repository's root:
 
-    shale x86/bigdaddy.shale                  # 300 rounds, about 1.1 s under node
+    shale x86/bigdaddy.shale                  # 15,000 rounds, the full size, about 25 s under node
     shale x86/bigdaddy.shale size=small       # 30 rounds, about 0.3 s under node, for tuning
-    shale x86/bigdaddy.shale rounds=500       # any count of at least 1
+    shale x86/bigdaddy.shale rounds=300       # any count of at least 1
     shale x86/bigdaddy.shale size=small runs=5   # five runs of each in turn, and the medians
 
-The contestants are the program compiled by js-x86 and the same program under node. Should js-x86 refuse it, the script prints `compiled: not compiled yet:` and the refusal, and times node alone. node's last two lines are held to the ledgers stored in the script for 10,000, 300 and 30 rounds, and the compiled program's whole output is held to node's.
+The contestants are the program compiled by js-x86 and the same program under node. Should js-x86 refuse it, the script prints `compiled: not compiled yet:` and the refusal, and times node alone. node's last two lines are held to the ledgers stored in the script for 15,000, 10,000, 300 and 30 rounds, and the compiled program's whole output is held to node's.
 
-**The full size is 300 rounds for now** (Steve, 2026-11-26: race at 300 now, design the collector next). 10,000 rounds stays the goal once a collector runs; its ledgers stay in the script.
+**The full size is 15,000 rounds** (2026-11-27), the file's own `ROUNDS`. It was 300 until the collector landed (Steve, 2026-11-26: race at 300 now, design the collector next), with 10,000 the goal. Every race should run at least 20 s (Steve), and 10,000 doesn't reach it on this box: node ran it in 17.7 s of wall time and 16.6 s of CPU at a load of 3 to 8 (one run, niced), and earlier in 19.95 s wall at a load of 2.0 and 21.6 s of CPU at 1.9 to 3.0. node's CPU at 15,000 rounds was 28.3 s at a load of 3 to 4, so about 25 s on a quiet box, with room under it. The work a round does is the same at every count (each day is its own city), so the size only lengthens the race.
 
 ## Sizes (2026-11-26)
 
@@ -60,11 +60,32 @@ I stopped there, so whatever lay past 4 was not known then. The guesses made the
 
 So the compiled day costs about 5 ms to node's warm 2.4 ms: about twice node, once node's start (about 0.13 s) is paid. At 30 rounds the start hides it. Which stage dominates is not measured yet.
 
-**Memory was the race's wall until the collector** (x86/COLLECTOR.md, lane 2). A day allocates about 2 to 3.5 MB, and with no collector 300 rounds filled most of the heap and past about 600 the executable stopped, out of memory. With it, the race runs at its full size: 10,000 rounds print node's ledgers in about 47 s of CPU (2026-11-27, a loaded box), the heap never past 135 pages (8.8 MB), about one collection every two rounds.
+**Memory was the race's wall until the collector** (x86/COLLECTOR.md, lane 2). A day allocates about 2 to 3.5 MB, and with no collector 300 rounds filled most of the heap and past about 600 the executable stopped, out of memory. With it, the race runs at its full size (below, "At full size").
 
 **54 compiles too** and stops where node prints its first fraction, the crow's 7.07 (milestone 4, number printing), so it stays out of the corpus (x86/README.md's table).
 
 **Milestone 4 (fractions):** the crow's distance was the race's one fraction printed, and it prints whole hundredths (above). Nothing else in the race prints or checksums a fraction: every ledger is an integer below 1,000,003.
+
+## At full size (2026-11-27, master f724c41)
+
+The compiled program's whole output is node's, byte for byte, at 15,000 rounds (`shale x86/bigdaddy.shale`) and at 10,000 (`shale x86/collector.shale races=bigdaddy rounds=10000 runs=1 node=1`); nothing stopped it, so this lane fixed nothing and added no program to x86/tests. The collector's counts, from the executable's `heapstat` (counts, not timings):
+
+| rounds | allocations | collections | pages at most | peak RSS | live at the exit |
+|---|---|---|---|---|---|
+| 10,000 | 490,201,329 | 4,999 | 135 (8.8 MB) | 8.8 MB (node: 105.9 MB) | 1,031 blocks, 103,232 bytes in blocks |
+| 15,000 | 735,302,387 | 7,499 | 135 (8.8 MB) | | 1,033 blocks, 103,296 bytes in blocks |
+
+About 49,000 allocations a day and one collection every two days, at every size: the heap's peak doesn't grow with the run, and it is about a twelfth of node's. The time spent collecting isn't a timing here; its share of the work is in the ranking below (the sweep about 11% of the instructions run and 16% of the samples, the mark under 1%).
+
+## Where we're weak against node: the next work (2026-11-27)
+
+Two readings, at master f724c41. **The counts** are exact: `shale x86/cost.shale counted=1 races=bigdaddy`, at 300 rounds, 6,917,983,458 instructions run, 90% of them in the runtime and 10% in the program's own code (x86/COST.md, "The counter"). **The samples** are a guide: `shale x86/profile.shale race=bigdaddy size=1000`, one run, 4,143 samples. The program's own code is not where we're weak: its hottest function, `code_24`, is 3.9% of the instructions, and the kinds (tags, untags, converts, the runtime's kind routines) are 4.5% of the samples. Three costs dominate, in order:
+
+1. **A Map's or a Set's key is found by a linear search, its strings compared a byte at a time.** `runtime_collection_find_*` is 31.5% of the instructions run (`_next` alone 26.3%) and 17% of the samples; `runtime_text_equal*` another 15.3% and 14%, most of it called from that search. The streets' Dijkstra keeps about 80 corners in Maps and Sets keyed by strings (`${x},${y}`, made fresh each time, so no two keys share an address) and asks `distance.get` and `done.has` inside its scan of `distance`: each lookup walks the entries in order, and each entry of the same length is compared byte by byte. node hashes. **The change:** a hashed index beside a Map's or a Set's entries, as an object has past 8 keys (`ObjectTable.roc`, FNV-1a by `runtime_text_hash`), the entries kept in their order for the walks; a number key hashed by its bits (with -0 made 0, as now). And `runtime_text_equal` comparing 8 bytes a step once the lengths match. Every program with a Map past a few entries gains, the SAT race's gate Map among them (x86/satrace/TRIAGE.md).
+2. **The collector's sweep.** `runtime_gc_*` is 11.3% of the instructions (`runtime_gc_sweep_zero` 6.6%, the per-block walk 1.6%, the links 2.5%) and about 16% of the samples; the mark (the stack's scan and the trace) is under 1%, since the live heap is small. Each collection visits every block of every page, and zeroes every dead block word by word, since the allocator's answer must be 0: at one collection every two days, it writes the whole dead heap, about 8 MB, once per collection. **The change:** a lazy sweep, a page swept when its class next needs a block, and a block zeroed when it is allocated (its cache lines are about to be written anyway), not when it dies; a wholly free page zeroed in one `rep stosq`, or given back to the kernel. x86/COLLECTOR.md's lane 3 named the lazy sweep as later work; this is the measurement that makes it next.
+3. **Allocation: its fast path and its count.** 49,000 allocations a day. The allocator (`runtime_allocate_*`, `runtime_block_start`) is 7.9% of the instructions and about 9.5% of the samples, about 37 instructions an allocation, where a bump is a handful: the kind's entry, the class taken by `bsr`, the bytes counted against the threshold, the free list tried, then the bump, the header written. Around it, the strings made a character or a digit at a time (`runtime_concat` 4.5% of the samples, `runtime_number_digit` 3.4%, the splits 4%) are allocations too: every character of `for (const ch of String(value))` is a new string block. **The change:** for a site whose size is known when it compiles (a character, a record, an array's first room), the class and the header chosen then, and the bump done in line, the shared path only on a page's end; and the one-byte strings made once, in the read-only segment, so a string's walk, `charAt`, an index into a string and a one-byte split piece allocate nothing.
+
+None of the three is built in this lane. Each is a runtime change, general to every program; the race isn't changed toward any of them.
 
 ## Candidates for Steve (not made)
 
