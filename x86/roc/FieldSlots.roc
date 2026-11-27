@@ -85,7 +85,8 @@ FieldSlots :: [].{
 						keys = literal_keys(code.ops, at + 1)
 						for (key, place) in keys.map_with_index(|key, place| (key, place)) {
 							guesses = $slots.get(key) ?? []
-							if !guesses.contains(place) and guesses.len() < FieldSlots.most_guesses {
+							room = guesses.len() < FieldSlots.most_guesses
+							if room and !guesses.contains(place) {
 								$slots = $slots.insert(key, guesses.append(place))
 							}
 						}
@@ -193,9 +194,9 @@ FieldSlots :: [].{
 ## writes, in order, each once: up to the first literal, spread or instance
 ## made inside it, or the code's end.
 literal_keys : List(Bytecode.Op), U64 -> List(Str)
-literal_keys = |ops, from| {
+literal_keys = |instructions, from| {
 	var $keys = []
-	for instruction in ops.drop_first(from) {
+	for instruction in instructions.drop_first(from) {
 		match instruction {
 			SetField(key) => {
 				if !$keys.contains(key) {
@@ -233,7 +234,11 @@ has_literal_slots = |source_lines, expected| {
 # written twice at its first; two literals give a key the places of both.
 expect has_literal_slots(
 	["const a = { x: 1, y: [2], x: 3 };", "const b = { z: 0, y: 1 };", "console.log(a, b);"],
-	[("x", [0]), ("y", [1]), ("z", [0])],
+	[
+		("x", [0]),
+		("y", [1]),
+		("z", [0]),
+	],
 )
 
 # A literal inside another ends the outer one's count; the inner one's
@@ -241,7 +246,12 @@ expect has_literal_slots(
 # next place, a wrong guess the test in line turns away.
 expect has_literal_slots(
 	["const a = { p: 1, q: { r: 2 }, s: 3 };", "console.log(a);"],
-	[("p", [0]), ("r", [0]), ("q", [1]), ("s", [2])],
+	[
+		("p", [0]),
+		("r", [0]),
+		("q", [1]),
+		("s", [2]),
+	],
 )
 
 ## How many classes deep `class_fields` follows `super(...)`: a class
