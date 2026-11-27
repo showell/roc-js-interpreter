@@ -1096,7 +1096,7 @@ At a helper's boundary the dev build keeps a call that owns its arguments, where
 
 ### Count on dev, time on release
 
-`js/controls/` holds nine small programs, each a loop that does one kind of write. `js/controls.shale` runs each at 1,000 and 10,000 passes and holds what one more pass allocates, exactly, in both builds: `expected.txt` for release and `expected-dev.txt` for dev, where each line explains its allocation. Counts are deterministic, so a change that moves one shows on the dev ladder in seconds, and most trials end there. Times are taken on the release build, once a round, from one shared build (`tools/roc_build.shale` keys each build by its inputs), as roc-apps' `CLAUDE.md` (section 9) and `js/README.md` say.
+`js/controls/` holds nine small programs, each a loop that does one kind of write. `js/controls.shale` runs each at 1,000 and 10,000 passes and holds what one more pass allocates, exactly, in both builds: `expected.txt` for release and `expected-dev.txt` for dev, where each line explains its allocation. Counts are deterministic, so a change that moves one shows in the dev build's counts within seconds, and most trials end there. Times are taken on the release build, once a change's counts hold, from one shared build (`tools/roc_build.shale` keys each build by its inputs), as roc-apps' `CLAUDE.md` (section 9) and `js/README.md` say.
 
 One round of a change
 ```dot
@@ -1104,7 +1104,7 @@ digraph {
   rankdir=LR;
   node [shape=box, style=rounded];
   change [label="a change"];
-  dev [label="the dev ladder\ncounts, in seconds"];
+  dev [label="the dev build's\ncounts, in seconds"];
   release [label="one shared\nrelease build"];
   time [label="the timing"];
   change -> dev;
@@ -1116,7 +1116,7 @@ digraph {
 
 ### The interpreter's release build
 
-A build's time sets the pace of every change, and RC1's release builds were the slowest step in the project's loop. `js-vm`'s release build takes 91 s today (`js/README.md`'s status line), against about a second for a dev build. Its first release build took 670 s (`29cb46ec`), while the VM still imported the walker's module for the value rules. Once those rules moved into a module of their own and the import went (`d8d6b7fe`), the build fell to 84 s (`15686d94`). The commits leave the cause of the drop unstated.
+A build's time sets the pace of every change, and RC1's release builds were the slowest step in the project's loop. `js-vm`'s release build takes 91 s today (`js/README.md`'s status line). Its first release build took 670 s (`29cb46ec`), while the VM still imported the walker's module for the value rules. Once those rules moved into a module of their own and the import went (`d8d6b7fe`), the build fell to 84 s (`15686d94`). The commits leave the cause of the drop unstated.
 
 The interpreter works RC1's release pipeline harder than most Roc projects do. Jack Scully profiled the compiler on this code at roc-apps' [`762c7d3a`](https://github.com/showell/roc-apps/commit/762c7d3a), where most of a build's time went to SpecConstr, a pass of RC1's release pipeline, and he opened three pull requests against that pass. Each is measured alone, on his machine, against the walker's 271 s release build before them (the pull requests' descriptions):
 
@@ -1130,7 +1130,7 @@ He put the three together at about 12 times faster for this repository's code sp
 
 ### js-x86 building a program, preliminary, as of 2026-11-27
 
-The compiler turns the question around: how long from a program's source to an executable on the disk? `x86/buildrace.shale` times js-x86 against `roc build` of the same race written in Roc, at `--opt=dev` and at `--opt=speed`, the build that makes the fast executable the races run (`x86/buildrace/README.md`). These numbers are preliminary: the box was shared with other lanes, and a run on a quiet box will replace them. The headline, from warm runs at a load of 1.0 to 1.3 (`x86/buildrace/PROFILE.md`, "The build race, before and after"; `x86/RC2.md` for the executables):
+The compiler turns the question around: how long from a program's source to an executable on the disk? `x86/buildrace.shale` times js-x86 against `roc build` of the same race written in Roc, at `--opt=dev` and at `--opt=speed`, the build that makes the fast executable the races run (`x86/buildrace/README.md`). These numbers are preliminary: the machine was shared with other work, and a run on a quiet machine will replace them. The headline, from warm runs at a load of 1.0 to 1.3 (`x86/buildrace/PROFILE.md`, "The build race, before and after"; `x86/RC2.md` for the executables):
 
 | from a race's source to an executable | build time | the executable it makes |
 |---|---|---|
