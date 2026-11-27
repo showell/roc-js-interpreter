@@ -7,43 +7,48 @@
 ## **WHAT IS COMPILED IS THE SAME, BYTE FOR BYTE**, as the passes make of
 ## the whole (`posts_of_whole`): the program's own statements (`program`:
 ## the start and the functions), then the runtime's (`RuntimeCode.items`),
-## then `tail` (the texts and the closure records). Where a rule below
-## isn't met, the whole is walked as before.
+## then `tail` (the texts and the closure records).
 ##
 ## **THE RUNTIME IN UNITS.** The runtime is cut after every `jmp` and `ret`,
 ## so no way falls into a unit: each is entered only at its labels. Jumps
-## keeps a unit whole when a label it starts with is named (by the program,
-## the tail or another unit kept) and drops its code otherwise, round after
-## round, until the units kept name each other. Forwarding and Moves forget
-## what they know at a `jmp` and a `ret`, so a unit's passes see only its
-## own statements, the labels named among its own marks, the labels whose
-## address is taken among those it jumps to and marks, and what is read at
-## the labels it jumps to. So every unit is passed once, when js-x86 is
-## built, as if every unit were kept (each unit's first labels taken as
-## named, and a seam between units that stops a jump from being dropped
-## as one to just after it), and a compile keeps the units the program
-## reaches as Jumps would, then holds that what each kept unit saw is what
-## it sees beside this program:
+## keeps a unit from its first label that is named (by the program, the
+## tail or a unit kept) and drops what comes before it, round after round,
+## until the units kept name each other. Forwarding and Moves forget what
+## they know at a `jmp` and a `ret`, so a unit's passes see only its own
+## statements, which of its labels are named, whose address is taken among
+## the labels it jumps to, and what is read at them. So every unit is passed
+## once, when js-x86 is built, as if every unit were kept (each unit's first
+## labels taken as named, and a seam between units that stops a jump from
+## being dropped as one to just after it), and a compile runs Jumps' rounds
+## over the program beside the units as Jumps runs them over the whole
+## (`phase`), then holds that what each unit kept saw alone is what it sees
+## beside this program:
 ##
-## - **Its labels are named as they were**: each label it marks past its
-##   first is named by the program, the tail or a kept unit exactly when
-##   the runtime alone named it; and no label a dropped unit marks is named.
-## - **Its labels' addresses are taken as they were**: each label it marks
-##   or jumps to has its address taken (a call, a `lea`, a distance)
-##   beside this program exactly when it had in the runtime alone.
-## - **No jump of it is to just after it**: a kept unit ending with a `jmp`
-##   is not followed by a kept unit starting with that `jmp`'s label (Jumps
-##   would drop the jump and the two would run together), nor is the
-##   program's code.
-## - **Jumps settles in time**: the program's rounds and the units' drops
-##   together fit the 8 rounds `Jumps.thread_jumps` runs, and every round's
-##   result is what one more round leaves as it is.
+## - **Its labels are named as they were** (`inner_named`): each label it
+##   keeps past the one it is kept from is named exactly when the runtime
+##   alone named it.
+## - **Its labels' addresses are taken as they were**: each label it jumps
+##   to has its address taken (a call, a `lea`, a distance) beside this
+##   program exactly when it had in the runtime alone.
+## - **No jump of it is to just after it** (`ends_apart`): a unit ending
+##   with a `jmp` is not followed, in what is kept, by a unit starting with
+##   that `jmp`'s label (Jumps would drop the jump and the two would run
+##   together), nor is the program's code.
+## - **What it reads at a unit passed with the program is as it was**
+##   (`reads_held`, `hops_held`).
 ##
-## The program and the tail are passed beside the runtime: the program
-## jumps to the runtime's labels (its hops, what is read at them, whose
-## address is taken), and the runtime names none of theirs. The program's
-## code must end with a `ret` or a `jmp`, after which every walk forgets
-## what it knew, and the tail must be labels, data and distances.
+## **A UNIT THAT DOESN'T FIT IS PASSED WITH THE PROGRAM**: its statements go
+## through the passes with the program's, in its place in the whole's
+## order, and the compile is run again with it so (`posts_beside`), until
+## every unit done once fits. The allocator's kind entries are such units:
+## each ends with a jump to the shared path, and the last one a program
+## keeps runs into it. The program's code must end with a `ret` or a `jmp`,
+## and the tail must be labels, data and distances; where either isn't so,
+## or the units passed keep growing, the whole is passed as before.
+##
+## The runtime names no label of the program's or the tail's, so the
+## program's passes take the runtime's labels as they stand beside it (its
+## hops, what is read at them, whose address is taken).
 import Assembly
 import Forwarding
 import Jumps
@@ -54,8 +59,8 @@ RuntimePosts :: [].{
 
 	## The post-passes of `program`, then the runtime's statements, then
 	## `tail`, as `posts_of_whole` makes them, and how they were run (`way`):
-	## `beside` when the runtime's were taken as done, else the rule above
-	## that wasn't met.
+	## `beside` when the runtime's were taken as done, else why the whole
+	## was passed.
 	posts : { program : List(Assembly.Statement), tail : List(Assembly.Statement) } -> { statements : List(Assembly.Statement), way : Str }
 	posts = |{ program, tail }|
 		match posts_beside({ program, tail }) {
@@ -1081,19 +1086,6 @@ ends_apart = |cut, { standing, passed, last, length }| {
 	} else {
 		Err(Grow($grow))
 	}
-}
-
-## The statements before the seam: the program's own code.
-before_seam : List(Assembly.Statement) -> List(Assembly.Statement)
-before_seam = |own| {
-	var $before = []
-	for statement in own {
-		if is_seam(statement) {
-			return $before
-		}
-		$before = $before.append(statement)
-	}
-	$before
 }
 
 ## Whether each kept code unit done once has its labels named as the

@@ -3,7 +3,9 @@
 ## numbers is the test's `jae slow`, the fast way's load and its `jmp done`
 ## over the slow way, `slow: jmp stop`, then `done:`: the fast way, the usual
 ## one, takes a jump at every access. `thread_jumps` walks the whole program,
-## the runtime's routines too, and does three things until none changes it:
+## the runtime's routines too (whose rounds RuntimePosts runs once, when
+## js-x86 is built, and stands beside a program's as these rounds would),
+## and does three things until none changes it:
 ##
 ## - **A jump to a jump goes to its target** (`thread_each_jump`): a jump,
 ##   or a conditional jump, to a label whose first instruction is a jump goes

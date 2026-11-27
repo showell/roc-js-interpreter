@@ -22,7 +22,8 @@
 ## another way may reach.
 ## A label nothing names (the lowering marks every instruction's place) is
 ## passed by. It runs over the whole program, the runtime's routines too, so
-## every label's names are seen.
+## every label's names are seen (RuntimePosts runs it over the runtime once,
+## when js-x86 is built, with the names a program's whole would show).
 import Assembly
 import Moves
 import X86

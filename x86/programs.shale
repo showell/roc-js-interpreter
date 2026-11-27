@@ -13,6 +13,10 @@
 --     code's growth can't creep unseen; a program whose first line is
 --     `// inlined: <sites> sites, <instructions> instructions` is held to
 --     its own count too;
+--   - each of them, and each race below, must have its post-passes run with
+--     the runtime's done once, when js-x86 was built (`js-x86 "<program>"
+--     posts` says `posts: beside`; x86/roc/RuntimePosts.roc), so a change
+--     that sends programs back to passing the whole runtime is seen;
 --   - each program in x86/tests/refused/ names in its first line what it must
 --     come to: `// refused: <text>`, a line js-x86 prints as it exits 1
 --     without writing an executable, or `// stops: <text>`, a line the
@@ -138,6 +142,14 @@ function inlined_count(exe, js_path)
   return counted
 end
 
+-- Why the program `text` had the whole runtime passed with it, not the
+-- runtime's post-passes done once (RuntimePosts), or nil.
+function posts_why(exe, text)
+  local said = trim(driver_run(exe, text, "posts").out)
+  if said == "posts: beside" then return nil end
+  return "js-x86 posts said " .. json_write(said) .. ", not \"posts: beside\""
+end
+
 -- Why the refused program at `js_path` failed, or nil.
 function held_to_refusal(exe, dir, js_path)
   local first = lines(read(js_path))[1]
@@ -235,6 +247,8 @@ function main()
     if why ~= nil then push(wrong, p .. ": " .. why) end
     local counted = inlined_count(exe, p)
     if has_key(counted, "why") then push(wrong, p .. ": " .. counted.why) end
+    local posts = posts_why(exe, read(p))
+    if posts ~= nil then push(wrong, p .. ": " .. posts) end
     sites = sites + counted.sites
     instructions = instructions + counted.instructions
     yield()
@@ -256,6 +270,8 @@ function main()
       replace(copy.path, copy.text)
       local why = held_to_node(exe, dir, race.path, copy)
       if why ~= nil then push(wrong, race.path .. " (" .. race.name .. " " .. race.value .. "): " .. why) end
+      local posts = posts_why(exe, copy.text)
+      if posts ~= nil then push(wrong, race.path .. " (" .. race.name .. " " .. race.value .. "): " .. posts) end
     end
     yield()
   end

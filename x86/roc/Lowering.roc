@@ -144,8 +144,10 @@ Lowering :: [].{
 	## in line and the instructions their bodies placed: the inlined
 	## program's, or the program's as it was when the inlined one is refused,
 	## so inlining never refuses a program.
+	##
+	## `posts` says how the post-passes ran (RuntimePosts.posts' `way`).
 	program_lowering : Bytecode.Program -> Try(
-		{ statements : List(Assembly.Statement), inlined : { sites : U64, instructions : U64 } },
+		{ statements : List(Assembly.Statement), inlined : { sites : U64, instructions : U64 }, posts : Str },
 		[Refused(Str)],
 	)
 	program_lowering = |compiled| {
@@ -153,22 +155,23 @@ Lowering :: [].{
 		inlining = Inlining.inlined_program(threaded)
 		if inlining.sites > 0 {
 			match rules_items(inlining.program) {
-				Ok(statements) => return Ok({
+				Ok({ statements, posts }) => return Ok({
 					statements,
 					inlined: { sites: inlining.sites, instructions: inlining.instructions },
+					posts,
 				})
 				Err(_) => {}
 			}
 		}
 		rules_items(threaded).map_ok(
-			|statements| { statements, inlined: { sites: 0, instructions: 0 } },
+			|{ statements, posts }| { statements, inlined: { sites: 0, instructions: 0 }, posts },
 		)
 	}
 }
 
 ## The program's machine code under the first rule for arrays of numbers
 ## that lowers it.
-rules_items : Bytecode.Program -> Try(List(Assembly.Statement), [Refused(Str)])
+rules_items : Bytecode.Program -> Try({ statements : List(Assembly.Statement), posts : Str }, [Refused(Str)])
 rules_items = |program| {
 	# Any refusal with arrays of numbers on may be one of an array of
 	# numbers escaping, or of whole numbers taking another, so the program
@@ -234,7 +237,7 @@ threaded_skips = |code| {
 ## `Numbers` or `Integers` as `arrays` says.
 items_with_numbers : Bytecode.Program,
 LoweringBasics.ArrayRule -> Try(
-	List(Assembly.Statement),
+	{ statements : List(Assembly.Statement), posts : Str },
 	[Refused(Str)],
 )
 items_with_numbers = |program, arrays| {
@@ -405,7 +408,7 @@ items_with_numbers = |program, arrays| {
 						program: $items,
 						tail: literal_statements(literals).concat(closures),
 					})
-					Ok(posted.statements)
+					Ok({ statements: posted.statements, posts: posted.way })
 				}
 				Err(refused) => Err(refused)
 			}
@@ -3647,7 +3650,7 @@ keeps_numbers = |source_lines| {
 	}
 	plain = items_with_numbers(program, AnyItems) ?? crash "Lowering.keeps_numbers: it lowers"
 	match items_with_numbers(program, NumberItems) {
-		Ok(items) => items.len() != plain.len()
+		Ok(items) => items.statements.len() != plain.statements.len()
 		Err(_) => False
 	}
 }
@@ -3726,7 +3729,7 @@ keeps_integers = |source_lines| {
 	}
 	doubles = items_with_numbers(program, NumberItems) ?? crash "Lowering.keeps_integers: it lowers"
 	match items_with_numbers(program, IntegerItems) {
-		Ok(items) => items.len() != doubles.len()
+		Ok(items) => items.statements.len() != doubles.statements.len()
 		Err(_) => False
 	}
 }

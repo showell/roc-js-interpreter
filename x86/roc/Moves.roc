@@ -3,9 +3,11 @@
 ## (`rax` for most), so a value read from the frame into one of
 ## Registers' spare registers is `mov rax, [rbp-48]` then `mov r9, rax`, and
 ## a sum stored back is `mov rax, r9`, the store, and `mov r9, rax` again.
-## `trim_moves` walks the whole program twice, the runtime's routines too,
-## and does five things, each of which leaves what every register the code
-## reads holds as it was:
+## `trim_moves` walks the whole program twice, the runtime's routines too
+## (RuntimePosts walks the runtime once, when js-x86 is built, and hands a
+## program's walks what it found read at the runtime's labels), and does
+## five things, each of which leaves what every register the code reads
+## holds as it was:
 ##
 ## - **A copy between two registers that already hold one value is
 ##   dropped** (`copies_dropped`, forward): after `mov r9, rax`, a
