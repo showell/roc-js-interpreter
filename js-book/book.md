@@ -166,7 +166,7 @@ digraph {
 ```
 
 - **The front end is shared.** `JsToX86.roc` imports `Parser` and `Compile` from `js/roc/` as a package, so the compiler starts from the same `Bytecode` the interpreter runs ({{chapter The front end}}).
-- **`Lowering.roc`** turns each function's bytecode into `Assembly` statements, one instruction's machine code after another, and hands each family of instructions to a module of its own: `OperatorLowering`, `BuiltinLowering`, `CallLowering` and `IndexLowering`. Before it, `Inlining.roc` puts small leaf functions in line in the bytecode; after it, `Registers.roc` keeps each looping function's busiest frame places in registers, and `Jumps.roc`, `Forwarding.roc` and `Moves.roc` take out the jumps, loads and register moves the code leaves over (`Lowering.program_lowering`).
+- **`Lowering.roc`** turns each function's bytecode into `Assembly` statements, one instruction's machine code after another, and hands each family of instructions to a module of its own: `OperatorLowering`, `BuiltinLowering`, `CallLowering` and `IndexLowering`. `Inlining` and four later passes are in {{chapter What the compiler leaves to an optimizer}}.
 - **`Assembly.roc`** lays the statements out as bytes. A jump or a call that names a label gets a placeholder, patched once every label's place is known.
 - **`Elf.roc`** wraps the code as an executable: an ELF header, one program header and one segment, read and execute, mapped at 0x400000.
 - **The last step only carries.** Roc's default platform writes text alone to stdout, so `js-x86` prints the executable as hex, and `x86/executables.shale` turns each pair of digits back into its byte.
@@ -187,21 +187,21 @@ A slot of the frame that `Compile` lays out has to hold any JavaScript value. Th
 
 The two NaNs the processor makes lie below every tag, so a value is a number exactly when its bits are below the first tag shifted into place: one unsigned compare.
 
-**A known kind stays untagged.** The lowering walks each function's instructions keeping the kind of each slot and each place on the bytecode's stack: a number, an `Integer` (a whole number proved in range, its bits an integer's), a boolean, a string, an array and so on, or `Value`, a value whose kind only the run decides. Where two known numbers meet `+`, the code is one `addsd`, and it tests zero tags. A `Value`'s tag is tested in line for `+` and the comparisons, and the runtime does the rest (`runtime_add`, `runtime_compare` and their kin). Since a value's bits are the same whatever the compiler knows of it, a place that widens to `Value` where two ways meet costs zero instructions. A function's parameters and its result take their kinds from the whole program: the lowering runs pass after pass until every call's argument kinds and every return's kind settle (`Lowering`'s `items_with_numbers`).
+**A known kind stays untagged.** The lowering walks each function's instructions keeping the kind of each slot and each place on the bytecode's stack: a number, an `Integer`, a boolean, a string, an array and so on, or `Value`, a value whose kind only the run decides. Where two known numbers meet `+`, the code is one `addsd`. A `Value`'s tag is tested in line for `+` and the comparisons, and the runtime does the rest (`runtime_add`, `runtime_compare` and their kin). Since a value's bits are the same whatever the compiler knows of it, a place that widens to `Value` where two ways meet costs zero instructions. A function's parameters and its result take their kinds from the whole program: the lowering runs pass after pass until every call's argument kinds and every return's kind settle (`Lowering`'s `items_with_numbers`).
 
 ### The runtime
 
-Every executable carries the runtime, about 21 KB of it: the executable of `let x = 1;` is 21,611 bytes (measured for this chapter on 2026-11-27; `x86/README.md`'s "about 15 KB" predates the later routines): the start, the allocator, buffered output, `console.log`'s writing of values as node writes them, the array methods, the Maps and Sets, and the timers. It is written in Roc too, as lists of `Assembly` statements, one instruction a line through the short builders of `Emit.roc`. Here is the allocator, with its paths for a fresh page and a large block, from `Heap.roc`:
+Every executable carries the runtime, about 21 KB of machine code (`let x = 1;` compiles to 21,611 bytes, 2026-11-27): the start, the allocator, buffered output, `console.log`'s writing of values as node writes them, the array methods, the Maps and Sets, and the timers. It is written in Roc too, as lists of `Assembly` statements, one instruction a line through the short builders of `Emit.roc`. Here is the allocator, from `Heap.roc`:
 
 {{function x86/roc/Heap.roc allocate_items}}
 
 Four registers belong to the runtime for the whole run: `r12` the stack's limit, `r13` the runtime's state, `r14` the heap's end and `r15` the heap's state, in a heap of 2 GiB. The heap is 64 KiB pages of one block size each, every block behind a header word of its kind and size (`x86/COLLECTOR.md`), and the allocator only bumps through them, so every allocation lasts until the program exits, and a program that fills the heap stops with a message saying the collector is still to come ({{chapter The garbage collector}} says what is being built).
 
-The executable of `x86/fib.js`, which prints fib(22) and fib(30), is 22,041 bytes, nearly all of it the runtime (`x86/fib.shale`, 2026-11-27): milestone 2's fib(22), before the runtime, was 1,010 bytes (`0c5ea7e`).
+`x86/fib.js`'s executable is 22,041 bytes (`x86/fib.shale`, 2026-11-27); milestone 2's fib(22), before the runtime, was 1,010 bytes (`0c5ea7e`).
 
 ### What it compiles
 
-`x86/programs.shale` compiles each of the 61 corpus programs in `js/tests/` and holds those whose executables print exactly what node prints to `x86/corpus.txt`: 49 of 61 (`x86/README.md`, "The corpus"). It also holds the 64 programs of `x86/tests/` to node, and the 45 of `x86/tests/refused/` to their refusals (counted on 2026-11-27). The 12 left stop at these, by the first reason each meets (the same section):
+`x86/programs.shale` compiles each of the 61 corpus programs in `js/tests/` and holds those whose executables print exactly what node prints to `x86/corpus.txt`: 49 of 61 (`x86/README.md`, "The corpus"). It also holds the 64 programs of `x86/tests/` to node and the 45 of `x86/tests/refused/` to their refusals (2026-11-27). The 12 left stop at these, by the first reason each meets:
 
 | programs | the first reason |
 |---|---|
@@ -308,7 +308,7 @@ The compiler's code is plain, and {{chapter The compiler against node}} measures
 
 The compiler makes code cheaper in these ways (`x86/roc/Lowering.roc`'s header, `x86/README.md`):
 
-- a known kind skips the tag's test, so two known numbers add with one `addsd`; a whole number proved in range is an `Integer`, so a loop's counter steps with `add` and indexes an array with no conversion (`x86/README.md`, "An integer kind");
+- a known kind skips the tag's test, so two known numbers add with one `addsd`; a whole number proved in range is an `Integer`, so a loop's counter steps with `add` and indexes an array as it is (`x86/README.md`, "An integer kind");
 - a function known by its code is called directly, and keeps the parameter kinds its calls give it;
 - a function known before the program runs takes zero bytes in a slot, and becomes a closure record only where it is used as a value;
 - a class's field is read at the place its constructor gives it, and a method from its class's table, each tested in line (`FieldSlots.roc`, `MethodTables.roc`);
