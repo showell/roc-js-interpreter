@@ -68,9 +68,9 @@ By 01:21 UTC the compiler ran 45 of the corpus's 61 programs exactly as node doe
 
 The methods moved off the instances (`e4834f9`): each class got one table of its methods, each method one function whose first parameter is the receiver, so that the compiler can call a method directly once it knows the receiver's class (`555b245`). Roc's own build of the fib race joined as a third contestant (`ee99278`), and the compiler came out even with it ({{chapter Three compilers, one race}}). The same day the compiler gained an integer kind for whole numbers proved in range (`81b5809`) and put small leaf functions in line at their calls inside loops (`7810da3`).
 
-### 2026-11-27: headers and pages
+### 2026-11-27: a collector for the compiled programs
 
-The compiled programs' heap gained a header on every block and pages of one block size each, the first lane of their collector, which still keeps every block until the exit (`a328636`; {{chapter The garbage collector}}).
+The compiled programs' heap gained a header on every block and pages of one block size each (`a328636`), then a mark and sweep from conservative roots, with a torture tier that collects at every allocation (`460b606`; {{chapter The garbage collector}}). Big daddy then ran at its full size, 10,000 rounds, with its heap at most 8.8 MB (`x86/COLLECTOR.md`).
 
 ## The front end
 
@@ -195,7 +195,7 @@ Every executable carries the runtime, about 21 KB of machine code (`let x = 1;` 
 
 {{function x86/roc/Heap.roc allocate_items}}
 
-Four registers belong to the runtime for the whole run: `r12` the stack's limit, `r13` the runtime's state, `r14` the heap's end and `r15` the heap's state, in a heap of 2 GiB. The heap is 64 KiB pages of one block size each, every block behind a header word of its kind and size (`x86/COLLECTOR.md`), and the allocator only bumps through them, so every allocation lasts until the program exits, and a program that fills the heap stops with a message saying the collector is still to come ({{chapter The garbage collector}} says what is being built).
+Four registers belong to the runtime for the whole run: `r12` the stack's limit, `r13` the runtime's state, `r14` the heap's end and `r15` the heap's state, in a mapping of 3 GiB: a heap of 2 GiB, then the collector's mark stack. The heap is 64 KiB pages of one block size each, every block behind a header word of its kind and size (`x86/COLLECTOR.md`). The allocator pops its size's free list or bumps through a page, and past a threshold it collects first ({{chapter The garbage collector}}).
 
 `x86/fib.js`'s executable is 22,041 bytes (`x86/fib.shale`, 2026-11-27); milestone 2's fib(22), before the runtime, was 1,010 bytes (`0c5ea7e`).
 
@@ -298,7 +298,7 @@ What closed the gap were the fixes that `x86/race/README.md` numbers 1 to 19, ev
 
 ### What remains
 
-The largest lead the race's README ranked, an integer loop counter, is in: `i` and `aLength` are integers, and the loop went from 71 instructions a limb to 64 (`x86/race/README.md`, "What is left", 1). Its other leads, constants kept for the loop and an array's address reused, are open. The bank ledger and fourteen races are where node still leads: in their last full-size runs it took 2.84 and 2.60 times less time than the compiled program (`x86/bank/README.md` and `x86/fourteen/README.md`, "Against Roc", 2026-11-26). Both are object and call heavy, where node's hidden classes and inlining pay. A fourth race, big daddy, is a fork of the corpus's program 54 (`x86/bigdaddy/README.md`). The races and their numbers keep moving, so each race's README is the place to read where it stands.
+The largest lead the race's README ranked, an integer loop counter, is in: `i` and `aLength` are integers, and the loop went from 71 instructions a limb to 64 (`x86/race/README.md`, "What is left", 1). Its other leads, constants kept for the loop and an array's address reused, are open. The bank ledger and fourteen races are where node still leads: in their last full-size runs it took 2.84 and 2.60 times less time than the compiled program (`x86/bank/README.md` and `x86/fourteen/README.md`, "Against Roc", 2026-11-26). Both are object and call heavy, where node's hidden classes and inlining pay. A fourth race, big daddy, is a fork of the corpus's program 54 (`x86/bigdaddy/README.md`); since the collector it runs at its full size, 10,000 rounds. The races and their numbers keep moving, so each race's README is the place to read where it stands.
 
 ## What the compiler leaves to an optimizer
 
@@ -326,7 +326,7 @@ An optimizer would pay most on loops. The loops program has the widest gap, 6 to
 
 ### What comes next
 
-The compiler's own milestones say what follows (`x86/README.md`). Classes came first, and compile since `6ec8068`: the parser already writes each class as plain functions, so the work was the `NewInstance` and `InstanceOf` instructions of the bytecode. Since 2026-11-26 an instance holds its class's table of methods, and a method takes its receiver as its first parameter, passed in `rdx` by every call through a value. Next is milestone 4, the runtime in the subset: `console.log`'s formatting, Map and Set, and number printing, which four corpus programs wait on (02, 30, 58 and 54), written in the JavaScript subset and compiled by this compiler. Then milestone 5, the collector of `x86/COLLECTOR.md` ({{chapter The garbage collector}}), whose first lane, the headers and pages, is in (`a328636`), so a program can outgrow the 2 GiB heap and the whole corpus can be held to node. Then milestone 6, the type specialization the loops above ask for.
+The compiler's own milestones say what follows (`x86/README.md`). Classes came first, and compile since `6ec8068`: the parser already writes each class as plain functions, so the work was the `NewInstance` and `InstanceOf` instructions of the bytecode. Since 2026-11-26 an instance holds its class's table of methods, and a method takes its receiver as its first parameter, passed in `rdx` by every call through a value. Next is milestone 4, the runtime in the subset: `console.log`'s formatting, Map and Set, and number printing, which four corpus programs wait on (02, 30, 58 and 54), written in the JavaScript subset and compiled by this compiler. Milestone 5, the collector of `x86/COLLECTOR.md` ({{chapter The garbage collector}}), is in (`a328636`, `460b606`). Then milestone 6, the type specialization the loops above ask for.
 
 ## The interpreter
 
@@ -604,7 +604,7 @@ Two samples show the collector at work. `js/tests/55-garbage.js` makes 1,800 sho
 
 ### Two collectors, two worlds
 
-The compiled programs get a collector of their own, a separate codebase in the same family: a non-moving mark and sweep that collects at about twice the last live size. `Collector.roc` works on a Roc list of cells: a reference is an index, the VM names its roots exactly, and Roc's reference counting frees what a `Freed` cell held. The compiler's, designed in `x86/COLLECTOR.md`, works on raw memory: each heap block carries a header word of its kind and size, blocks sit in pages of one size class, and the roots are found conservatively, in every word of the machine stack and the registers that looks like a heap address. The headers and pages are built (`a328636`); the mark and the sweep come next, with a torture tier that collects at every allocation. Until they land, a compiled program keeps every allocation until it exits.
+The compiled programs have a collector of their own, a separate codebase in the same family: a non-moving mark and sweep that collects at twice the last live size, and at least every 8 MiB. `Collector.roc` works on a Roc list of cells: a reference is an index, the VM names its roots exactly, and Roc's reference counting frees what a `Freed` cell held. The compiler's, designed in `x86/COLLECTOR.md`, works on raw memory: each heap block carries a header word of its kind and size, blocks sit in pages of one size class, and the roots are found conservatively, in every word of the machine stack and the registers that looks like a heap address. The headers and pages came first (`a328636`), then the mark, the sweep and a torture tier that collects at every allocation (`460b606`). A floor of 8 MiB held big daddy at 8.8 MB, about a twelfth of node's peak on the same run; floors from 2 to 64 MiB kept its CPU time within 8% (`x86/COLLECTOR.md`, "Lane 3").
 
 ## JavaScript's rules for values
 
