@@ -160,8 +160,7 @@ function js_x86_once(c, text, path)
   local t0 = clock_ns()
   local r = run({real(c.js_x86), text}, {timeout_ms = 60000, whole = 4000000, nice = 19, want = WANT_DRIVER})
   if r.ended ~= "exit" or r.code ~= 0 then return {refused = trim(sub(r.out, 1, 300))} end
-  replace(path, bytes_of_hex(WHO, r.out))
-  must(run({"chmod", "755", real(path)}, {timeout_ms = 10000, whole = 4000}))
+  hex_written(WHO, r.out, path)
   local t1 = clock_ns()
   return {driver = r.ms, total = (t1 - t0) // 1000000, refused = ""}
 end

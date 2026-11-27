@@ -81,10 +81,27 @@ end
 function written_executable(who, exe, argument, path)
   local made = driver_run(exe, argument)
   if made.code ~= 0 then fail(who .. ": the driver exited " .. made.code .. ": " .. trim(made.out)) end
-  local binary = bytes_of_hex(who, made.out)
-  replace(path, binary)
-  must(run({"chmod", "755", real(path)}, {timeout_ms = 10000, whole = 4000}))
-  return #binary
+  return hex_written(who, made.out, path)
+end
+
+-- The bytes the hex text `spaced` spells (as `bytes_of_hex` reads it)
+-- written to `path` and made executable; their count. xxd turns the pairs
+-- into bytes, about seven times faster than `bytes_of_hex` (3 ms against 20
+-- for the fib race's 30 KB, x86/buildrace/PROFILE.md). xxd passes over what
+-- isn't a hex digit, so the file is held to the text's shape by its size:
+-- n bytes are 3n - 1 characters, and a stray character or a lone digit
+-- breaks the count. xxd patches a file rather than replacing it, so the old
+-- one goes first.
+function hex_written(who, spaced, path)
+  local wanted = (#spaced + 1) // 3
+  if spaced == "" or #spaced % 3 ~= 2 then fail(who .. ": the driver printed " .. #spaced .. " characters, which no spaced hex of whole bytes is: " .. sub(spaced, 1, 200)) end
+  if exists(path) then remove(path) end
+  local file = real(dirname(path)) .. "/" .. basename(path)
+  must(run({"xxd", "-r", "-p", "-", file}, {stdin = spaced, timeout_ms = 60000, whole = 4000}))
+  local size = stat(path).size
+  if size ~= wanted then fail(who .. ": the driver's hex made " .. size .. " bytes, not the " .. wanted .. " its " .. #spaced .. " characters spell: " .. sub(spaced, 1, 200)) end
+  must(run({"chmod", "755", file}, {timeout_ms = 10000, whole = 4000}))
+  return size
 end
 
 -- An executable's run: `{ended, code, out, ms, cpu_ms}`, stdout and stderr
