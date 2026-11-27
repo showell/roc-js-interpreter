@@ -144,8 +144,8 @@ LoweringBasics :: [].{
 	SlotCopy : { from : U64, to : U64 }
 
 	## A code with no loop placed twice.
-	no_versions : LoweringBasics.Versions
-	no_versions = { guards: Dict.empty(), exits: Dict.empty() }
+	plain_versions : LoweringBasics.Versions
+	plain_versions = { guards: Dict.empty(), exits: Dict.empty() }
 
 	## For each key some class's table holds, the places among a table's
 	## entries it is expected at, and the codes of the methods it may hold.

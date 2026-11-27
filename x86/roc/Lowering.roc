@@ -254,7 +254,7 @@ rules_items = |program| {
 		}
 	var $answer = Err(Refused("Lowering.program_items: no rule"))
 	for rule in rules {
-		match items_with_numbers(program, { arrays: rule, versions: unversioned(program) }) {
+		match items_with_numbers(program, { arrays: rule, versions: plain_versions_of(program) }) {
 			Ok(lowered) => return Ok({
 				statements: lowered.statements,
 				posts: lowered.posts,
@@ -270,8 +270,8 @@ rules_items = |program| {
 }
 
 ## No loop of the program's codes placed twice.
-unversioned : Bytecode.Program -> List(LoweringBasics.Versions)
-unversioned = |program| program.codes.map(|_| LoweringBasics.no_versions)
+plain_versions_of : Bytecode.Program -> List(LoweringBasics.Versions)
+plain_versions_of = |program| program.codes.map(|_| LoweringBasics.plain_versions)
 
 ## A code with each `SkipIfFalsy` that comes to a `JumpIfFalse` made that
 ## jump (the header's `A && THAT AN if TESTS JUMPS ONCE`).
@@ -424,7 +424,7 @@ items_with_numbers = |program, { arrays, versions }| {
 				literals,
 				field_slots,
 				methods,
-				versions: versions.get(index) ?? LoweringBasics.no_versions,
+				versions: versions.get(index) ?? LoweringBasics.plain_versions,
 				index,
 			}
 			match code_items(context) {
@@ -3989,8 +3989,8 @@ keeps_numbers = |source_lines| {
 		Ok(compiled) => compiled
 		Err(_) => crash "Lowering.keeps_numbers: a program that compiles"
 	}
-	plain = items_with_numbers(program, { arrays: AnyItems, versions: unversioned(program) }) ?? crash "Lowering.keeps_numbers: it lowers"
-	match items_with_numbers(program, { arrays: NumberItems, versions: unversioned(program) }) {
+	plain = items_with_numbers(program, { arrays: AnyItems, versions: plain_versions_of(program) }) ?? crash "Lowering.keeps_numbers: it lowers"
+	match items_with_numbers(program, { arrays: NumberItems, versions: plain_versions_of(program) }) {
 		Ok(items) => items.statements.len() != plain.statements.len()
 		Err(_) => False
 	}
@@ -4068,8 +4068,8 @@ keeps_integers = |source_lines| {
 		Ok(compiled) => compiled
 		Err(_) => crash "Lowering.keeps_integers: a program that compiles"
 	}
-	doubles = items_with_numbers(program, { arrays: NumberItems, versions: unversioned(program) }) ?? crash "Lowering.keeps_integers: it lowers"
-	match items_with_numbers(program, { arrays: IntegerItems, versions: unversioned(program) }) {
+	doubles = items_with_numbers(program, { arrays: NumberItems, versions: plain_versions_of(program) }) ?? crash "Lowering.keeps_integers: it lowers"
+	match items_with_numbers(program, { arrays: IntegerItems, versions: plain_versions_of(program) }) {
 		Ok(items) => items.statements.len() != doubles.statements.len()
 		Err(_) => False
 	}

@@ -64,7 +64,7 @@ Versioning :: [].{
 	versioned_program = |{ program, heads, cells }| {
 		unversioned = {
 			program,
-			versions: program.codes.map(|_| LoweringBasics.no_versions),
+			versions: program.codes.map(|_| LoweringBasics.plain_versions),
 			loops: 0,
 			instructions: 0,
 		}
@@ -149,11 +149,11 @@ code_versioned = |code, { heads, cells, left }| {
 	var $chosen = []
 	var $used = 0
 	var $frame = code.frame_size
-	for (head, back) in loops_outermost_first(code) {
+	for (head, back) in outer_first_loops(code) {
 		inside_chosen = $chosen.any(|chosen| head >= chosen.head and back <= chosen.back)
 		size = back - head + 1
 		if !inside_chosen and $used + size <= budget {
-			match chosen_loop(code, { head, back, heads, cells, frame: $frame }) {
+			match loop_choice(code, { head, back, heads, cells, frame: $frame }) {
 				Ok(chosen) => {
 					$chosen = $chosen.append(chosen)
 					$used = $used + size
@@ -164,11 +164,11 @@ code_versioned = |code, { heads, cells, left }| {
 		}
 	}
 	if $chosen.is_empty() {
-		return { code, versions: LoweringBasics.no_versions, loops: 0, instructions: 0 }
+		return { code, versions: LoweringBasics.plain_versions, loops: 0, instructions: 0 }
 	}
 	placed = placed_code(code, $chosen.sort_with(|a, b| place_order(a.head, b.head)))
 	{
-		code: { ..code, ops: placed.ops, frame_size: $frame },
+		code: { ..code, ops: placed.instructions, frame_size: $frame },
 		versions: placed.versions,
 		loops: $chosen.len(),
 		instructions: $used,
@@ -177,8 +177,8 @@ code_versioned = |code, { heads, cells, left }| {
 
 ## Each loop of the code, its head's place and its `Loop`'s, the outer ones
 ## of a nest first.
-loops_outermost_first : Bytecode.Code -> List((U64, U64))
-loops_outermost_first = |code| {
+outer_first_loops : Bytecode.Code -> List((U64, U64))
+outer_first_loops = |code| {
 	var $out = []
 	for (instruction, at) in code.ops.map_with_index(|instruction, at| (instruction, at)) {
 		match instruction {
@@ -211,7 +211,7 @@ place_order = |one, other|
 ## The loop from `head` to `back` chosen, or not: the rules in the header,
 ## and at least one slot it reads as a number and never writes that holds a
 ## `Value` at its head. Its fast slots start at `frame`.
-chosen_loop : Bytecode.Code,
+loop_choice : Bytecode.Code,
 {
 	head : U64,
 	back : U64,
@@ -219,7 +219,7 @@ chosen_loop : Bytecode.Code,
 	cells : List(U64),
 	frame : U64,
 } -> Try(Chosen, [NotVersioned])
-chosen_loop = |code, { head, back, heads, cells, frame }| {
+loop_choice = |code, { head, back, heads, cells, frame }| {
 	if back < head + 2 {
 		return Err(NotVersioned)
 	}
@@ -229,14 +229,12 @@ chosen_loop = |code, { head, back, heads, cells, frame }| {
 		if inside(at) and !is_copyable(instruction) {
 			return Err(NotVersioned)
 		}
-		match jump_target(instruction, at) {
-			Ok(target) =>
-				if inside(at) and target < head {
-					return Err(NotVersioned)
-				} else if !inside(at) and target > head and target <= back {
-					return Err(NotVersioned)
-				}
-			Err(NoJump) => {}
+		crossing = match jump_target(instruction, at) {
+			Ok(target) => (inside(at) and target < head) or (!inside(at) and inside(target) and target != head)
+			Err(NoJump) => False
+		}
+		if crossing {
+			return Err(NotVersioned)
 		}
 	}
 	body = code.ops.sublist({ start: head, len: back - head + 1 })
@@ -287,9 +285,9 @@ is_copyable = |instruction|
 
 ## The slots the instructions write, each once, in the order first written.
 written_slots : List(Bytecode.Op) -> List(U64)
-written_slots = |ops| {
+written_slots = |body| {
 	var $out = []
-	for instruction in ops {
+	for instruction in body {
 		match written_slot(instruction) {
 			Ok(slot) =>
 				if !$out.contains(slot) {
@@ -313,8 +311,8 @@ written_slot = |instruction|
 ## Whether the first of the instructions that names `slot` reads it (so the
 ## loop reads what it held before it was entered), not writes it.
 read_first : List(Bytecode.Op), U64 -> Bool
-read_first = |ops, slot| {
-	for instruction in ops {
+read_first = |body, slot| {
+	for instruction in body {
 		match instruction {
 			LoadLocal(read) if read == slot => return True
 			UpdateLocal({ slot: stepped, step: _ }) if stepped == slot => return True
@@ -329,12 +327,12 @@ read_first = |ops, slot| {
 ## The slots some `LoadLocal` of the instructions pushes a value that is
 ## used as a number (`is_numeric_use`), each once.
 numeric_slots : List(Bytecode.Op) -> List(U64)
-numeric_slots = |ops| {
+numeric_slots = |body| {
 	var $out = []
-	for (instruction, at) in ops.map_with_index(|instruction, at| (instruction, at)) {
+	for (instruction, at) in body.map_with_index(|instruction, at| (instruction, at)) {
 		match instruction {
 			LoadLocal(slot) =>
-				if !$out.contains(slot) and is_numeric_use(ops, at) {
+				if !$out.contains(slot) and is_numeric_use(body, at) {
 					$out = $out.append(slot)
 				}
 			_ => {}
@@ -349,11 +347,11 @@ numeric_slots = |ops| {
 ## index. Its depth below the top is followed through the pushes and the
 ## operators above it.
 is_numeric_use : List(Bytecode.Op), U64 -> Bool
-is_numeric_use = |ops, at| {
+is_numeric_use = |body, at| {
 	var $above = 0
 	var $place = at + 1
-	while $place < ops.len() {
-		instruction = ops.get($place) ?? crash "Versioning.is_numeric_use: a place"
+	while $place < body.len() {
+		instruction = body.get($place) ?? crash "Versioning.is_numeric_use: a place"
 		match instruction {
 			Binary(operator, _) =>
 				if $above <= 1 {
@@ -409,29 +407,29 @@ Placement : {
 	# loop), and where a jump from outside its loop lands on it: the guard,
 	# for a loop's head.
 	placed_at : List(U64),
-	landing_at : List(U64),
+	landing_places : List(U64),
 }
 
 ## The code's instructions with each chosen loop (in the order of their
 ## heads) placed twice, and their guards and exits.
 placed_code : Bytecode.Code,
 List(Chosen) -> {
-	ops : List(Bytecode.Op),
+	instructions : List(Bytecode.Op),
 	versions : LoweringBasics.Versions,
 }
-placed_code = |code, chosen| {
+placed_code = |code, chosen_loops| {
 	# Where each instruction, guard and exit goes.
 	var $placed_at = []
-	var $landing_at = []
+	var $landing_places = []
 	var $place = 0
 	# For each chosen loop: its guard's place, its fast copy's first place,
 	# and its exits, each the old place it leaves to and its own place.
 	var $layouts = []
 	var $old = 0
-	for loop in chosen {
+	for loop in chosen_loops {
 		while $old < loop.head {
 			$placed_at = $placed_at.append($place)
-			$landing_at = $landing_at.append($place)
+			$landing_places = $landing_places.append($place)
 			$place = $place + 1
 			$old = $old + 1
 		}
@@ -441,7 +439,7 @@ placed_code = |code, chosen| {
 		fast = generic + size
 		for step in 0..<size {
 			$placed_at = $placed_at.append(generic + step)
-			$landing_at = $landing_at.append(
+			$landing_places = $landing_places.append(
 				if step == 0 {
 					guard
 				} else {
@@ -457,11 +455,11 @@ placed_code = |code, chosen| {
 	}
 	while $old < code.ops.len() {
 		$placed_at = $placed_at.append($place)
-		$landing_at = $landing_at.append($place)
+		$landing_places = $landing_places.append($place)
 		$place = $place + 1
 		$old = $old + 1
 	}
-	placement = { placed_at: $placed_at, landing_at: $landing_at }
+	placement = { placed_at: $placed_at, landing_places: $landing_places }
 	var $out = []
 	var $guards = Dict.empty()
 	var $exits = Dict.empty()
@@ -469,7 +467,7 @@ placed_code = |code, chosen| {
 	for layout in $layouts {
 		loop = layout.loop
 		while $old_at < loop.head {
-			$out = $out.append(moved_outside(code, placement, $old_at))
+			$out = $out.append(moved_outside(code, { placement, old: $old_at }))
 			$old_at = $old_at + 1
 		}
 		guard_place = $out.len()
@@ -485,14 +483,14 @@ placed_code = |code, chosen| {
 			},
 		)
 		for old in loop.head..<(loop.back + 1) {
-			$out = $out.append(moved_generic(code, placement, { loop, old }))
+			$out = $out.append(moved_generic(code, { placement, loop, old }))
 		}
 		for old in loop.head..<(loop.back + 1) {
 			$out = $out.append(moved_fast(code, { layout, old }))
 		}
 		for target in layout.leaves {
 			exit_place = $out.len()
-			landing = landed(placement, target)
+			landing = landing_place(placement, target)
 			$out = $out.append(Jump(landing - exit_place - 1))
 			$exits = $exits.insert(
 				exit_place,
@@ -502,10 +500,10 @@ placed_code = |code, chosen| {
 		$old_at = loop.back + 1
 	}
 	while $old_at < code.ops.len() {
-		$out = $out.append(moved_outside(code, placement, $old_at))
+		$out = $out.append(moved_outside(code, { placement, old: $old_at }))
 		$old_at = $old_at + 1
 	}
-	{ ops: $out, versions: { guards: $guards, exits: $exits } }
+	{ instructions: $out, versions: { guards: $guards, exits: $exits } }
 }
 
 ## The fast copy's slot for one of the loop's.
@@ -534,32 +532,37 @@ exit_targets = |code, loop| {
 
 ## An instruction outside every chosen loop, placed: its jump to a loop's
 ## head lands on the guard.
-moved_outside : Bytecode.Code, Placement, U64 -> Bytecode.Op
-moved_outside = |code, placement, old| {
+moved_outside : Bytecode.Code, { placement : Placement, old : U64 } -> Bytecode.Op
+moved_outside = |code, { placement, old }| {
 	instruction = code.ops.get(old) ?? crash "Versioning.moved_outside: a place"
 	at = placement.placed_at.get(old) ?? crash "Versioning.moved_outside: a placed place"
 	match jump_target(instruction, old) {
-		Ok(target) => jump_with_target(instruction, { at, target: landed(placement, target) })
+		Ok(target) => jump_with_target(instruction, { at, target: landing_place(placement, target) })
 		Err(NoJump) => instruction
 	}
 }
 
 ## Where a jump to an old place lands, from outside its loop; the place past
 ## the last is the code's end.
-landed : Placement, U64 -> U64
-landed = |placement, target|
-	match placement.landing_at.get(target) {
+landing_place : Placement, U64 -> U64
+landing_place = |placement, target|
+	match placement.landing_places.get(target) {
 		Ok(place) => place
 		Err(_) => {
-			last = placement.placed_at.last() ?? crash "Versioning.landed: a code of instructions"
+			last = placement.placed_at.last() ?? crash "Versioning.landing_place: an instruction"
 			last + 1 + target - placement.placed_at.len()
 		}
 	}
 
 ## An instruction of a chosen loop's generic copy: a jump inside the loop
 ## stays in the copy, one out of it lands where any jump from outside would.
-moved_generic : Bytecode.Code, Placement, { loop : Chosen, old : U64 } -> Bytecode.Op
-moved_generic = |code, placement, { loop, old }| {
+moved_generic : Bytecode.Code,
+{
+	placement : Placement,
+	loop : Chosen,
+	old : U64,
+} -> Bytecode.Op
+moved_generic = |code, { placement, loop, old }| {
 	instruction = code.ops.get(old) ?? crash "Versioning.moved_generic: a place"
 	at = placement.placed_at.get(old) ?? crash "Versioning.moved_generic: a placed place"
 	match jump_target(instruction, old) {
@@ -567,7 +570,7 @@ moved_generic = |code, placement, { loop, old }| {
 			inner = placement.placed_at.get(target) ?? crash "Versioning.moved_generic: a target"
 			jump_with_target(instruction, { at, target: inner })
 		}
-		Ok(target) => jump_with_target(instruction, { at, target: landed(placement, target) })
+		Ok(target) => jump_with_target(instruction, { at, target: landing_place(placement, target) })
 		Err(NoJump) => instruction
 	}
 }
@@ -594,7 +597,9 @@ moved_fast = |code, { layout, old }| {
 		Ok(target) if target >= loop.head and target <= loop.back =>
 			jump_with_target(renamed, { at, target: layout.fast + target - loop.head })
 		Ok(target) => {
-			exit = layout.leaves.find_first_index(|left| left == target) ?? crash "Versioning.moved_fast: an exit"
+			exit =
+				layout.leaves.find_first_index(|left| left == target)
+					?? crash "Versioning.moved_fast: an exit"
 			jump_with_target(renamed, { at, target: layout.exits_start + exit })
 		}
 		Err(NoJump) => renamed

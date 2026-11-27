@@ -1,3 +1,4 @@
+// versioned: 5 loops, 113 instructions
 // Loops that Versioning places twice: each reads, as a number, a variable it
 // never writes that holds a value (a property's), so its guard tests those
 // for whole numbers of 32 bits and runs the fast copy when they are, the
