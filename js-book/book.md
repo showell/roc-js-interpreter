@@ -1336,3 +1336,25 @@ Each program prints what node prints, and `js/oracle.shale` holds the VM to it. 
 The VM refuses each program with the message under its name, which the program's first line gives.
 
 {{listing refused}}
+## Appendix C: The tools
+
+The project leans on these outside tools for its builds, its checks, its measurements and this book. Each row names a tool, what the project uses it for, and the files that run it, as of 2026-11-27.
+
+| tool | what it is used for | where |
+|---|---|---|
+| Roc, pinned at 0.1.0_RC1 | builds both programs, `js-vm` and `js-x86`, the playground's wasm and the book's app | `roc-version`; `.shale/prelude.shale`'s `pinned_roc` |
+| node 22 | the oracle: what node prints for a program is what both programs must print; the opponent in the races; it also runs the page check and the Chromium tools | `js/oracle.shale`, `x86/programs.shale`, `x86/race.shale`, `js/page_check.mjs` |
+| headless Chromium | drives the staged book pages and the playground for their checks and pictures, over its DevTools protocol | `tools/chromium.mjs`; roc-apps' `book_builder/tools/book_check.mjs`; `js/page_shots.mjs`; `js-book/canvas_shots.mjs` |
+| clang | compiles the playground's wasm host, `js/wasm/platform/host.c` | `js/build.shale` |
+| objdump (binutils) | disassembles js-x86's executables at the addresses the code runs at; it also checked the encoder's expected bytes | `x86/profile.shale`, `x86/cost.shale`, `x86/README.md` |
+| llvm-mca 18 | models what a compiled block costs on the box's CPU, Cascade Lake: micro-ops, port pressure, throughput and one pass's latency | `x86/cost.shale`, `x86/COST.md` |
+| Graphviz | draws the book's diagrams when the book is built | roc-apps' `book_builder/tools/draw_diagrams.shale`, run by `js-book/book.shale` |
+| the book builder | turns `js-book/book.md` into the book's pages, with roc-markdown for the text and roc-syntax-color for the code, and runs the negatives lint | roc-apps' `book_builder/`; `js-book/app/main.roc` |
+| roc-alloc-trace | counts a Roc program's allocations for the controls of {{chapter Dev and release builds disagree}} | `tools/alloc_trace.shale`, `js/controls.shale` |
+| Shale | runs every script here: the checks, the builds, the races and this book's build | `check.shale` and every other `.shale` file |
+
+### llvm-mca and the cost tier
+
+The races run on a shared two-core VM, and their timings move with its load. `x86/cost.shale` measures what the bytes alone decide: it compiles each race, disassembles the executable with objdump, and hands llvm-mca the fast path of a range of bytecode instructions. Run twice, it prints the same tables byte for byte (`x86/COST.md`, "How to run it"). LLVM stays outside the compiler: llvm-mca reads only the disassembly of the bytes js-x86 writes (`07e599b`).
+
+Its first table explained a result the timings left open. Lane 3 of milestone 6 (branch `x86-kinds6-l3`) cut the SAT race's watch loop from 353 instructions to 229 on its fast path, and the race ran at about the same speed. Over that fast path, the stores grew from 42 to 67, 65 of them to the frame. Cascade Lake retires one store a cycle, so the store port set lane 3's block throughput at 67.0 cycles a pass, against master's 63.8 (`x86/COST.md`, "What it says about lane 3", `1623197`).
