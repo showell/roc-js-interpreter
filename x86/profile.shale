@@ -1,0 +1,283 @@
+-- budget: steps=900000000 arena_bytes=3000000000 output_bytes=200000
+-- x86/profile.shale: where a compiled race spends its time, and how much of
+-- it goes to the kinds of values not known before it runs (x86/SPECIALIZATION.md).
+-- Builds js-x86 on the dev backend (its executables are the release
+-- build's, byte for byte), compiles a race with its size line set, writes
+-- the executable, its disassembly (objdump, Intel syntax, at the addresses
+-- the code runs at) and its labels (js-x86's `labels`), then runs it with
+-- the argument `profile` (x86/roc/Profiler.roc: a sample each millisecond
+-- of CPU time, counted by the code byte it landed on) and prints the
+-- samples by function (`code_<n>`, the bytecode's n-th code, or the runtime
+-- routine), by bytecode instruction (`code_<n>_<at>`), by instruction, and
+-- by what each sampled instruction does for the kinds (`kind_class` below).
+-- It writes `<race>.hot`, every sampled instruction with its count, its
+-- label and its class, for reading a hot loop by hand. `perf` doesn't
+-- sample for an unprivileged user on the box, hence the executable's own
+-- sampler.
+--
+--   shale x86/profile.shale race=sat                  # sat.js, WORKLOAD small, ROUNDS 4
+--   shale x86/profile.shale race=sat size=race top=60 # ROUNDS 1 (rounds= sets it)
+--   shale x86/profile.shale race=fib size=200000
+--   shale x86/profile.shale race=bank size=10000000
+--   shale x86/profile.shale race=fourteen size=1000
+--   shale x86/profile.shale race=bigdaddy size=300
+--   shale x86/profile.shale race=heapkinds size=40000   # x86/specialization/'s two kernels
+--   shale x86/profile.shale race=localkinds size=40000
+--
+-- It took over x86/satprofile.shale's work (the SAT race alone, for
+-- x86/satrace/TRIAGE.md): `race=sat size=race` is that script's
+-- `workload=race`.
+
+use("./executables.shale")
+
+const WHO = "x86/profile.shale"
+const CODE_START = 4194424
+const WANT_OBJDUMP = "x86: the compiled race read back for its profile"
+
+-- Each race: its source, the const line its size sets, and that size unset.
+function race_of(name)
+  if name == "fib" then return {path = "x86/race/fib_race.js", line = "N", size = "200000"} end
+  if name == "bank" then return {path = "x86/bank/bank_race.js", line = "TRANSFERS", size = "10000000"} end
+  if name == "fourteen" then return {path = "x86/fourteen/fourteen.js", line = "ROUNDS", size = "1000"} end
+  if name == "bigdaddy" then return {path = "x86/bigdaddy/bigdaddy_race.js", line = "ROUNDS", size = "300"} end
+  if name == "sat" then return {path = "x86/satrace/sat.js", line = "WORKLOAD", size = "small"} end
+  if name == "heapkinds" then return {path = "x86/specialization/heap_kinds.js", line = "REPS", size = "4000"} end
+  if name == "localkinds" then return {path = "x86/specialization/local_kinds.js", line = "REPS", size = "4000"} end
+  fail(WHO .. ": race= is fib, bank, fourteen, bigdaddy, sat, heapkinds or localkinds, not " .. name)
+end
+
+-- `text` with its line `const NAME = <old>;` set to `value`.
+function const_set(text, name, value)
+  local pattern = "\nconst " .. name .. " = [^;\n]+;"
+  if re_find(text, pattern) == nil then fail(WHO .. ": no line `const " .. name .. " = ...;` to set") end
+  return re_replace(text, pattern, "\nconst " .. name .. " = " .. value .. ";")
+end
+
+function hex(n)
+  local digits = "0123456789abcdef"
+  local out = ""
+  local x = n
+  while x > 0 do
+    local d = x % 16
+    out = sub(digits, d + 1, d + 1) .. out
+    x = x // 16
+  end
+  if out == "" then out = "0" end
+  return out
+end
+
+-- The number lowercase hex digits spell.
+function unhex(s)
+  local digits = "0123456789abcdef"
+  local n = 0
+  for i = 1, #s do n = n * 16 + find(digits, sub(s, i, i)) - 1 end
+  return n
+end
+
+-- The labels as {at, label}, sorted by offset.
+function labels_of(exe, text)
+  local made = driver_run(exe, text, "labels")
+  if made.code ~= 0 then fail(WHO .. ": js-x86 labels exited " .. made.code .. ": " .. trim(made.out)) end
+  local rows = {}
+  for l in lines(made.out) do
+    local m = re_find(l, "^([0-9]+) (.*)$")
+    if m ~= nil then push(rows, {at = tonumber(m.groups[1]), label = m.groups[2]}) end
+  end
+  sort(rows, "at")
+  return rows
+end
+
+-- The samples as {at, n}: each code offset sampled and its count, from
+-- `od`'s reading of the counts' file (eight bytes a code byte; a run of
+-- zero lines is one `*`).
+function samples_of(prof)
+  local r = run({"od", "-A", "d", "-t", "u8", real(prof)}, {timeout_ms = 120000, whole = 100000000})
+  if r.code ~= 0 then fail(WHO .. ": od exited " .. r.code) end
+  local out = {}
+  for l in lines(r.out) do
+    local ws = words(l)
+    if #ws > 1 then
+      local base = tonumber(ws[1]) // 8
+      for j = 2, #ws do
+        local n = tonumber(ws[j])
+        if n > 0 then push(out, {at = base + j - 2, n = n}) end
+      end
+    end
+  end
+  return out
+end
+
+-- The instructions of the disassembly, as {at, text} sorted by offset
+-- (`at` from the code's start, as the samples' are).
+function instructions_of(dump)
+  local out = {}
+  for l in lines(dump) do
+    local m = re_find(l, "^ *([0-9a-f]+):\t[0-9a-f ]+\t(.*)$")
+    if m ~= nil then
+      local at = unhex(m.groups[1]) - CODE_START
+      push(out, {at = at, text = trim(m.groups[2])})
+    end
+  end
+  return out
+end
+
+-- The label each offset falls under, of those whose name holds the pattern:
+-- `rows` sorted by offset, `ats` sorted too; a list beside `ats`.
+function labels_at(rows, ats, pattern)
+  local kept = {}
+  for r in rows do
+    if re_find(r.label, pattern) ~= nil then push(kept, r) end
+  end
+  local out = {}
+  local k = 1
+  for at in ats do
+    while k < #kept and kept[k + 1].at <= at do k = k + 1 end
+    local name = "(before every label)"
+    if #kept > 0 and kept[k].at <= at then name = kept[k].label end
+    push(out, name)
+  end
+  return out
+end
+
+-- The class of a runtime routine's samples: `runtime kinds` for a routine
+-- whose job is a value's kind found as the program runs (a tag tested and
+-- the work dispatched on it: `runtime_add`, `runtime_strict_equal`,
+-- `runtime_truthy`, `runtime_word_of`, an index of a `Value`), `runtime
+-- lookups` for a property's, a method's or an index key's search (its
+-- hashing, its probes, its key compares), `runtime heap` for the
+-- allocator and the collector, `runtime other` for the rest.
+function routine_class(label)
+  local kinds = {"runtime_add", "runtime_strict_equal", "runtime_truthy", "runtime_word_of", "runtime_compare", "runtime_check_number", "runtime_check_function", "runtime_to_number", "runtime_remainder", "runtime_get_length_other", "runtime_get_index_array", "runtime_set_index_array", "runtime_not_a_number"}
+  local lookups = {"runtime_get_property", "runtime_set_property", "runtime_object_entry", "runtime_object_index", "runtime_text_hash", "runtime_text_equal", "runtime_get_method", "runtime_get_entry", "runtime_get_inherited", "runtime_integer_key", "runtime_is_index_key", "runtime_index_before", "runtime_get_index", "runtime_set_index", "runtime_update_property"}
+  local heap = {"runtime_allocate", "runtime_gc_", "runtime_take_pages", "runtime_block_start", "runtime_new_"}
+  for p in kinds do if starts_with(label, p) then return "runtime kinds" end end
+  for p in lookups do if starts_with(label, p) then return "runtime lookups" end end
+  for p in heap do if starts_with(label, p) then return "runtime heap" end end
+  return "runtime other"
+end
+
+-- What an instruction of the program's own code does for the kinds, from
+-- its text alone: `tag` a tag's test or its constant (the top 16 bits
+-- shifted down, a tag compared, a tag's bits loaded), `untag` a pointer's
+-- tag cleared (`shl 16`, `shr 16`, an `and` of the low 48 bits), `convert`
+-- a double made an integer or back, or a double's whole-number test
+-- (`cvttsd2si`, `cvtsi2sd`, the `ucomisd` right after one, its `jp`),
+-- `other` anything else (a `ucomisd` of two numbers among it).
+-- A conditional jump is its test's, so it takes the class of the
+-- instruction before it.
+function kind_class(text, before)
+  if re_find(text, "^j(a|ae|b|be|e|ne|p|np) ") ~= nil and before ~= nil then
+    if before == "tag" or before == "convert" then return before end
+  end
+  if re_find(text, ",0x30$") ~= nil and re_find(text, "^(shr|sar) ") ~= nil then return "tag" end
+  if re_find(text, ",0x10$") ~= nil and re_find(text, "^(shl|shr) ") ~= nil then return "untag" end
+  if re_find(text, "0xfff[9a-f]$") ~= nil then return "tag" end
+  if re_find(text, "0xfff[9a-f]0{12}$") ~= nil then return "tag" end
+  if re_find(text, "0xfff[9a-f]0{10}0[0-3]$") ~= nil then return "tag" end
+  if re_find(text, "0xffffffffffff$") ~= nil then return "untag" end
+  if re_find(text, "^(cvttsd2si|cvtsi2sd) ") ~= nil then return "convert" end
+  if re_find(text, "^ucomisd ") ~= nil and before == "convert" then return "convert" end
+  return "other"
+end
+
+function percent(n, total)
+  local tenths = (n * 1000 + total // 2) // total
+  return (tenths // 10) .. "." .. (tenths % 10) .. "%"
+end
+
+function math_min(a, b)
+  if a < b then return a end
+  return b
+end
+
+function shown(title, by, total, top)
+  local rows = {}
+  for k in keys(by) do push(rows, {name = k, n = by[k]}) end
+  sort(rows, "n", "desc")
+  print("── " .. title)
+  for i = 1, math_min(top, #rows) do print(rows[i].n .. "  " .. percent(rows[i].n, total) .. "  " .. rows[i].name) end
+end
+
+function main()
+  local name = arg("race", "sat")
+  local race = race_of(name)
+  local size = arg("size", race.size)
+  -- The small workload solves each instance 4 times unset, for samples
+  -- enough; the race's needs no repeat.
+  local rounds_unset = 1
+  if size == "small" then rounds_unset = 4 end
+  local rounds = arg("rounds", rounds_unset)
+  local top = arg("top", 30)
+  local value = size
+  if name == "sat" then value = "\"" .. size .. "\"" end
+  local text = const_set(read(race.path), race.line, value)
+  if name == "sat" then text = const_set(text, "ROUNDS", "" .. rounds) end
+  local exe = built_roc(WHO, "x86/roc/JsToX86.roc", "js-x86", "dev")
+  local dir = executables_dir() .. "/profile"
+  mkdir(dir)
+  local path = dir .. "/" .. name
+  local bytes = written_executable(WHO, exe, text, path)
+  local rows = labels_of(exe, text)
+  local out = {}
+  for r in rows do push(out, hex(CODE_START + r.at) .. " " .. r.label) end
+  replace(path .. ".labels", join(out, "\n") .. "\n")
+  local d = run({"objdump", "-D", "-b", "binary", "-mi386:x86-64", "-M", "intel", "--adjust-vma=0x400000", "--start-address=0x400078", real(path)}, {timeout_ms = 120000, whole = 200000000, want = WANT_OBJDUMP})
+  if d.code ~= 0 then fail(WHO .. ": objdump exited " .. d.code) end
+  replace(path .. ".s", d.out)
+  print("the executable: " .. real(path) .. " (" .. bytes .. " bytes), with .s, .labels and .hot beside it")
+  print("load: " .. trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out))
+  local prof = dir .. "/x86.prof"
+  if exists(prof) then remove(prof) end
+  local r = run({real(path), "profile"}, {cwd = dir, timeout_ms = 600000, whole = 100000, want = WANT_BINARY, nice = 19})
+  if r.code ~= 0 then fail(WHO .. ": the executable exited " .. r.code .. ": " .. sub(r.out, 1, 2000)) end
+  print("ran in " .. r.ms .. " ms, " .. r.cpu_ms .. " ms of CPU")
+  local samples = samples_of(prof)
+  local total = 0
+  for s in samples do total = total + s.n end
+  print(total .. " samples")
+  if total == 0 then fail(WHO .. ": no samples") end
+
+  -- Every instruction's class, the jumps taking their test's.
+  local instructions = instructions_of(d.out)
+  local class_at = {}
+  local text_at = {}
+  local before = nil
+  for i in instructions do
+    local c = kind_class(i.text, before)
+    class_at["" .. i.at] = c
+    text_at["" .. i.at] = i.text
+    before = c
+  end
+
+  local ats = {}
+  for s in samples do push(ats, s.at) end
+  local functions = labels_at(rows, ats, "^(code_[0-9]+|runtime_[a-z_0-9]+)$")
+  local places = labels_at(rows, ats, "^(code_[0-9]+(_[0-9]+)?|runtime_[a-z_0-9]+)$")
+  local by_function = {}
+  local by_place = {}
+  local by_class = {}
+  local hot = {}
+  for k = 1, #samples do
+    local s = samples[k]
+    local f = functions[k]
+    by_function[f] = get(by_function, f, 0) + s.n
+    by_place[places[k]] = get(by_place, places[k], 0) + s.n
+    local c = "other"
+    if starts_with(f, "runtime_") then
+      c = routine_class(f)
+    else
+      c = "code " .. get(class_at, "" .. s.at, "other")
+    end
+    by_class[c] = get(by_class, c, 0) + s.n
+    push(hot, {n = s.n, line = s.n .. "\t" .. hex(CODE_START + s.at) .. "\t" .. places[k] .. "\t" .. c .. "\t" .. get(text_at, "" .. s.at, "?")})
+  end
+  sort(hot, "n", "desc")
+  local hot_lines = {}
+  for h in hot do push(hot_lines, h.line) end
+  replace(path .. ".hot", join(hot_lines, "\n") .. "\n")
+  shown("by kind class (code: the program's own instructions; runtime: the routines)", by_class, total, 20)
+  shown("by function", by_function, total, top)
+  shown("by bytecode instruction", by_place, total, top)
+end
+
+main()
