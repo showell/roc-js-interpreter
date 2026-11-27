@@ -4333,6 +4333,37 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 			site,
 			{ state, key, step },
 		)
+		# `a[i]++`, `--o[k]` and their kin, the receiver and the key on top:
+		# the runtime's read, step and write (`runtime_update_index`), its
+		# answer, the old number or the new, in the receiver's place. An array
+		# of numbers never reaches here (`numbers_escaping`).
+		UpdateIndex(step) =>
+			match LoweringBasics.kind_below(state, 1) {
+				Array | Object | Value | Null | Undefined => {
+					fixity = match step.fixity {
+						Postfix => 0
+						Prefix => 1
+					}
+					items = index_double_items(site, { state, down: 0 }).concat([
+						Emit.load(Rdi, top_place(1)),
+						Emit.load(Rsi, top_place(0)),
+						Emit.imm(Rdx, step.delta.to_bits().to_i64_wrap()),
+						Emit.imm(Rcx, fixity),
+						Emit.call(Runtime.update_index),
+						Emit.store(top_place(1), Rax),
+					])
+					Ok(
+						LoweringBasics.falling(
+							items,
+							LoweringBasics.with_top(LoweringBasics.without_top(state, 2), Number),
+						),
+					)
+				}
+				kind => LoweringBasics.refusal(
+					site,
+					"`++` or `--` of an item of ${LoweringBasics.kind_phrase(kind)}",
+				)
+			}
 		UpdateBoxed({ slot, name: _, kind, step }) =>
 			match kind {
 				Fixed => Ok(BuiltinLowering.constant_assigned_items)
@@ -4628,17 +4659,6 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 					"`new` of ${LoweringBasics.kind_phrase(kind)} is not compiled yet",
 				)
 			}
-		_ => LoweringBasics.refusal(site, "${instruction_name(instruction)} is not compiled yet")
-	}
-}
-
-## An instruction's tag, for a refusal.
-instruction_name : Bytecode.Op -> Str
-instruction_name = |instruction| {
-	text = Str.inspect(instruction)
-	match text.split_first("(") {
-		Ok({ before, after: _ }) => before
-		Err(_) => text
 	}
 }
 

@@ -137,6 +137,11 @@ Runtime :: [].{
 	set_index : Str
 	set_index = "runtime_set_index"
 
+	## The routine that steps `rdi[rsi]` by the double in `rdx` (`a[i]++` and
+	## its kin), its answer the old number when `rcx` is 0 and the new when 1.
+	update_index : Str
+	update_index = "runtime_update_index"
+
 	## The stop of an item read of an array of numbers that finds no item.
 	numbers_read_not_compiled : Str
 	numbers_read_not_compiled = "runtime_numbers_read_not_compiled"
@@ -1908,6 +1913,41 @@ container_items = {
 		])
 		.concat(RuntimeBuilders.stopping_items("runtime_text_array_hole"))
 		.concat(keyed_error_items({ label: "runtime_set_index_nullish", setting: 1 }))
+	# `a[i]++` and its kin: a read and a write of the item as `a[i]` and
+	# `a[i] = v` make them, the number between stepped, as
+	# ObjectTable steps a property's. Its frame holds the
+	# receiver (`[rbp - 8]`), the key (16), the step (24), the fixity (32) and
+	# the answer (40).
+	update_index = [
+		Emit.mark(Runtime.update_index),
+		Emit.save(Rbp),
+		Emit.mov(Rbp, Rsp),
+		Emit.minus_imm(Rsp, 48),
+		Emit.store(RuntimeBuilders.local(8), Rdi),
+		Emit.store(RuntimeBuilders.local(16), Rsi),
+		Emit.store(RuntimeBuilders.local(24), Rdx),
+		Emit.store(RuntimeBuilders.local(32), Rcx),
+		Emit.call(Runtime.get_index),
+		Emit.call(Runtime.check_number),
+		Emit.store(RuntimeBuilders.local(40), Rax),
+		Emit.to_xmm(Xmm0, Rax),
+		Emit.load(Rax, RuntimeBuilders.local(24)),
+		Emit.to_xmm(Xmm1, Rax),
+		Emit.double_sum(Xmm0, Xmm1),
+		Instruction(MovqFromXmm({ to: Rdx, from: Xmm0 })),
+		Emit.load(Rcx, RuntimeBuilders.local(32)),
+		Emit.test(Rcx, Rcx),
+		Emit.jcc(E, "runtime_update_index_answered"),
+		Emit.store(RuntimeBuilders.local(40), Rdx),
+		Emit.mark("runtime_update_index_answered"),
+		Emit.load(Rdi, RuntimeBuilders.local(8)),
+		Emit.load(Rsi, RuntimeBuilders.local(16)),
+		Emit.call(Runtime.set_index),
+		Emit.load(Rax, RuntimeBuilders.local(40)),
+		Emit.mov(Rsp, Rbp),
+		Emit.restore(Rbp),
+		Emit.ret,
+	]
 	[
 		new_array,
 		new_object,
@@ -1920,6 +1960,7 @@ container_items = {
 		pop,
 		get_index,
 		set_index,
+		update_index,
 	].join()
 }
 
