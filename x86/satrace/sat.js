@@ -22,6 +22,16 @@
 // that rocsat gives a tuple of scalars writes them into `st` or returns an
 // object. Where a value differs from rocsat's, a comment says so.
 //
+// One deliberate difference in shape: no list is built afresh where it can
+// be reused. Analysis keeps its working lists in `st` (MiniSat's own
+// analyze_stack and analyze_toclear) and empties them for each conflict;
+// simplification and compaction move the live clauses down the arena in
+// place, and a watch rebuild empties the pool and the block tables, where
+// rocsat builds a new list each time. Each gives the same lists rocsat's
+// does, so the search and every count are the same. js-x86's executables have
+// no collector yet (x86/README.md, milestone 5), and the fresh lists filled
+// their heap of 2 GiB before the race's large instances were half done.
+//
 // The instances are made here, since the subset reads no files: the
 // pigeonhole formulas of rocsat's `hole` family (known UNSAT) and the
 // Nibble++ search CNFs of cook-levin's `plus_sat search W K` (sat.c's gates
@@ -56,6 +66,13 @@ function filled(n, x) {
   return out;
 }
 
+// The array cut to its first n items, its room kept for the next pushes.
+// (`a.length = n` would say it in one line; js-x86 doesn't compile a write
+// of an array's length.)
+function truncate(a, n) {
+  while (a.length > n) a.pop();
+}
+
 function core_new(n) {
   const heap = [];
   const hpos = [];
@@ -80,6 +97,13 @@ function core_new(n) {
     heap: heap,
     hpos: hpos,
     phase: filled(n, 1),
+    // Analysis's working lists, emptied for each conflict.
+    learnt: [],
+    kept: [],
+    to_clear: [],
+    used_clauses: [],
+    min_clear: [],
+    stack: [],
     trail_len: 0,
     dl: 0,
     qhead: 0,
@@ -205,12 +229,16 @@ function learn(st, lits, learnt, glue) {
 }
 
 // Every live clause's watches in fresh blocks: the slack and the watchers of
-// deleted clauses dropped.
+// deleted clauses dropped. rocsat makes a new pool and new tables; here the
+// pool is cut back to its zero seed (which nothing writes) and the tables are
+// zeroed, the same lists.
 function rebuild_watches(st, num_lits) {
-  st.pool = filled(8, 0);
-  st.wofs = filled(num_lits, 0);
-  st.wlen = filled(num_lits, 0);
-  st.wcap = filled(num_lits, 0);
+  truncate(st.pool, 8);
+  for (let l = 0; l < num_lits; l++) {
+    st.wofs[l] = 0;
+    st.wlen[l] = 0;
+    st.wcap[l] = 0;
+  }
   const arena = st.arena;
   let c = 1;
   while (c < arena.length) {
@@ -338,9 +366,13 @@ function analyze(st, dl, confl) {
   const level = st.level;
   const reason = st.reason;
   const seen = st.seen;
-  const learnt = [0];
-  const to_clear = [];
-  const used_clauses = [];
+  const learnt = st.learnt;
+  const to_clear = st.to_clear;
+  const used_clauses = st.used_clauses;
+  truncate(learnt, 0);
+  truncate(to_clear, 0);
+  truncate(used_clauses, 0);
+  learnt.push(0);
   let path = 0;
   let p = 0;
   let first = true;
@@ -407,10 +439,13 @@ function minimize(st, source_clear, learnt) {
   const level = st.level;
   const reason = st.reason;
   const seen = st.seen;
-  const min_clear = [];
+  const min_clear = st.min_clear;
+  truncate(min_clear, 0);
   let levels = 0;
   for (let i = 1; i < learnt.length; i++) levels = levels | abstract_level(level_of(level, learnt, i));
-  const kept = [learnt[0]];
+  const kept = st.kept;
+  truncate(kept, 0);
+  kept.push(learnt[0]);
   for (let i = 1; i < learnt.length; i++) {
     const q = learnt[i];
     if (reason[q >> 1] === none) {
@@ -448,7 +483,9 @@ function lit_redundant(st, min_clear, candidate, abstract_levels) {
   const reason = st.reason;
   const seen = st.seen;
   const top = min_clear.length;
-  const stack = [candidate];
+  const stack = st.stack;
+  truncate(stack, 0);
+  stack.push(candidate);
   let i = 0;
   let redundant = true;
   while (i < stack.length && redundant) {
@@ -694,28 +731,31 @@ function reduce(st) {
 
 // Copies the live clauses and moves each assigned variable's reason.
 // Unassigned variables' stale reasons are left: an assignment overwrites
-// them before any use.
+// them before any use. rocsat copies into a new arena; here each live clause
+// moves down the arena to where the new one would hold it (never past where
+// it was, so nothing is written before it is read), and the arena is cut.
 function compact(st) {
   const arena = st.arena;
   const reason = st.reason;
   const value = st.value;
-  const fresh = [0];
   const reloc = filled(arena.length, none);
+  let w = 1;
   let c = 1;
   while (c < arena.length) {
     const header = arena[c];
     const words = 2 + clause_size(header);
     if ((header & deleted_bit) === 0) {
-      reloc[c] = fresh.length;
-      for (let k = 0; k < words; k++) fresh.push(arena[c + k]);
+      reloc[c] = w;
+      for (let k = 0; k < words; k++) arena[w + k] = arena[c + k];
+      w = w + words;
     }
     c = c + words;
   }
+  truncate(arena, w);
   for (let v = 0; v < reason.length; v++) {
     const old = reason[v];
     if (old !== none && value[2 * v] !== unassigned) reason[v] = reloc[old];
   }
-  st.arena = fresh;
 }
 
 function worse_first(arena, a, b) {
@@ -734,13 +774,16 @@ function worse_first(arena, a, b) {
 // literals past the two watches go, and the arena is built afresh (which
 // also drops reduction's tombstones) once every root reason is cleared.
 // Gives the clauses removed, the literals trimmed and the live learnts.
+// rocsat builds the new arena as a new list; here, as in `compact`, each kept
+// clause is written down the arena at the new one's place, its literals
+// after the watches only those not false, and the arena is cut.
 function simplify(st) {
   const arena = st.arena;
   const value = st.value;
   const reason = st.reason;
   const trail = st.trail;
   for (let i = 0; i < st.trail_len; i++) reason[trail[i] >> 1] = none;
-  const fresh = [0];
+  let w = 1;
   let removed = 0;
   let trimmed = 0;
   let live_learnts = 0;
@@ -758,21 +801,27 @@ function simplify(st) {
       if (satisfied) {
         removed = removed + 1;
       } else {
-        const lits = [arena[c + 2], arena[c + 3]];
+        const meta = arena[c + 1];
+        arena[w + 2] = arena[c + 2];
+        arena[w + 3] = arena[c + 3];
+        let n = 2;
         for (k = 2; k < size; k++) {
           const lit = arena[c + 2 + k];
-          if (value[lit] !== false_val) lits.push(lit);
+          if (value[lit] !== false_val) {
+            arena[w + 2 + n] = lit;
+            n = n + 1;
+          }
         }
-        if (lits.length < size) trimmed = trimmed + size - lits.length;
-        fresh.push(lits.length | (header & learnt_bit));
-        fresh.push(arena[c + 1]);
-        for (const q of lits) fresh.push(q);
+        if (n < size) trimmed = trimmed + size - n;
+        arena[w] = n | (header & learnt_bit);
+        arena[w + 1] = meta;
+        w = w + 2 + n;
         if ((header & learnt_bit) !== 0) live_learnts = live_learnts + 1;
       }
     }
     c = c + 2 + size;
   }
-  st.arena = fresh;
+  truncate(arena, w);
   rebuild_watches(st, value.length);
   return { removed: removed, trimmed: trimmed, live_learnts: live_learnts };
 }
@@ -1082,7 +1131,8 @@ function plus_search(lang, k) {
 
 // Each workload's instances, made in this order.
 function instances() {
-  if (WORKLOAD === "small") return [hole(5), plus_search(11, 5), plus_search(11, 6), plus_search(47, 9)];
+  if (WORKLOAD === "tiny") return [hole(4), plus_search(11, 5), plus_search(11, 6)];
+  if (WORKLOAD === "small") return [hole(5), hole(7), plus_search(11, 5), plus_search(11, 6), plus_search(47, 9)];
   return [hole(8), plus_search(191, 13), plus_search(191, 14), plus_search(49151, 27), plus_search(49151, 28)];
 }
 
