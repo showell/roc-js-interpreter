@@ -1,0 +1,268 @@
+-- budget: steps=900000000 arena_bytes=2000000000 output_bytes=200000 kept_bytes=100000000 machine_bytes=400000000
+-- x86/cost.shale: the deterministic cost tier (x86/COST.md). Numbers that
+-- come from the bytes alone, so the box's load can't move them. From the
+-- repository's root:
+--
+--   shale x86/cost.shale                              # every race, this tree's js-x86: its bytes
+--   shale x86/cost.shale races=sat --args-stdin <<'ARGS'
+--   drivers=master:/path/master-js-x86,lane3:/path/lane3-js-x86
+--   places=master:code_16_70-80,lane3:code_16_71-81
+--   ARGS
+--   shale x86/cost.shale twice=1 ...                  # the same tier run twice, held equal
+--
+-- Two parts:
+--   - **The bytes.** Each race (fib at N = 100,000, bank at 2,000,000
+--     transfers, fourteen and big daddy at 300 rounds, the SAT race at its
+--     small workload: x86/collector.shale's sizes) compiled by each driver:
+--     the executable's size, its code's static instruction count (objdump),
+--     and whether its bytes are the first driver's. Two drivers that write
+--     the same bytes for a race run the same program: any time between them
+--     is the box's.
+--   - **The places.** For each driver with `places=` (a bytecode range of
+--     one function, `code_<f>_<from>-<to>`, its own for each driver label,
+--     since a versioned loop renumbers them), the fast path of each
+--     bytecode instruction in the range (from its label to its first `jmp`
+--     or its first label of its own, `_slow`, `_read_exit`, `_done`),
+--     joined in order, read by llvm-mca for the box's CPU (`mcpu=`,
+--     cascadelake: family 6, model 85, stepping 7): its instructions, its
+--     micro-ops, its block reciprocal throughput (the cycles a pass needs
+--     if passes overlap freely) and its one-pass latency (one iteration's
+--     cycles from the first dispatch to the last retire: the dependency
+--     chains) twice: `latency` with each load after every store before it
+--     (`-noalias=false`, so a value spilled to the frame and loaded back
+--     costs its trip, and so does every other frame load: a ceiling) and
+--     `free` with none (`-noalias=true`: a floor). The hardware forwards a
+--     store to a load of its own address and lets others pass, so it lies
+--     between.
+--     `show=1` writes the fast path and llvm-mca's timeline of the pass
+--     beside the executable, and names the file.
+--
+-- What it is not: a dynamic count. The box has no tool that counts a
+-- run's instructions (no valgrind, no PMU in the VM, perf_event_paranoid 4):
+-- x86/COST.md, "The counter", designs the executable's own. llvm-mca only
+-- reads our bytes' disassembly; nothing of LLVM enters the compiler.
+
+use("./executables.shale")
+
+const WHO = "x86/cost.shale"
+const CODE_START = 4194424
+const WANT_OBJDUMP = "x86: the compiled race read back for its cost"
+const WANT_MCA = "x86: llvm-mca reads our bytes' disassembly, outside the compiler, for the cost tier"
+
+function set_const(text, name, value)
+  local pattern = "\nconst " .. name .. " = [^;\n]+;"
+  if re_find(text, pattern) == nil then fail(WHO .. ": no line `const " .. name .. " = ...;` to set") end
+  return re_replace(text, pattern, "\nconst " .. name .. " = " .. value .. ";")
+end
+
+-- Each race asked for: `{name, size, text}`, at collector.shale's sizes.
+function races(names)
+  local fixed = {
+    fib = {path = "x86/race/fib_race.js", line = "N", value = "100000"},
+    bank = {path = "x86/bank/bank_race.js", line = "TRANSFERS", value = "2000000"},
+    fourteen = {path = "x86/fourteen/fourteen.js", line = "ROUNDS", value = "300"},
+    bigdaddy = {path = "x86/bigdaddy/bigdaddy_race.js", line = "ROUNDS", value = "300"},
+    sat = {path = "x86/satrace/sat.js", line = "WORKLOAD", value = "\"small\""},
+  }
+  local out = {}
+  for name in split(names, ",") do
+    if not has_key(fixed, name) then fail(WHO .. ": no race named " .. name .. ": fib, bank, fourteen, bigdaddy or sat") end
+    local f = fixed[name]
+    push(out, {name = name, size = re_replace(f.value, "\"", ""), text = set_const(read(f.path), f.line, f.value)})
+  end
+  return out
+end
+
+-- The drivers: `{label, exe}`, this tree's own unless `drivers=` names some.
+function drivers(named)
+  if named == "" then return {{label = "this tree", exe = built_roc(WHO, "x86/roc/JsToX86.roc", "js-x86", "dev")}} end
+  local out = {}
+  for item in split(named, ",") do
+    local m = re_find(item, "^([^:]+):(.+)$")
+    if m == nil then fail(WHO .. ": a driver is `label:path`, not " .. item) end
+    push(out, {label = m.groups[1], exe = m.groups[2]})
+  end
+  return out
+end
+
+-- `places=`: a map from a driver's label to `{f, from, to}`.
+function places_of(named)
+  local out = {}
+  if named == "" then return out end
+  for item in split(named, ",") do
+    local m = re_find(item, "^([^:]+):code_([0-9]+)_([0-9]+)-([0-9]+)$")
+    if m == nil then fail(WHO .. ": a place range is `label:code_<f>_<from>-<to>`, not " .. item) end
+    out[m.groups[1]] = {f = tonumber(m.groups[2]), from = tonumber(m.groups[3]), to = tonumber(m.groups[4])}
+  end
+  return out
+end
+
+-- The number lowercase hex digits spell.
+function unhex(s)
+  local digits = "0123456789abcdef"
+  local n = 0
+  for i = 1, #s do n = n * 16 + find(digits, sub(s, i, i)) - 1 end
+  return n
+end
+
+-- The disassembly's instructions as `{at, text}`, `at` from the code's start.
+function instructions_of(path)
+  local d = run({"objdump", "-D", "-b", "binary", "-mi386:x86-64", "-M", "intel", "--adjust-vma=0x400000", "--start-address=0x400078", real(path)}, {timeout_ms = 120000, whole = 200000000, want = WANT_OBJDUMP})
+  if d.code ~= 0 then fail(WHO .. ": objdump exited " .. d.code) end
+  local out = {}
+  for l in lines(d.out) do
+    local m = re_find(l, "^ *([0-9a-f]+):\t[0-9a-f ]+\t(.*)$")
+    if m ~= nil then push(out, {at = unhex(m.groups[1]) - CODE_START, text = trim(m.groups[2])}) end
+  end
+  return out
+end
+
+-- The labels of function `f` as `{at, label}`, sorted by offset.
+function labels_of(exe, text, f)
+  local made = driver_run(exe, text, "labels")
+  if made.code ~= 0 then fail(WHO .. ": js-x86 labels exited " .. made.code .. ": " .. trim(made.out)) end
+  local rows = {}
+  local prefix = "code_" .. f .. "_"
+  for l in lines(made.out) do
+    if find(l, prefix) ~= nil then
+      local m = re_find(l, "^([0-9]+) (code_[0-9]+_.*)$")
+      if m ~= nil and starts_with(m.groups[2], prefix) then push(rows, {at = tonumber(m.groups[1]), label = m.groups[2]}) end
+    end
+  end
+  sort(rows, "at")
+  return rows
+end
+
+-- The fast path of places `from` to `to` of function `f`: each place's
+-- instructions from its label to its first `jmp` or the next label (its
+-- own, `_slow`, or the next place's: an empty place's label shares its
+-- next one's address), in order. `{lines, count}`.
+function fast_path(instructions, rows, place)
+  local start = {}
+  local own = {}
+  for r in rows do
+    local m = re_find(r.label, "^code_[0-9]+_([0-9]+)(.*)$")
+    if m ~= nil and m.groups[2] == "" then start[m.groups[1]] = r.at end
+    if m ~= nil and m.groups[2] ~= "_start" then push(own, r.at) end
+  end
+  local index = {}
+  for k = 1, #instructions do index["" .. instructions[k].at] = k end
+  local out = {}
+  for n = place.from, place.to do
+    local at = get(start, "" .. n, -1)
+    if at < 0 then fail(WHO .. ": no label code_" .. place.f .. "_" .. n) end
+    local stop = 1000000000
+    for o in own do if o > at and o < stop then stop = o end end
+    local k = get(index, "" .. at, 0)
+    if k == 0 then fail(WHO .. ": code_" .. place.f .. "_" .. n .. " is at no instruction's start") end
+    while k <= #instructions and instructions[k].at < stop and not starts_with(instructions[k].text, "jmp") do
+      push(out, instructions[k].text)
+      k = k + 1
+    end
+  end
+  return out
+end
+
+-- An instruction as llvm-mc reads it: a branch's absolute target made a
+-- label, objdump's `QWORD PTR` kept (Intel syntax).
+function mca_line(t)
+  local m = re_find(t, "^(j[a-z]+|call) +0x[0-9a-f]+")
+  if m ~= nil then return m.groups[1] .. " .Lout" end
+  return t
+end
+
+-- llvm-mca's reading of the file's pass, loads after every store before
+-- them (`alias`) or after none: `{instructions, uops, rthroughput, latency,
+-- out}`.
+function mca_run(file, cpu, alias, show)
+  local argv = {"llvm-mca-18", "-mtriple=x86_64", "-mcpu=" .. cpu, "-noalias=" .. (alias and "false" or "true"), "-iterations=1"}
+  if show then push(argv, "-timeline") push(argv, "-timeline-max-cycles=0") end
+  push(argv, real(file))
+  local r = run(argv, {timeout_ms = 60000, whole = 4000000, want = WANT_MCA})
+  if r.code ~= 0 then fail(WHO .. ": llvm-mca exited " .. r.code .. ": " .. sub(r.out, 1, 2000)) end
+  if find(r.out, "error:") ~= nil then fail(WHO .. ": llvm-mca refused a line: " .. sub(r.out, 1, 2000)) end
+  local n = re_find(r.out, "Instructions: +([0-9]+)")
+  local cycles = re_find(r.out, "Total Cycles: +([0-9]+)")
+  local uops = re_find(r.out, "Total uOps: +([0-9]+)")
+  local rt = re_find(r.out, "Block RThroughput: +([0-9.]+)")
+  return {instructions = n.group, latency = cycles.group, uops = uops.group, rthroughput = rt.group, out = r.out}
+end
+
+-- llvm-mca's reading of a fast path: its instructions, micro-ops and block
+-- throughput, its one-pass latency both ways (`latency` with every load
+-- after the stores before it, `free` with none), and the first's timeline.
+function mca(path_lines, cpu, file, show)
+  local src = {".intel_syntax noprefix"}
+  for t in path_lines do push(src, mca_line(t)) end
+  push(src, ".Lout:")
+  replace(file, join(src, "\n") .. "\n")
+  local held = mca_run(file, cpu, true, show)
+  local free = mca_run(file, cpu, false, false)
+  held.free = free.latency
+  return held
+end
+
+-- One driver's race: its row of the bytes, and its row of the places (or
+-- false) with llvm-mca's text when `show` (else false). `first` is the first driver's
+-- executable's path, or nil for the first.
+function one(race, i, d, dir, places, cpu, show, first)
+  local path = dir .. "/" .. race.name .. "-" .. i
+  local size = written_executable(WHO, d.exe, race.text, path)
+  local same = "yes"
+  if first ~= nil and read(path) ~= read(first) then same = "no" end
+  local instructions = instructions_of(path)
+  local out = {path = path, bytes = {race = race.name .. " " .. race.size, driver = d.label, bytes = size, code_instructions = #instructions, same = same}, place = false, shown = false}
+  if has_key(places, d.label) and race.name == "sat" then
+    local place = places[d.label]
+    local rows = labels_of(d.exe, race.text, place.f)
+    local fp = fast_path(instructions, rows, place)
+    local m = mca(fp, cpu, path .. ".mca.s", show)
+    out.place = {driver = d.label, places = "code_" .. place.f .. "_" .. place.from .. "-" .. place.to, instructions = m.instructions, uops = m.uops, rthroughput = m.rthroughput, latency = m.latency, free = m.free}
+    if show then
+      replace(path .. ".mca.txt", join(fp, "\n") .. "\n\n" .. m.out)
+      out.shown = d.label .. ": the fast path and llvm-mca's timeline in " .. real(path) .. ".mca.txt"
+    end
+  end
+  return out
+end
+
+-- One pass of the tier: its two tables' text.
+function tier(list, ds, places, cpu, show)
+  local dir = executables_dir() .. "/cost"
+  mkdir(dir)
+  local bytes_rows = {}
+  local place_rows = {}
+  local shown = {}
+  for race in list do
+    local first = nil
+    for i = 1, #ds do
+      local o = one(race, i, ds[i], dir, places, cpu, show, first)
+      if first == nil then first = o.path end
+      push(bytes_rows, o.bytes)
+      if o.place then push(place_rows, o.place) end
+      if o.shown then push(shown, o.shown) end
+      yield()
+    end
+  end
+  local text = table(bytes_rows, {"race", "driver", "bytes", "code_instructions", "same"})
+  if #place_rows > 0 then text = text .. "\n" .. table(place_rows, {"driver", "places", "instructions", "uops", "rthroughput", "latency", "free"}) end
+  return {text = text, shown = shown}
+end
+
+function main()
+  local list = races(arg("races", "fib,bank,fourteen,bigdaddy,sat"))
+  local ds = drivers(arg("drivers", ""))
+  local places = places_of(arg("places", ""))
+  local cpu = arg("mcpu", "cascadelake")
+  local show = arg("show", false)
+  local first = tier(list, ds, places, cpu, show)
+  print(first.text)
+  for s in first.shown do print(s) end
+  if arg("twice", false) then
+    local second = tier(list, ds, places, cpu, false)
+    if second.text ~= first.text then fail(WHO .. ": the second pass differs:\n" .. second.text) end
+    print("twice: the second pass's tables are the first's, byte for byte")
+  end
+end
+
+main()
