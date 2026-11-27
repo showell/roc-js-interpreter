@@ -138,7 +138,7 @@ Ast :: [].{
 	## spread in its place (`...other`).
 	ObjectPart : [Field(Ast.Property), Spread(Ast.Expression, Ast.Where)]
 
-	UnaryOperator : [Not, Negate, Plus, TypeOf]
+	UnaryOperator : [Not, Negate, Plus, TypeOf, BitNot]
 
 	BinaryOperator : [
 		Add,
@@ -153,6 +153,13 @@ Ast :: [].{
 		LessOrEqual,
 		Greater,
 		GreaterOrEqual,
+		# The bitwise operators: `&`, `|`, `^`, `<<`, `>>` and `>>>`.
+		BitAnd,
+		BitOr,
+		BitExclusiveOr,
+		ShiftLeft,
+		ShiftRight,
+		ShiftRightUnsigned,
 	]
 
 	LogicalOperator : [And, Or, Nullish]

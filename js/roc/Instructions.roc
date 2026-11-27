@@ -119,6 +119,8 @@ Instructions :: [].{
 			(TypeOf, _) => Machine.replaced(machine, 1, Text(ValueRules.type_of(machine.cells, operand)))
 			(Negate, Number(number)) => Machine.replaced(machine, 1, Number(-number))
 			(Plus, Number(number)) => Machine.replaced(machine, 1, Number(number))
+			(BitNot, Number(number)) =>
+				Machine.replaced(machine, 1, Number(ValueRules.bit_not(number)))
 			_ => {
 				{ cells, machine: rest } = Machine.lent(machine)
 				Machine.with_got(rest, ValueRules.unary(Machine.shell(cells, rest), operator, operand, at), rest.top - 1)

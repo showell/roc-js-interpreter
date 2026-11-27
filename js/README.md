@@ -7,8 +7,8 @@ holds the language to node.
 The code here was written by AI coding agents (Claude), with human
 supervision.
 
-**Status (2026-11-24):** 61 of 61 corpus programs print what node 22
-prints, byte for byte, timers and uncaught throws included, and 76 of 76
+**Status (2026-11-27):** 63 of 63 corpus programs print what node 22
+prints, byte for byte, timers and uncaught throws included, and 79 of 79
 programs outside the subset are refused with the message they must give,
 on the VM's usual collection schedule and collecting at every allocation.
 Nine canvas samples are held to their logs of effects, one of them driven
@@ -44,8 +44,14 @@ what node prints for it is what the interpreter must print.
   object patterns with renames, defaults and rest (`{ x, y: why = 2,
   ...others }`), nested; and default and rest parameters (`function f(a,
   b = a + 1, ...more)`).
-- **Expressions:** arithmetic and `**`; `<`, `>`, `<=`, `>=` on numbers or on
-  strings; `===` and `!==`; `&&`, `||`, `??`, `!`, `?:` and `typeof`;
+- **Expressions:** arithmetic and `**`; the bitwise operators `&`, `|`,
+  `^`, `~`, `<<`, `>>` and `>>>` on numbers (each operand made a 32-bit
+  integer by ECMAScript's ToInt32, or ToUint32 for `>>>`: NaN and the
+  infinities 0, fractions toward 0, the rest modulo 2^32; a shift's count
+  modulo 32), with JavaScript's precedence (the shifts between `+` and
+  `<`, `&`, `^` and `|` between `===` and `&&`); `<`, `>`, `<=`, `>=` on
+  numbers or on strings; `===` and `!==`; `&&`, `||`, `??`, `!`, `?:` and
+  `typeof`;
   assignment, the compound assignments, the logical ones (`??=`, `||=`,
   `&&=`) and `++` and `--`; property and index access, and optional
   chains (`a?.b`, `a?.[k]`, `f?.()`); calls; `new` of the builtin
@@ -99,7 +105,7 @@ what node prints for it is what the interpreter must print.
 - **Out of it:** `this` outside a class's code, `new` on a function of the
   program, prototypes, getters and setters, `#private` names, class fields
   and static blocks, class expressions, printing or listing a class's
-  instance (below), `==` and the other coercions (`"3" * 2`, `true + 1`),
+  instance (below), `==` and the other coercions (`"3" * 2`, `true + 1`, `"7" | 0`, `~true`),
   `var`, `eval`, regular expressions, `in`, `instanceof` of anything but a
   class's name, computed property names, async and modules; printing an
   error (node prints its stack) or an iterator, an iterator's `next`, a

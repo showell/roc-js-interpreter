@@ -1219,11 +1219,12 @@ Parser :: [].{
 		Punct("/=") => Ok(Combine(Divide))
 		Punct("%=") => Ok(Combine(Remainder))
 		Punct("**=") => Ok(Combine(Power))
-		Punct("<<=") => Err(Unsupported("unsupported: bitwise operators (`<<=`)"))
-		Punct(">>=") => Err(Unsupported("unsupported: bitwise operators (`>>=`)"))
-		Punct("&=") => Err(Unsupported("unsupported: bitwise operators (`&=`)"))
-		Punct("|=") => Err(Unsupported("unsupported: bitwise operators (`|=`)"))
-		Punct("^=") => Err(Unsupported("unsupported: bitwise operators (`^=`)"))
+		Punct("<<=") => Ok(Combine(ShiftLeft))
+		Punct(">>=") => Ok(Combine(ShiftRight))
+		Punct(">>>=") => Ok(Combine(ShiftRightUnsigned))
+		Punct("&=") => Ok(Combine(BitAnd))
+		Punct("|=") => Ok(Combine(BitOr))
+		Punct("^=") => Ok(Combine(BitExclusiveOr))
 		Punct("&&=") => Ok(Logically(And))
 		Punct("||=") => Ok(Logically(Or))
 		Punct("??=") => Ok(Logically(Nullish))
@@ -1334,11 +1335,11 @@ Parser :: [].{
 
 	logical_and : ParserBasics.State -> ParserBasics.ParsedExpression
 	logical_and = |parser| {
-		first = Parser.equality(parser)?
+		first = Parser.bitwise_or(parser)?
 		var $onward = first.parser
 		var $built = first.value
 		while ParserBasics.is_punct($onward, "&&") {
-			parsed = Parser.equality(ParserBasics.advance($onward))?
+			parsed = Parser.bitwise_or(ParserBasics.advance($onward))?
 			$built = Logical(And, $built, parsed.value)
 			$onward = parsed.parser
 		}
@@ -1380,6 +1381,33 @@ Parser :: [].{
 		Ok({ parser: $onward, value: $built })
 	}
 
+	# The bitwise operators bind between `&&` and the equalities, `|` the
+	# loosest and `&` the tightest, as in JavaScript: `a | b ^ c & d` is
+	# `a | (b ^ (c & d))`, and `x & 1 === 1` is `x & (1 === 1)`.
+	bitwise_or : ParserBasics.State -> ParserBasics.ParsedExpression
+	bitwise_or = |parser|
+		Parser.binary_level(
+			parser,
+			[{ punct: "|", operator: BitOr }],
+			Parser.bitwise_exclusive_or,
+		)
+
+	bitwise_exclusive_or : ParserBasics.State -> ParserBasics.ParsedExpression
+	bitwise_exclusive_or = |parser|
+		Parser.binary_level(
+			parser,
+			[{ punct: "^", operator: BitExclusiveOr }],
+			Parser.bitwise_and,
+		)
+
+	bitwise_and : ParserBasics.State -> ParserBasics.ParsedExpression
+	bitwise_and = |parser|
+		Parser.binary_level(
+			parser,
+			[{ punct: "&", operator: BitAnd }],
+			Parser.equality,
+		)
+
 	equality : ParserBasics.State -> ParserBasics.ParsedExpression
 	equality = |parser| {
 		parsed = Parser.binary_level(
@@ -1391,11 +1419,6 @@ Parser :: [].{
 			parsed.parser,
 			["==", "!="],
 			"unsupported: loose equality, use `===` or `!==`",
-		)?
-		ParserBasics.refuse_operator(
-			parsed.parser,
-			["&", "|", "^"],
-			"unsupported: bitwise operators",
 		)?
 		Ok(parsed)
 	}
@@ -1410,7 +1433,7 @@ Parser :: [].{
 				{ punct: ">", operator: Greater },
 				{ punct: ">=", operator: GreaterOrEqual },
 			],
-			Parser.additive,
+			Parser.shift,
 		)?
 		if ParserBasics.is_word(parsed.parser, "in") {
 			Err(ParserBasics.fault_here(parsed.parser, "unsupported: `in`"))
@@ -1430,14 +1453,23 @@ Parser :: [].{
 				_ => ClassDesugaring.class_refused(parsed.parser, InstanceofOther)
 			}
 		} else {
-			ParserBasics.refuse_operator(
-				parsed.parser,
-				["<<", ">>", ">>>"],
-				"unsupported: bitwise operators",
-			)?
 			Ok(parsed)
 		}
 	}
+
+	# The shifts bind between the orderings and `+` and `-`: `1 << 2 + 3` is
+	# `1 << 5`, and `a >> 1 < b` is `(a >> 1) < b`.
+	shift : ParserBasics.State -> ParserBasics.ParsedExpression
+	shift = |parser|
+		Parser.binary_level(
+			parser,
+			[
+				{ punct: "<<", operator: ShiftLeft },
+				{ punct: ">>", operator: ShiftRight },
+				{ punct: ">>>", operator: ShiftRightUnsigned },
+			],
+			Parser.additive,
+		)
 
 	additive : ParserBasics.State -> ParserBasics.ParsedExpression
 	additive = |parser|
@@ -1482,9 +1514,7 @@ Parser :: [].{
 			Name("typeof") => Ok(Operator(TypeOf))
 			Punct("++") => Ok(Prefixed(Increment))
 			Punct("--") => Ok(Prefixed(Decrement))
-			Punct("~") => Err(
-				ParserBasics.fault_here(parser, "unsupported: bitwise operators (`~`)"),
-			)
+			Punct("~") => Ok(Operator(BitNot))
 			_ => Ok(NoOperator)
 		}?
 		match operator {

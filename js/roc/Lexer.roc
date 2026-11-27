@@ -474,6 +474,7 @@ Lexer :: [].{
 
 	punctuators : List(Str)
 	punctuators = [
+		">>>=",
 		"===",
 		"!==",
 		"**=",
@@ -535,7 +536,7 @@ Lexer :: [].{
 
 	scan_punct : List(U8), Lexer.Scan -> Try(Lexer.Scan, Lexer.Fault)
 	scan_punct = |src, scanner| {
-		rest = src.sublist({ start: scanner.at, len: 3 })
+		rest = src.sublist({ start: scanner.at, len: 4 })
 		match Lexer.punctuators.find_first(|punctuator| rest.starts_with(punctuator.to_utf8())) {
 			Ok(punctuator) => {
 				made = Lexer.with_token(scanner, Punct(punctuator), scanner.at)

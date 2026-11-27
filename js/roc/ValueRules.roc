@@ -504,6 +504,17 @@ ValueRules :: [].{
 					"unsupported: `+` on a ${ValueRules.type_of(machine.cells, subject)} (a coercion)${ValueRules.line_note(site)}",
 				)
 			}
+			BitNot => match subject {
+				Number(number) => { machine: machine, value: Number(ValueRules.bit_not(number)) }
+				_ => {
+					kind = ValueRules.type_of(machine.cells, subject)
+					note = ValueRules.line_note(site)
+					ValueRules.fault_got(
+						machine,
+						"unsupported: `~` on a ${kind} (a coercion)${note}",
+					)
+				}
+			}
 		}
 
 	binary : ValueRules.Machine, Ast.BinaryOperator, Heap.Value, Heap.Value, Ast.Where -> ValueRules.Got
@@ -566,7 +577,58 @@ ValueRules :: [].{
 		Add => Number(x + y)
 		StrictEqual => Boolean(x == y)
 		StrictNotEqual => Boolean(x != y)
+		BitAnd => ValueRules.signed_word(
+			U32.bitwise_and(ValueRules.word_of(x), ValueRules.word_of(y)),
+		)
+		BitOr => ValueRules.signed_word(
+			U32.bitwise_or(ValueRules.word_of(x), ValueRules.word_of(y)),
+		)
+		BitExclusiveOr => ValueRules.signed_word(
+			U32.bitwise_xor(ValueRules.word_of(x), ValueRules.word_of(y)),
+		)
+		ShiftLeft => ValueRules.signed_word(
+			ValueRules.word_of(x).shl_wrap(ValueRules.shift_count(y)),
+		)
+		ShiftRight => Number(
+			ValueRules.word_of(x).to_i32_wrap().shr_wrap(ValueRules.shift_count(y)).to_f64(),
+		)
+		ShiftRightUnsigned => Number(
+			ValueRules.word_of(x).shr_zf_wrap(ValueRules.shift_count(y)).to_f64(),
+		)
 	}
+
+	# ECMAScript's ToUint32: NaN and the infinities are 0; anything else is
+	# truncated toward 0 and taken modulo 2^32. `rem_by` of a double is
+	# exact, and what it leaves is within 2^32 of 0, so its whole part is an
+	# exact integer.
+	word_of : F64 -> U32
+	word_of = |number|
+		if number.is_nan() or number.is_infinite() {
+			0
+		} else {
+			whole = number.rem_by(4294967296.0).div_trunc_by(1.0)
+			wrapped = if whole < 0.0 {
+				whole + 4294967296.0
+			} else {
+				whole
+			}
+			match wrapped.floor_to_i64_try() {
+				Ok(bits) => bits.to_u32_wrap()
+				Err(_) => crash "ValueRules.word_of: a whole number below 2^32"
+			}
+		}
+
+	# The 32 bits a bitwise operator answers, read as a signed integer (ToInt32).
+	signed_word : U32 -> Heap.Value
+	signed_word = |bits| Number(bits.to_i32_wrap().to_f64())
+
+	# A shift's count: its ToUint32, modulo 32.
+	shift_count : F64 -> U8
+	shift_count = |number| U32.bitwise_and(ValueRules.word_of(number), 31).to_u8_wrap()
+
+	# `~`: the bits of the operand's ToInt32 turned over.
+	bit_not : F64 -> F64
+	bit_not = |number| U32.bitwise_not(ValueRules.word_of(number)).to_i32_wrap().to_f64()
 
 	# JavaScript's `%`: the sign of the dividend, NaN for a zero divisor or an
 	# infinite dividend, the dividend itself for an infinite divisor.
