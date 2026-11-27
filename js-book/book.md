@@ -506,6 +506,8 @@ digraph {
 
 The memory view, `js_memory.js`, is a popup with two small charts of the last run. The top one is the heap's cells in use, which climb as the program allocates and drop at each collection, a sawtooth; the bottom one is the wasm memory's size.
 
+The page runs a program on the browser's main thread, so it holds the program to step budgets: 3,000,000 steps before the first frame and 300,000 a frame, where the VM counts calls and loop passes (`js/README.md`, "Pitfalls").
+
 `js/build.shale` names every file but `index.html` by its bytes, so a browser always loads the scripts that match its page, and it replaces the page only after `js/page_check.mjs` passes.
 
 ### How an effect travels
@@ -896,57 +898,26 @@ The work moved, and some of it moved into the runtime. A routine that the interp
 
 ## Dev and release builds disagree
 
-Roc has two backends. The dev backend (`--opt=dev`) compiles in about a second and emits code that is mostly stack moves. The release build (`--opt=speed`) goes through LLVM, runs fib(22) about nine times faster, and compiles slowly. The two builds disagree about allocations, about time and about copies, and this project met each disagreement.
+Roc has two backends. The dev backend (`--opt=dev`) compiles in about a second and emits code that is mostly stack moves. The release build (`--opt=speed`) goes through LLVM, compiles slowly, and runs the VM's fib(22) about nine times faster: 99 ms of CPU against about 860 (`js/README.md`, 2026-11-24). Three findings about the pair have lasted.
 
-### Allocation counts
+### A dev timing says little
 
-`js/controls/` holds nine small programs, each a loop that does one kind of write. `js/controls.shale` runs each at 1,000 and 10,000 passes, counts `roc_alloc`'s calls exactly, and holds what one pass allocates to `expected.txt` (release) and `expected-dev.txt` (dev). A control left out of a file is held to 0.
-
-| control | dev | release |
-|---|---|---|
-| 00-loop | 0 | 0 |
-| 01-array-store | 1 | 0 |
-| 02-closure-call | 1 | 0 |
-| 03-string-building | 0 | 0 |
-| 04-property-write | 1 | 0 |
-| 05-array-push | 2 | 1 |
-| 06-push-pop | 2 | 1 |
-| 07-map-set | 4.08 | 2.08 |
-| 08-garbage-in-a-call | 3.04 | 1 |
-
-Most of the difference is one cause. The dev build lowers closures to boxes, so a `List.update` whose lambda captures a value that holds a reference count (a key, a value, a list) allocates once per write to box the capture. That allocation is a box and the list stays in place, and the release build makes it zero times (the files' own comments say so line by line). One dev allocation remains unexplained: 02-closure-call's 112-byte list per call, which roc-alloc-trace puts down to `Machine.pushed` and which three rewrites left in place (`js/README.md`).
-
-This difference forced a decision. The walker's heap writers were first rewritten as `List.update` calls (`46c08a1d`); the release build held every control, and four dev controls rose by one. The change was reverted (`53f986a1`), then brought back (`22cd72db`) under the rule that Roc code should read well and play well with tooling, even at the cost of a little noise in dev builds. The dev expected file was rewritten, and every new line in it explains its allocation.
-
-### Copies that happen only in dev
-
-Some copies are made only by the dev build, at a helper's boundary: there a helper stays a call that owns its arguments, where the release build specializes it first. {{chapter Roc's copy rule}} lists three such shapes. This project met two kinds:
-
-- **A rule generic over the whole machine.** When `ValueRules` was split out, a version that took the engine's whole machine as an open record came first. The dev build copied the cells a rule wrote through it (a probe measured 3 allocations a write against 1), and the walker's dev controls went red, 05-array-push rising from 3 to 12.73 a pass (`d8d6b7fe`). The rules now take a small machine of the cells, which the VM lends and takes back.
-- **A planted copy the release build optimized away.** Twice, a `List.drop_last` was planted back into the walker's scope handling. Each time the dev ladder went red on 02-closure-call alone (15 to 16 in `920cda0c`, 3 to 4 in `2233adc9`) and the release ladder stayed green, because the release build makes zero copies there.
-
-The second case is why the dev ladder is useful: it sees copies the release build optimizes away, and those copies are often a sign of a shape that will copy in release once the code around it changes.
-
-### Timings
-
-Dev timings fail to predict release timings, even in direction.
+Dev timings fail to predict release timings, even in direction:
 
 | change | dev fib(22) | release fib(22) | source |
 |---|---|---|---|
 | walker: variables read by slot | 674 to 435 ms | 83 to 67 ms | `920cda0c` |
-| walker: loops, same change | 4,387 to 2,105 ms | 486 to 475 ms | `920cda0c` |
 | walker: the Map control's branch against master | 676 to 642 ms | 121 to 169 ms | `3b4f9bd1` |
-| VM today | about 860 ms | 99 ms | `js/README.md` |
 
-The first two rows show a change that halved the dev time of the loops while moving the release time by 11 ms. The third shows a branch that was faster than master on dev and 40% slower in release. Today the release build runs fib(22) about nine times faster than the dev build (860 against 99 ms).
+The second row is a branch that was faster than master on dev and 40% slower in release.
 
-### Step budgets
+### Some copies happen only in dev
 
-The page runs a program on the browser's main thread, so it holds the program to step budgets: 3,000,000 steps before the first frame and 300,000 a frame. The walker counted statements; the VM counts calls and loop passes, so the same budget covers about twice the work. On the dev backend the walker took 1.1 s of CPU to run out a frame's budget and 5.2 s for a program's; the VM takes 2.0 s and 8.8 s (`fd9fb4e4`, `js/README.md`, "Pitfalls").
+At a helper's boundary the dev build keeps a call that owns its arguments, where the release build specializes the helper first, so the dev build makes copies the release build skips ({{chapter Roc's copy rule}} lists three such shapes). The project met one in its own code. When `ValueRules` was split out, its first version took the engine's whole machine as an open record, and the dev build copied the cells on every write through it: 05-array-push's dev count rose from 3 to 12.73 allocations a pass (`d8d6b7fe`). The rules now take a small machine of the cells, which the VM lends them ({{chapter JavaScript's rules for values}}). A dev-only copy is often a shape that will copy in release once the code around it changes, so the dev counts are held too.
 
-### What each build is for
+### Count on dev, time on release
 
-roc-apps' `CLAUDE.md` (section 9) and `js/README.md` give each build its job. Screen on the dev build: allocation counts are deterministic, so a change that moves one shows on the dev ladder in seconds, and most trials end there. Measure on the release build, once per round, from one shared build (`tools/roc_build.shale` keys each build by its inputs, so a ladder, a timing and a heap probe of the same tree share it). A dev-build timing says little about the program.
+`js/controls/` holds nine small programs, each a loop that does one kind of write. `js/controls.shale` runs each at 1,000 and 10,000 passes and holds what one more pass allocates, exactly, in both builds: `expected.txt` for release and `expected-dev.txt` for dev, where each line explains its allocation. Counts are deterministic, so a change that moves one shows on the dev ladder in seconds, and most trials end there. Times are taken on the release build, once a round, from one shared build (`tools/roc_build.shale` keys each build by its inputs), as roc-apps' `CLAUDE.md` (section 9) and `js/README.md` say.
 
 ## Build times
 
@@ -1025,7 +996,7 @@ The limits fall in three groups: the runtime is small on purpose, the language i
 - **At the command line, `js-vm`'s runtime is as small:** `console.log`, the timers, and the builtins `js/README.md` lists under "The subset" (`Math`, the methods of strings, arrays, Maps and Sets, `Object.keys` and its kin). Files, processes, `require`, the network and node's other modules are out of reach. The compiler to x86-64 in `x86/` keeps the same small runtime, and adds `Date.now()`, which the VM refuses (`x86/README.md`).
 - **Async is out:** promises, `async` and `await` are refused. Timers are the one way to wait, on a virtual clock that runs each callback after the program, in node's order.
 - An interval never cleared stops after 100,000 callbacks with a message, where node runs it for good (`js/README.md`, "The subset").
-- On the page, a program is held to step budgets, 3,000,000 before the first frame and 300,000 a frame ({{chapter Dev and release builds disagree}}).
+- On the page, a program is held to step budgets, 3,000,000 before the first frame and 300,000 a frame ({{chapter A canvas in the browser}}).
 
 ### Language
 
