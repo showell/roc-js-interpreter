@@ -1088,14 +1088,7 @@ Roc has two backends. The dev backend (`--opt=dev`) compiles in about a second a
 
 ### A dev timing says little
 
-Dev timings fail to predict release timings, even in direction:
-
-| change | dev fib(22) | release fib(22) | source |
-|---|---|---|---|
-| walker: variables read by slot | 674 to 435 ms | 83 to 67 ms | `920cda0c` |
-| walker: the Map control's branch against master | 676 to 642 ms | 121 to 169 ms | `3b4f9bd1` |
-
-The second row is a branch that was faster than master on dev and 40% slower in release.
+Dev timings fail to predict release timings, even in direction. On 2026-11-23 a branch of the walker, `js-run`, the project's first interpreter, which walked the program's tree and has since been deleted, ran fib(22) in 642 ms on the dev build against master's 676, and in 169 ms on the release build against master's 121: faster than master on dev, and 40% slower in release (`3b4f9bd1`).
 
 ### Some copies happen only in dev
 
@@ -1103,7 +1096,7 @@ At a helper's boundary the dev build keeps a call that owns its arguments, where
 
 ### Count on dev, time on release
 
-`js/controls/` holds nine small programs, each a loop that does one kind of write. `js/controls.shale` runs each at 1,000 and 10,000 passes and holds what one more pass allocates, exactly, in both builds: `expected.txt` for release and `expected-dev.txt` for dev, where each line explains its allocation. Counts are deterministic, so a change that moves one shows on the dev ladder in seconds, and most trials end there. Times are taken on the release build, once a round, from one shared build (`tools/roc_build.shale` keys each build by its inputs), as roc-apps' `CLAUDE.md` (section 9) and `js/README.md` say.
+`js/controls/` holds nine small programs, each a loop that does one kind of write. `js/controls.shale` runs each at 1,000 and 10,000 passes and holds what one more pass allocates, exactly, in both builds: `expected.txt` for release and `expected-dev.txt` for dev, where each line explains its allocation. Counts are deterministic, so a change that moves one shows in the dev build's counts within seconds, and most trials end there. Times are taken on the release build, once a change's counts hold, from one shared build (`tools/roc_build.shale` keys each build by its inputs), as roc-apps' `CLAUDE.md` (section 9) and `js/README.md` say.
 
 One round of a change
 ```dot
@@ -1111,7 +1104,7 @@ digraph {
   rankdir=LR;
   node [shape=box, style=rounded];
   change [label="a change"];
-  dev [label="the dev ladder\ncounts, in seconds"];
+  dev [label="the dev build's\ncounts, in seconds"];
   release [label="one shared\nrelease build"];
   time [label="the timing"];
   change -> dev;
@@ -1121,31 +1114,11 @@ digraph {
 }
 ```
 
-## Build times
+### The interpreter's release build
 
-A build's time sets the pace of every change, and RC1's release builds were the slowest step in the project's loop. This chapter is about two kinds of build: Roc building the two programs, and js-x86 building a JavaScript program.
+A build's time sets the pace of every change, and RC1's release builds were the slowest step in the project's loop. `js-vm`'s release build takes 91 s today (`js/README.md`'s status line). Its first release build took 670 s (`29cb46ec`), while the VM still imported the walker's module for the value rules. Once those rules moved into a module of their own and the import went (`d8d6b7fe`), the build fell to 84 s (`15686d94`). The commits leave the cause of the drop unstated.
 
-### Roc building the interpreter
-
-RC1's release builds were the project's slowest loop, against under a second for a dev build of the same code (the message of roc-apps' tag `rc1-slow-release-build`). The walker's release build grew with the language:
-
-| the walker's release build | time | source |
-|---|---|---|
-| when the controls first landed | 65 s | `84263a4b` |
-| after the language gaps | 686 s | `f0837ff4` |
-| `js-run`, about 10,000 lines of Roc | 1,052 s | roc-apps' tag `rc1-slow-release-build` |
-| the JavaScript tier, most of it in RC1's SpecConstr pass | 11 to 17 min | roc-apps' [`762c7d3a`](https://github.com/showell/roc-apps/commit/762c7d3a) |
-
-The VM's first round still imported the walker's module for the value rules. After the value rules moved into a module of their own and the VM dropped that import (`d8d6b7fe`), its build fell to an eighth, while `js-run` still took 481 s. The commits leave the cause of the drop unstated.
-
-| the VM's release build | time | source |
-|---|---|---|
-| the first round, importing the walker | 670 s | `29cb46ec` |
-| after the import was dropped | 84 s | `15686d94`, `d7ce2f2c` |
-| after the collector | 110 s | `f9188b2f` |
-| today | 91 s | `js/README.md`'s status line |
-
-The interpreter works RC1's release pipeline harder than most Roc projects do. Jack Scully profiled the compiler on this code at roc-apps' [`762c7d3a`](https://github.com/showell/roc-apps/commit/762c7d3a) and opened three pull requests against RC1's SpecConstr pass. Each is measured alone, on his machine, against `js-run`'s 271 s release build before them (the pull requests' descriptions):
+The interpreter works RC1's release pipeline harder than most Roc projects do. Jack Scully profiled the compiler on this code at roc-apps' [`762c7d3a`](https://github.com/showell/roc-apps/commit/762c7d3a), where most of a build's time went to SpecConstr, a pass of RC1's release pipeline, and he opened three pull requests against that pass. Each is measured alone, on his machine, against the walker's 271 s release build before them (the pull requests' descriptions):
 
 | pull request | what it changes | `js-run`'s release build |
 |---|---|---|
@@ -1157,7 +1130,7 @@ He put the three together at about 12 times faster for this repository's code sp
 
 ### js-x86 building a program, preliminary, as of 2026-11-27
 
-The compiler turns the question around: how long from a program's source to an executable on the disk? `x86/buildrace.shale` times js-x86 against `roc build` of the same race written in Roc, at `--opt=dev` and at `--opt=speed`, the build that makes the fast executable the races run (`x86/buildrace/README.md`). These numbers are preliminary: the box was shared with other lanes, and a run on a quiet box will replace them. The headline, from warm runs at a load of 1.0 to 1.3 (`x86/buildrace/PROFILE.md`, "The build race, before and after"; `x86/RC2.md` for the executables):
+The compiler turns the question around: how long from a program's source to an executable on the disk? `x86/buildrace.shale` times js-x86 against `roc build` of the same race written in Roc, at `--opt=dev` and at `--opt=speed`, the build that makes the fast executable the races run (`x86/buildrace/README.md`). These numbers are preliminary: the machine was shared with other work, and a run on a quiet machine will replace them. The headline, from warm runs at a load of 1.0 to 1.3 (`x86/buildrace/PROFILE.md`, "The build race, before and after"; `x86/RC2.md` for the executables):
 
 | from a race's source to an executable | build time | the executable it makes |
 |---|---|---|
@@ -1171,13 +1144,13 @@ So js-x86 builds 15 to 50 times faster than the Roc build that makes a fast exec
 
 A check is trusted once it has been seen to fail. Each check below holds the code to a fixed answer, and each count is exact.
 
-### The oracle against node
-
-`js/oracle.shale`, a tier of the default `check.shale`, holds `js-vm`'s transcript and exit code on every corpus program to node's, 63 of them, and every refusal to its message. Every program runs, and the run fails if any one fails. It also runs with `collect=every`, which collects after every instruction that allocates, and programs 51 to 53 hold values through each kind of root while collections run.
-
 ### The compiler's checks
 
-`x86/programs.shale`, also a tier of `check.shale`, compiles each program in `x86/tests/` and holds what its executable prints, and its exit code, to node's; each program in `x86/tests/refused/` names the refusal `js-x86` must print or the line its executable must stop with. Then it holds the corpus to `x86/corpus.txt`, the list of programs whose executables match node, so a program that starts or stops matching fails the gate until the list moves. It holds the count of calls the inliner puts in line across `x86/tests/` exactly (its `INLINED`), and runs every executable with `heapwalk`, which checks every block's header at the exit (`x86/COLLECTOR.md`). `x86/hello.shale` runs the backend's 134 expects, the encoder's 119 among them, each holding one instruction's bytes, and `x86/fib.shale` the compiler's 230 (each script's `EXPECTS`, held exactly, as of 2026-11-27).
+`x86/programs.shale`, a tier of the default `check.shale`, compiles each program in `x86/tests/` and holds what its executable prints, and its exit code, to node's; each program in `x86/tests/refused/` names the refusal `js-x86` must print or the line its executable must stop with. Then it holds the corpus to `x86/corpus.txt`, the list of programs whose executables match node, so a program that starts or stops matching fails the gate until the list moves. It holds the count of calls the inliner puts in line across `x86/tests/` exactly (its `INLINED`), and runs every executable with `heapwalk`, which checks every block's header at the exit (`x86/COLLECTOR.md`). `x86/hello.shale` runs the backend's 134 expects, the encoder's 119 among them, each holding one instruction's bytes, and `x86/fib.shale` the compiler's 230 (each script's `EXPECTS`, held exactly, as of 2026-11-27).
+
+### The interpreter against node
+
+`js/oracle.shale`, also a tier of `check.shale`, holds `js-vm`'s transcript and exit code on every corpus program to node's, 63 of them, and every refusal to its message. Every program runs, and the run fails if any one fails. It also runs with `collect=every`, which collects after every instruction that allocates, and programs 51 to 53 hold values through each kind of root while collections run.
 
 ### Controls held exactly
 
@@ -1193,17 +1166,7 @@ A check is trusted once it has been seen to fail. Each check below holds the cod
 
 ### Planted faults
 
-A planted fault is a deliberate bug, committed to show that a check catches it, then reverted. The interpreter's record lists five:
-
-| the fault planted | what turned red | commit |
-|---|---|---|
-| a line width of 72 instead of 80 | one program | `278631d8` |
-| the event queue left out of the roots | program 52 | `b623437d` |
-| `filter`'s item left off the stack | program 53 | `b623437d` |
-| a wrong expected count | 00-loop, by name | `80b5e681` |
-| a memory view with its collection marks taken out | page_check | `668c52ca` |
-
-`tools/machine_size.shale`'s header records one more: the machine's size held at 247 went red naming 248. The compiler's commits list their own, each reverted too:
+A planted fault is a deliberate bug, committed to show that a check catches it, then reverted. The compiler's commits list four:
 
 | the fault planted | commit |
 |---|---|
@@ -1212,17 +1175,42 @@ A planted fault is a deliberate bug, committed to show that a check catches it, 
 | each rule of the inliner's budget | `22361e1` |
 | three faults in the heap's headers and pages | `a328636` |
 
+The interpreter's record lists five, each reverted too:
+
+| the fault planted | what turned red | commit |
+|---|---|---|
+| `console.log`'s line width at 72 instead of 80 | one program | `278631d8` |
+| the event queue left out of the roots | program 52 | `b623437d` |
+| `filter`'s item left off the stack | program 53 | `b623437d` |
+| a wrong expected count | 00-loop, by name | `80b5e681` |
+| a memory view with its collection marks taken out | page_check | `668c52ca` |
+
+`tools/machine_size.shale`'s header records one more: the machine's size held at 247 went red naming 248.
+
 ## Limitations
 
 The subset covers a part of JavaScript on purpose, and it will never cover every corner of the language. A program that steps outside it is refused with a message naming what it used; it never gets a wrong answer.
 
-This chapter is the list a reader starts from before extending either program. The limits fall in four groups: the runtime, small on purpose; the language, fairly complete; the compiler, which runs less of it; and a few that come from the tools.
+This chapter is the list a reader starts from before extending either program. The limits fall in four groups, in the book's order: the compiler, which runs less of the subset; the runtime, small on purpose; the language, fairly complete; and a few that come from the tools.
+
+### The compiler
+
+The compiler runs less of the subset than the interpreter does, and says where. A program it has yet to compile is refused by name before a byte is written; what only a value can decide stops the executable with a line `x86: ... is not compiled yet` and exit 1 (`x86/README.md`). As of 2026-11-27:
+
+- It matches node on 51 of the 63 corpus programs; {{chapter The compiler to x86-64}} gives the first reason each of the other 12 meets.
+- `console.log` writes a number only when it is an integer of at most 2^53, `NaN`, an infinity or -0. Fractions wait on milestone 4's shortest round-trip printing; four corpus programs stop there, three on a fraction and one on an integer past 2^53.
+- `Math.sin`, `cos`, `tan` and `atan` are refused, since node's last digits are those of V8's port of fdlibm; so are `Number`, `JSON`, `new Date()` and the array methods `at`, `fill` and `flat`.
+- A string must be ASCII: a length here counts bytes, where JavaScript counts UTF-16 units.
+- An uncaught error stops the executable with exit 1, where node also prints its report of the source line; `console.log` of an error, or of an array or object of more than 100 items, stops it too.
+- `%` of fractions, and `**` with a fraction, a negative exponent or a power past 2^53, stop the executable.
+- A recursion goes deeper than node's: node throws between 9,000 and 10,000 calls of a one-line recursion, the executable between 80,000 and 90,000, so a program between the two runs here and throws in node.
+- The heap is 2 GiB; past it the program stops with a line saying the heap is full.
 
 ### Runtime
 
-- **In the browser, a program gets only the playground's small API:** one 400 by 400 canvas, the mouse and keys, the timers, `frame(t)`, `onCollect` and `console.log` ({{chapter A canvas in the browser}}). Every statement of the program runs in the Roc VM, compiled to wasm. The page's own JavaScript paints the lines the VM emits and passes clicks and keys in; the program's code runs only in the VM.
-- **At the command line, `js-vm`'s runtime is as small:** `console.log`, the timers, and the builtins `js/README.md` lists under "The subset" (`Math`, the methods of strings, arrays, Maps and Sets, `Object.keys` and its kin). Files, processes, `require`, the network and node's other modules are out of reach. The compiler to x86-64 in `x86/` keeps the same small runtime, and adds `Date.now()`, which the VM refuses (`x86/README.md`).
-- **Async is out:** promises, `async` and `await` are refused. Timers are the one way to wait, on a virtual clock that runs each callback after the program, in node's order.
+- At the command line, both programs give a program a small runtime: `console.log`, the timers, and the builtins `js/README.md` lists under "The subset" (`Math`, the methods of strings, arrays, Maps and Sets, `Object.keys` and its kin). Files, processes, `require`, the network and node's other modules are out of reach. The compiler's executables add `Date.now()`, which `js-vm` refuses (`x86/README.md`).
+- In the browser, where the interpreter alone runs, a program gets only the playground's small API: one 400 by 400 canvas, the mouse and keys, the timers, `frame(t)`, `onCollect` and `console.log` ({{chapter A canvas in the browser}}). Every statement of the program runs in the Roc VM, compiled to wasm. The page's own JavaScript paints the lines the VM emits and passes clicks and keys in; the program's code runs only in the VM.
+- Promises, `async` and `await` are refused, so timers are the one way to wait, on a virtual clock that runs each callback after the program, in node's order.
 - An interval never cleared stops after 100,000 callbacks with a message, where node runs it for good (`js/README.md`, "The subset").
 - On the page, a program is held to step budgets, 3,000,000 before the first frame and 300,000 a frame ({{chapter A canvas in the browser}}).
 
@@ -1237,19 +1225,6 @@ The language itself is fairly complete: numbers, strings, arrays, objects, closu
 - A string method that counts positions is refused on non-ASCII text: JavaScript counts UTF-16 units, and these strings are UTF-8 (`js/README.md`, "The subset").
 
 The parser refuses these forms, each with a message that names it: getters and setters, `#private` names, class fields, static blocks, computed method names, class expressions, `this` outside a class's code or in a static method, `super` misused, a constructor that returns a value, `extends` of anything but a class declared above, a class's name declared again or assigned, `new` on a program's own function, `var`, `in`, `eval`, regular expressions, async and modules. A run refuses `==` and the other coercions, and the rest of `js/README.md`'s list, "The subset", where only the run can see them.
-
-### The compiler
-
-The compiler runs the same subset less completely, and says where. A program it has yet to compile is refused by name before a byte is written; what only a value can decide stops the executable with a line `x86: ... is not compiled yet` and exit 1 (`x86/README.md`). As of 2026-11-27:
-
-- It matches node on 51 of the 63 corpus programs; {{chapter The compiler to x86-64}} gives the first reason each of the other 12 meets.
-- `console.log` writes a number only when it is an integer of at most 2^53, `NaN`, an infinity or -0. Fractions wait on milestone 4's shortest round-trip printing; four corpus programs stop there, three on a fraction and one on an integer past 2^53.
-- `Math.sin`, `cos`, `tan` and `atan` are refused, since node's last digits are those of V8's port of fdlibm; so are `Number`, `JSON`, `new Date()` and the array methods `at`, `fill` and `flat`.
-- A string must be ASCII: a length here counts bytes, where JavaScript counts UTF-16 units.
-- An uncaught error stops the executable with exit 1, where node also prints its report of the source line; `console.log` of an error, or of an array or object of more than 100 items, stops it too.
-- `%` of fractions, and `**` with a fraction, a negative exponent or a power past 2^53, stop the executable.
-- A recursion goes deeper than node's: node throws between 9,000 and 10,000 calls of a one-line recursion, the executable between 80,000 and 90,000, so a program between the two runs here and throws in node.
-- The heap is 2 GiB; past it the program stops with a line saying the heap is full.
 
 ### The tools
 
@@ -1275,6 +1250,7 @@ Each program prints what node prints, and `js/oracle.shale` holds the VM to it. 
 The VM refuses each program with the message under its name, which the program's first line gives.
 
 {{listing refused}}
+
 ## Appendix C: The tools
 
 The project leans on these outside tools for its builds, its checks, its measurements and this book. Each row names a tool, what the project uses it for, and the files that run it, as of 2026-11-27.
@@ -1294,6 +1270,6 @@ The project leans on these outside tools for its builds, its checks, its measure
 
 ### llvm-mca and the cost tier
 
-The races run on a shared two-core VM, and their timings move with its load. `x86/cost.shale` measures what the bytes alone decide: it compiles each race, disassembles the executable with objdump, and hands llvm-mca the fast path of a range of bytecode instructions. Run twice, it prints the same tables byte for byte (`x86/COST.md`, "How to run it"). LLVM stays outside the compiler: llvm-mca reads only the disassembly of the bytes js-x86 writes (`07e599b`).
+The races run on a shared two-core virtual machine, and their timings move with its load. `x86/cost.shale` measures what the bytes alone decide: it compiles each race, disassembles the executable with objdump, and hands llvm-mca the fast path of a range of bytecode instructions. Run twice, it prints the same tables byte for byte (`x86/COST.md`, "How to run it"). LLVM stays outside the compiler: llvm-mca reads only the disassembly of the bytes js-x86 writes (`07e599b`).
 
-Its first table explained a result the timings left open. Lane 3 of milestone 6 (branch `x86-kinds6-l3`) cut the SAT race's watch loop from 353 instructions to 229 on its fast path, and the race ran at about the same speed. Over that fast path, the stores grew from 42 to 67, 65 of them to the frame. Cascade Lake retires one store a cycle, so the store port set lane 3's block throughput at 67.0 cycles a pass, against master's 63.8 (`x86/COST.md`, "What it says about lane 3", `1623197`).
+Its first table explained a result the timings left open. A branch of milestone 6's work, `x86-kinds6-l3`, cut the SAT race's watch loop from 353 instructions to 229 on its fast path, and the race ran at about the same speed. Over that fast path, the stores grew from 42 to 67, 65 of them to the frame. Cascade Lake retires one store a cycle, so the store port set the branch's block throughput at 67.0 cycles a pass, against master's 63.8 (`x86/COST.md`, "What it says about lane 3", `1623197`).
