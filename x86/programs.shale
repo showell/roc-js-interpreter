@@ -59,7 +59,9 @@ const TORTURE = "gcalways"
 -- The programs too big for it: a collection at each of join.js's 420,000
 -- allocations, over a heap of 335 pages, takes minutes. Each is still held
 -- to node with HEAP_WALK, and collects there as its heap grows.
-const TORTURE_SKIPPED = {"x86/tests/join.js"}
+-- The SAT race at its small size makes millions of allocations too, and
+-- collecting at each runs past the timeout.
+const TORTURE_SKIPPED = {"x86/tests/join.js", "x86/satrace/sat.js"}
 -- The races held here, each at a small size: its file, and the `const` line
 -- the copy sets. The SAT race's small workload restarts and reduces once
 -- (hole7), so its executable runs every part of the solver, in about 2 s.
