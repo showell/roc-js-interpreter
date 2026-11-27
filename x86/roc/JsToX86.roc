@@ -40,6 +40,7 @@ main! = |arguments| {
 		(Ok(src), Ok("inlined")) => write_inlined!(src)
 		(Ok(src), Ok("labels")) => write_labels!(src)
 		(Ok(src), Ok("posts")) => write_posts!(src)
+
 		(Ok(src), Ok(phase)) => write_stopped!(src, phase)
 		_ => {
 			echo!("usage: js-x86 \"<program>\" [inlined | labels | posts | stop=<phase>]\n")

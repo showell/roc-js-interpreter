@@ -492,20 +492,18 @@ labels_kept = {
 
 ## The rules checked once, when js-x86 is built (Roc evaluates it then,
 ## and the expect below holds it): each pass's units are the pieces (no
-## seam lost), no unit holds both code and data (a dropped one would keep
-## its data), every pass kept every unit's labels, and each Jumps settled
+## seam lost), every pass kept every unit's labels, and each Jumps settled
 ## in two rounds, one more round leaving it as it was.
 closed : Bool
 closed = {
 	counts = [first_jumps.threaded, forwarded, trimmed.trimmed, second_jumps.threaded].all(
 		|statements| unseamed(statements).len() == pieces.len(),
 	)
-	unmixed = pieces.all(|piece| !holds_code(piece) or !holds_data(piece))
 	settles = |jumps| {
 		again = Jumps.thread_jumps_beside(jumps.threaded, { named: first_labels, hops: Dict.empty() })
 		jumps.settled and jumps.rounds <= 2 and same_jumps(again.threaded, jumps.threaded)
 	}
-	counts and unmixed and labels_kept and settles(first_jumps) and settles(second_jumps)
+	counts and labels_kept and settles(first_jumps) and settles(second_jumps)
 }
 
 expect closed
@@ -909,14 +907,24 @@ seed = {
 		CallTo(ObjectTable.get_method_hashed),
 		JmpTo(Runtime.run_timers),
 	])
-	seed_over([plain, objects])
+	# A unit holding both code and data (the profiler's return, its path,
+	# then `runtime_write`) is always passed with the program: Jumps keeps
+	# its data wherever it drops its code, which a unit done once doesn't.
+	var $mixed = Set.empty()
+	for at in 0..<pieces.len() {
+		piece = pieces.get(at) ?? crash "RuntimePosts.seed: a piece"
+		if holds_code(piece) and holds_data(piece) {
+			$mixed = $mixed.insert(at)
+		}
+	}
+	seed_over([plain, objects], $mixed)
 }
 
 ## The units passed with each program, each's growth from what the others
 ## left, until none grows them.
-seed_over : List(List(Assembly.Statement)) -> Set(U64)
-seed_over = |programs| {
-	var $passed = Set.empty()
+seed_over : List(List(Assembly.Statement)), Set(U64) -> Set(U64)
+seed_over = |programs, first| {
+	var $passed = first
 	for _ in 0..<most_tries {
 		before = $passed.len()
 		for program in programs {
