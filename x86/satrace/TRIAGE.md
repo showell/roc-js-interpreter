@@ -76,4 +76,14 @@ Most of the watch loop's instructions are the tag and whole-number tests of `Val
 
 ## The fixes as made
 
-(Each fix's measured effect is added below as it lands.)
+Measured on the box with other lanes running: CPU times, niced, the executables alternated, medians.
+
+- **Fix 1, in (7f77d63):** `equal_jump_items` takes `Value`s (x86/tests/equal-values.js holds every kind against numbers and each other). Small workload, 5 runs at load 1.9: 833 ms before, 743 ms after (11% less).
+- **Fix 2, in (d0f73c5, b4e2f4d):** `FieldSlots.with_literal_slots`. The small workload can't show it (7 runs at load 1.2: 756 ms with fix 1 alone, 771 ms with both, inside its noise); its share is in the race's number below.
+- **Fix 3, tried and dropped:** the tag test and `cvttsd2si` in line before the call made the small workload slower, not faster (7 runs: 801 ms against 753 ms). The likely cause is the two labels it adds in the middle of straight-line code, past which Moves and Forwarding keep nothing in registers, so the code after each bitwise operator reloads what the call's spills had kept. Not committed; it wants a look at the code around a `p ^ 1` before it is tried again.
+
+**The race workload, fixes 1 and 2 together**, the master executable (f5afb83 with the profiler's start test) against the lane's, alternated, 2 runs each, load 1.4 to 1.7: 89.5 s and 98.1 s of CPU before, 85.3 s and 78.6 s after, about 12% less on the means. x86/satrace.shale runs=3 right before it (load 2.1 to 1.8, wall times): compiled 104.50 s, node 40.96 s, rocsat 30.64 s, medians; node's three runs spread from 35 to 55 s, so the ratio to node (2.55 here, 1.81 in README.md's single run) moves with the box more than with the compiler.
+
+**The other races** (x86/race, bank, fourteen and bigdaddy at their small sizes, lane against master, CPU medians): fib F(100000) 1,285 ms before, 1,096 after (5 runs); bank 2,000,000 transfers 380 and 383 (9 runs); fourteen at 300 rounds 443 and 441 (9 runs); bigdaddy at 300 rounds 2,151 and 2,132 (5 runs). None regressed.
+
+**What is left**, in order: fix 4 (kinds through the heap) is where most of the gap is; fix 3 again, with its labels looked at; the gate Map's linear search; and a profile of the lane's executable to re-rank, since `runtime_strict_equal` and the hashed lookups should now be gone from propagate's watch loop.
