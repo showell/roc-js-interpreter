@@ -191,7 +191,7 @@ Every executable carries the runtime, about 15 KB of machine code (`x86/README.m
 
 {{function x86/roc/Runtime.roc allocate_items}}
 
-Four registers belong to the runtime for the whole run: `r12` the stack's limit, `r13` the runtime's state, `r14` the heap's end and `r15` its next free byte, in a heap of 1 GiB. The allocator only bumps, so every allocation lasts until the program exits, and a program that fills the heap stops with a message saying the collector is still to come ({{chapter The garbage collector}} says what is being built).
+Four registers belong to the runtime for the whole run: `r12` the stack's limit, `r13` the runtime's state, `r14` the heap's end and `r15` the heap's state, in a heap of 2 GiB. The heap is 64 KiB pages of one block size each, every block behind a header word of its kind and size (`x86/COLLECTOR.md`), and the allocator only bumps through them, so every allocation lasts until the program exits, and a program that fills the heap stops with a message saying the collector is still to come ({{chapter The garbage collector}} says what is being built).
 
 The executable of fib(22) is 25,167 bytes, nearly all of it the runtime (`x86/fib.shale`, 2026-11-25): milestone 2's, before the runtime, was 1,010 bytes (`x86/README.md`).
 
@@ -510,7 +510,7 @@ Two samples show the collector at work. `js/tests/55-garbage.js` makes 1,800 sho
 
 ### Two collectors, two worlds
 
-The compiled programs get a collector of their own, a separate codebase in the same family: a non-moving mark and sweep that collects at about twice the last live size. `Collector.roc` works on a Roc list of cells: a reference is an index, the VM names its roots exactly, and Roc's reference counting frees what a `Freed` cell held. The compiler's, designed in `x86/COLLECTOR.md`, works on raw memory: each heap block carries a header word of its kind and size, blocks sit in pages of one size class, and the roots are found conservatively, in every word of the machine stack and the registers that looks like a heap address. The headers and pages are built, on a branch still to be merged; the mark and the sweep come next, with a torture tier that collects at every allocation. Until they land, a compiled program keeps every allocation until it exits.
+The compiled programs get a collector of their own, a separate codebase in the same family: a non-moving mark and sweep that collects at about twice the last live size. `Collector.roc` works on a Roc list of cells: a reference is an index, the VM names its roots exactly, and Roc's reference counting frees what a `Freed` cell held. The compiler's, designed in `x86/COLLECTOR.md`, works on raw memory: each heap block carries a header word of its kind and size, blocks sit in pages of one size class, and the roots are found conservatively, in every word of the machine stack and the registers that looks like a heap address. The headers and pages are built (`e876665`); the mark and the sweep come next, with a torture tier that collects at every allocation. Until they land, a compiled program keeps every allocation until it exits.
 
 ## JavaScript's rules for values
 
