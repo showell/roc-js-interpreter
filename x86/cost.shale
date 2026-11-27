@@ -148,16 +148,22 @@ function fast_path(instructions, rows, place)
   local index = {}
   for k = 1, #instructions do index["" .. instructions[k].at] = k end
   local out = {}
+  -- An empty place's label shares the next place's address: that code is
+  -- read once, not once for each label at it.
+  local read_at = {}
   for n = place.from, place.to do
     local at = get(start, "" .. n, -1)
     if at < 0 then fail(WHO .. ": no label code_" .. place.f .. "_" .. n) end
-    local stop = 1000000000
-    for o in own do if o > at and o < stop then stop = o end end
-    local k = get(index, "" .. at, 0)
-    if k == 0 then fail(WHO .. ": code_" .. place.f .. "_" .. n .. " is at no instruction's start") end
-    while k <= #instructions and instructions[k].at < stop and not starts_with(instructions[k].text, "jmp") do
-      push(out, instructions[k].text)
-      k = k + 1
+    if not has_key(read_at, "" .. at) then
+      read_at["" .. at] = true
+      local stop = 1000000000
+      for o in own do if o > at and o < stop then stop = o end end
+      local k = get(index, "" .. at, 0)
+      if k == 0 then fail(WHO .. ": code_" .. place.f .. "_" .. n .. " is at no instruction's start") end
+      while k <= #instructions and instructions[k].at < stop and not starts_with(instructions[k].text, "jmp") do
+        push(out, instructions[k].text)
+        k = k + 1
+      end
     end
   end
   return out
@@ -169,6 +175,32 @@ function mca_line(t)
   local m = re_find(t, "^(j[a-z]+|call) +0x[0-9a-f]+")
   if m ~= nil then return m.groups[1] .. " .Lout" end
   return t
+end
+
+-- The fast path's instructions by kind: `{all, branches, shifts, converts,
+-- loads, frame_loads, stores, frame_stores}`. A shift is a tag's or an
+-- untag's (by 0x30 or 0x10); a load reads memory into a register (not a
+-- `lea`), a store writes it; a frame one is at `rbp`.
+function kinds_of(path_lines)
+  local k = {all = 0, branches = 0, shifts = 0, converts = 0, loads = 0, frame_loads = 0, stores = 0, frame_stores = 0}
+  for t in path_lines do
+    k.all = k.all + 1
+    local m = re_find(t, "^([a-z0-9]+) +([^,]*)(,(.*))?$")
+    local op = m ~= nil and m.groups[1] or t
+    local first = m ~= nil and m.groups[2] or ""
+    local second = m ~= nil and get(m.groups, 4, "") or ""
+    if starts_with(op, "j") then k.branches = k.branches + 1 end
+    if (op == "shl" or op == "shr" or op == "sar") and (second == "0x30" or second == "0x10") then k.shifts = k.shifts + 1 end
+    if starts_with(op, "cvt") then k.converts = k.converts + 1 end
+    if find(first, "PTR [") ~= nil then
+      k.stores = k.stores + 1
+      if find(first, "[rbp") ~= nil then k.frame_stores = k.frame_stores + 1 end
+    elseif op ~= "lea" and find(second, "PTR [") ~= nil then
+      k.loads = k.loads + 1
+      if find(second, "[rbp") ~= nil then k.frame_loads = k.frame_loads + 1 end
+    end
+  end
+  return k
 end
 
 -- llvm-mca's reading of the file's pass, loads after every store before
@@ -211,13 +243,16 @@ function one(race, i, d, dir, places, cpu, show, first)
   local same = "yes"
   if first ~= nil and read(path) ~= read(first) then same = "no" end
   local instructions = instructions_of(path)
-  local out = {path = path, bytes = {race = race.name .. " " .. race.size, driver = d.label, bytes = size, code_instructions = #instructions, same = same}, place = false, shown = false}
+  local out = {path = path, bytes = {race = race.name .. " " .. race.size, driver = d.label, bytes = size, code_instructions = #instructions, same = same}, place = false, kinds = false, shown = false}
   if has_key(places, d.label) and race.name == "sat" then
     local place = places[d.label]
     local rows = labels_of(d.exe, race.text, place.f)
     local fp = fast_path(instructions, rows, place)
     local m = mca(fp, cpu, path .. ".mca.s", show)
     out.place = {driver = d.label, places = "code_" .. place.f .. "_" .. place.from .. "-" .. place.to, instructions = m.instructions, uops = m.uops, rthroughput = m.rthroughput, latency = m.latency, free = m.free}
+    out.kinds = kinds_of(fp)
+    out.kinds.driver = d.label
+    out.kinds.places = out.place.places
     if show then
       replace(path .. ".mca.txt", join(fp, "\n") .. "\n\n" .. m.out)
       out.shown = d.label .. ": the fast path and llvm-mca's timeline in " .. real(path) .. ".mca.txt"
@@ -232,6 +267,7 @@ function tier(list, ds, places, cpu, show)
   mkdir(dir)
   local bytes_rows = {}
   local place_rows = {}
+  local kind_rows = {}
   local shown = {}
   for race in list do
     local first = nil
@@ -240,12 +276,14 @@ function tier(list, ds, places, cpu, show)
       if first == nil then first = o.path end
       push(bytes_rows, o.bytes)
       if o.place then push(place_rows, o.place) end
+      if o.kinds then push(kind_rows, o.kinds) end
       if o.shown then push(shown, o.shown) end
       yield()
     end
   end
   local text = table(bytes_rows, {"race", "driver", "bytes", "code_instructions", "same"})
   if #place_rows > 0 then text = text .. "\n" .. table(place_rows, {"driver", "places", "instructions", "uops", "rthroughput", "latency", "free"}) end
+  if #kind_rows > 0 then text = text .. "\n" .. table(kind_rows, {"driver", "places", "all", "branches", "shifts", "converts", "loads", "frame_loads", "stores", "frame_stores"}) end
   return {text = text, shown = shown}
 end
 

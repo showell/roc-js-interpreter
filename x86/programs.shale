@@ -66,7 +66,7 @@ const REPORT = arg("corpus", "held") == "report"
 -- it says why.
 const INLINED = "inlined: 47 sites, 683 instructions"
 -- The loops versioned across x86/tests/: a commit that moves it says why.
-const VERSIONED = "versioned: 22 loops, 585 instructions"
+const VERSIONED = "versioned: 23 loops, 618 instructions"
 -- Every executable here runs with this first argument: it walks the heap at
 -- its exit and at a stop and checks every block's header, so a header an
 -- allocation wrote wrong stops the program, and its output can't be node's.

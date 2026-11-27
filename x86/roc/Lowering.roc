@@ -115,6 +115,7 @@ import Assembly
 import Boxing
 import BuiltinLowering
 import Emit
+import FrameValues
 import KnownFunctions
 import LoweringBasics
 import FieldSlots
@@ -450,7 +451,7 @@ items_with_numbers = |program, { arrays, versions, seed }| {
 	var $rising = False
 	var $begun = []
 	for pass in 0..<(most_passes + most_rises(program)) {
-		var $items = Runtime.start_items(LoweringBasics.code_label(program.main))
+		var $functions = []
 		var $found = $returns
 		var $called =
 			if $rising {
@@ -496,7 +497,7 @@ items_with_numbers = |program, { arrays, versions, seed }| {
 			}
 			match code_items(context) {
 				Ok(lowered) => {
-					$items = $items.concat(lowered.statements)
+					$functions = $functions.append({ index, statements: lowered.statements })
 					$heads = $heads.append(lowered.heads)
 					$found = match lowered.result {
 						Gives(kind) =>
@@ -563,7 +564,9 @@ items_with_numbers = |program, { arrays, versions, seed }| {
 					# closure records, through the post-passes, the runtime's done
 					# once when js-x86 is built where they may be (RuntimePosts).
 					posted = RuntimePosts.posts({
-						program_statements: $items,
+						program_statements: Runtime.start_items(
+							LoweringBasics.code_label(program.main),
+						).concat(functions_trimmed($functions, trying)),
 						tail_statements: literal_statements(literals).concat(closures),
 					})
 					Ok({
@@ -1595,6 +1598,38 @@ code_walk = |context, { heads, doubted, demoted }| {
 		}),
 	)
 }
+
+## The settled functions' statements, each with its frame traffic that
+## carries nothing taken out (FrameValues), but in a program with a `try`,
+## whose handlers read the frame where no jump shows it. Run once, on the
+## pass whose kinds settled, so the passes before it pay nothing for it.
+functions_trimmed : List({ index : U64, statements : List(Assembly.Statement) }), Bool -> List(Assembly.Statement)
+functions_trimmed = |functions, trying|
+	functions.join_map(
+		|{ index, statements }|
+			if trying {
+				statements
+			} else {
+				# Only the function's own places' labels are named by its own
+				# statements alone; its entries are named from outside it.
+				own = "${LoweringBasics.code_label(index)}_"
+				FrameValues.trimmed({ statements, outside: |label| !is_place_label(label, own) })
+			},
+	)
+
+## Whether a label is one of the function's places' (`code_<f>_<n>`, or one
+## of its own labels, `code_<f>_<n>_slow`), given `code_<f>_`.
+is_place_label : Str, Str -> Bool
+is_place_label = |label, own|
+	if label.starts_with(own) {
+		rest = label.to_utf8().drop_first(own.count_utf8_bytes())
+		match rest.first() {
+			Ok(byte) => byte >= '0' and byte <= '9'
+			Err(_) => False
+		}
+	} else {
+		False
+	}
 
 ## A versioned loop's guard or exit at the site (`Versioning`), lowered, or
 ## `Unversioned` for any other instruction.
