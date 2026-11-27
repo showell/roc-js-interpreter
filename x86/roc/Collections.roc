@@ -14,6 +14,7 @@
 import Assembly
 import Boxing
 import Emit
+import Heap
 import ObjectTable
 import Runtime
 import RuntimeBuilders
@@ -159,7 +160,7 @@ Collections :: [].{
 					Emit.save(Rdx),
 					Emit.mov(Rdi, R8),
 					Emit.shl(Rdi, 5),
-					Emit.call(Runtime.allocate),
+					Emit.call(Heap.allocate(CollectionEntries)),
 					Emit.restore(Rdx),
 					Emit.restore(Rsi),
 					Emit.restore(Rdi),
@@ -200,7 +201,7 @@ Collections :: [].{
 					Emit.save(Rdi),
 					Emit.save(Rsi),
 					Emit.imm(Rdi, 40 + 4 * 16),
-					Emit.call(Runtime.allocate),
+					Emit.call(Heap.allocate(Collection)),
 					Emit.restore(Rsi),
 					Emit.restore(Rdi),
 					Emit.store(Emit.mem(Rax, 0), Rdi),
@@ -428,7 +429,7 @@ Collections :: [].{
 			Emit.save(Rdi),
 			Emit.save(Rsi),
 			Emit.imm(Rdi, 32),
-			Emit.call(Runtime.allocate),
+			Emit.call(Heap.allocate(Iterator)),
 			Emit.restore(Rsi),
 			Emit.restore(Rdi),
 			Emit.imm(Rcx, 2),

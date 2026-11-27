@@ -20,7 +20,7 @@
 use("./executables.shale")
 
 const WHO = "x86/fib.shale"
-const EXPECTS = 208
+const EXPECTS = 213
 const PROGRAM = "x86/fib.js"
 const LAST_LINE = "console.log(fib(30));\n"
 const RUNS = 3
@@ -31,7 +31,7 @@ const TIMING = arg("timing", true)
 -- `js_path`: same output, both exit 0. Its size in bytes.
 function checked_executable(exe, src, js_path, path)
   local size = written_executable(WHO, exe, src, path)
-  local r = executable_run(path)
+  local r = executable_run(path, "heapwalk")
   local n = node_run(js_path)
   local wrong = {}
   if n.code ~= 0 then push(wrong, "node exited " .. n.code .. ": " .. trim(n.out)) end

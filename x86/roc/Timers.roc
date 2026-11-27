@@ -6,12 +6,13 @@
 ##
 ## It stands apart from Runtime, its one caller being `RuntimeCode`,
 ## because its routines mark and call Runtime's names (`Runtime.set_timer`,
-## `Runtime.run_timers`, `Runtime.allocate` ...), so it imports Runtime;
+## `Runtime.run_timers`, `Runtime.exit` ...), so it imports Runtime;
 ## Roc forbids an import cycle, so Runtime cannot list it in its own
 ## routines, and `RuntimeCode` puts the two together.
 import Assembly
 import Boxing
 import Emit
+import Heap
 import Runtime
 import RuntimeBuilders
 import X86
@@ -84,7 +85,7 @@ Timers :: [].{
 					Emit.store(timers_place, Rax),
 					Emit.mark("runtime_set_timer_listed"),
 					Emit.imm(Rdi, 48),
-					Emit.call(Runtime.allocate),
+					Emit.call(Heap.allocate(Timer)),
 					Emit.imm(Rcx, 3),
 					Emit.store(Emit.mem(Rax, 0), Rcx),
 					Emit.load(Rcx, clock_place),

@@ -10,7 +10,8 @@
 ## runtime's state (the output buffer's fill, node's inspect depth, the
 ## innermost `try`'s handler record, the timers' places, then the buffer,
 ## as `buffer_place` lays them out), `r14` the heap's end and `r15` the
-## next free byte of it. A routine may change every
+## heap's state, its pages' places and table (`Heap`'s header lays it out).
+## A routine may change every
 ## other general register but `rbx` and `rbp`, and `xmm0` and `xmm1`; it
 ## takes its arguments in `rdi`, `rsi` and `rdx` and answers in `rax`. The
 ## routines that call a function (`map` and the rest) change `rbx` too,
@@ -24,6 +25,7 @@ import Assembly
 import Boxing
 import X86
 import Emit
+import Heap
 import RuntimeBuilders
 
 Runtime :: [].{
@@ -36,10 +38,6 @@ Runtime :: [].{
 	## `rax`: a string's address (its length, then its bytes) in `rax`.
 	number_text : Str
 	number_text = "runtime_number_text"
-
-	## The routine that takes `rdi` bytes of the heap, its address in `rax`.
-	allocate : Str
-	allocate = "runtime_allocate"
 
 	## The routine that ends the program with the exit code in `rdi`, once
 	## the buffer is written.
@@ -458,12 +456,13 @@ Runtime :: [].{
 	}
 
 	## The program's first statements: the heap mapped, the four registers
-	## set, then a call of the program's own code at `main`.
+	## set, the heap's state laid out (`Heap.start_items`), then a call of the
+	## program's own code at `main`.
 	start_items : Str -> List(Assembly.Statement)
 	start_items = |main| [
 		Emit.imm(Rax, 9),
 		Emit.zero(Rdi),
-		Emit.imm(Rsi, heap_size),
+		Emit.imm(Rsi, Heap.mapped_size),
 		Emit.imm(Rdx, 3),
 		Emit.imm(R10, 0x4022),
 		Emit.imm(R8, -1),
@@ -473,20 +472,25 @@ Runtime :: [].{
 		Emit.jcc(S, "runtime_no_heap"),
 		Emit.mov(R13, Rax),
 		Emit.lea(R15, Emit.mem(Rax, buffer_place + buffer_size)),
-		Emit.mov(R14, Rax),
-		Emit.plus_imm(R14, heap_size),
-		Emit.mov(R12, Rsp),
-		Emit.minus_imm(R12, stack_size),
-		Emit.call(main),
+		# 2 GiB is past an immediate of 32 bits, so the end is a sum.
+		Emit.imm(R14, Heap.mapped_size),
+		Emit.plus(R14, Rax),
 	]
+		.concat(Heap.start_items)
+		.concat([
+			Emit.mov(R12, Rsp),
+			Emit.minus_imm(R12, stack_size),
+			Emit.call(main),
+		])
 
 	## Every routine of this module's, which `RuntimeCode` lays down before
 	## `LanguageRoutines.items`, `ArrayMethods.items`, `Inspect.items`,
 	## `Collections.items`, `Timers.items` and the texts.
 	routine_items : List(Assembly.Statement)
 	routine_items = [
-		allocate_items,
+		Heap.items,
 		output_items,
+		heap_exit_items,
 		stop_items,
 		write_value_items,
 		number_items,
@@ -503,10 +507,6 @@ Runtime :: [].{
 ## buffer.
 write : Str
 write = "runtime_write"
-
-## The heap's size: the program stops, out of memory, past it.
-heap_size : I64
-heap_size = 0x40000000
 
 ## How far below the stack's start the program's frames may reach. Linux
 ## gives a program 8 MiB of stack unless told otherwise; what is left past
@@ -530,20 +530,6 @@ digit_zero = '0'
 
 minus_sign : U8
 minus_sign = '-'
-
-## The bump allocator: `rdi` rounded up to 8, taken from `r15`. It changes
-## `rax` and `rdi` alone.
-allocate_items : List(Assembly.Statement)
-allocate_items = [
-	Emit.mark(Runtime.allocate),
-	Emit.plus_imm(Rdi, 7),
-	Emit.bit_and_imm(Rdi, -8),
-	Emit.mov(Rax, R15),
-	Emit.plus(R15, Rdi),
-	Emit.cmp(R15, R14),
-	Emit.jcc(A, "runtime_out_of_memory"),
-	Emit.ret,
-]
 
 ## Buffered output. `runtime_write` copies into the buffer, which is written
 ## when the next bytes wouldn't fit, before a stop's message, and at the
@@ -601,11 +587,55 @@ output_items = [
 	Emit.syscall,
 	Emit.mark(Runtime.exit),
 	Emit.save(Rdi),
+	Emit.call("runtime_heap_exit"),
 	Emit.call("runtime_flush"),
 	Emit.restore(Rdi),
 	Emit.imm(Rax, 231),
 	Emit.syscall,
 ]
+
+## `runtime_heap_exit`: the heap walked at the exit when the program's first
+## argument asked for it (`Heap.mode_place`), the mode cleared first so a
+## stop the walk makes doesn't walk again; with `heapstat`, its counts are
+## written after the program's own output, a line:
+## `heap: <n> blocks, <n> bytes asked, <n> bytes in blocks, <n> pages`.
+heap_exit_items : List(Assembly.Statement)
+heap_exit_items = {
+	counted = |{ place, text }| [
+		Emit.load(Rax, place),
+		Instruction(Cvtsi2sd({ to: Xmm0, from: Rax })),
+		Instruction(MovqFromXmm({ to: Rax, from: Xmm0 })),
+		Emit.call(Runtime.print_number),
+		Emit.address_of(Rsi, text),
+		Emit.load(Rdx, Emit.mem(Rsi, 0)),
+		Emit.plus_imm(Rsi, 8),
+		Emit.call(write),
+	]
+	[
+		[
+			Emit.mark("runtime_heap_exit"),
+			Emit.load(Rax, Heap.mode_place),
+			Emit.test(Rax, Rax),
+			Emit.jcc(E, "runtime_heap_exit_done"),
+			Emit.zero(Rcx),
+			Emit.store(Heap.mode_place, Rcx),
+			Emit.save(Rax),
+			Emit.call(Heap.walk),
+			Emit.restore(Rax),
+			Emit.cmp_imm(Rax, 2),
+			Emit.jcc(Ne, "runtime_heap_exit_done"),
+			Emit.address_of(Rsi, "runtime_text_heap_counts"),
+			Emit.load(Rdx, Emit.mem(Rsi, 0)),
+			Emit.plus_imm(Rsi, 8),
+			Emit.call(write),
+		],
+		counted({ place: Heap.blocks_place, text: "runtime_text_heap_blocks" }),
+		counted({ place: Heap.asked_place, text: "runtime_text_heap_asked" }),
+		counted({ place: Heap.held_place, text: "runtime_text_heap_held" }),
+		counted({ place: Heap.pages_place, text: "runtime_text_heap_pages" }),
+		[Emit.mark("runtime_heap_exit_done"), Emit.ret],
+	].join()
+}
 
 ## The stops: what was buffered is written, then the message at `rsi` (a
 ## string as the heap holds one) to stderr, and the exit is 1.
@@ -614,6 +644,15 @@ stop_items =
 	[
 		Emit.mark("runtime_stop"),
 		Emit.save(Rsi),
+		# The heap walked when the program's first argument asked for it,
+		# the mode cleared first so the walk's own stop doesn't walk again.
+		Emit.load(Rax, Heap.mode_place),
+		Emit.test(Rax, Rax),
+		Emit.jcc(E, "runtime_stop_walked"),
+		Emit.zero(Rcx),
+		Emit.store(Heap.mode_place, Rcx),
+		Emit.call(Heap.walk),
+		Emit.mark("runtime_stop_walked"),
 		Emit.call("runtime_flush"),
 		Emit.restore(Rsi),
 	]
@@ -631,7 +670,7 @@ stop_items =
 			Emit.mark("runtime_stack_overflow_stop"),
 		])
 		.concat(RuntimeBuilders.stopping_items("runtime_text_stack_overflow"))
-		.append(Emit.mark("runtime_out_of_memory"))
+		.append(Emit.mark(Heap.out_of_memory))
 		.concat(RuntimeBuilders.stopping_items("runtime_text_out_of_memory"))
 		.append(Emit.mark("runtime_no_heap"))
 		.append(Emit.address_of(Rsi, "runtime_text_no_heap"))
@@ -813,7 +852,7 @@ string_items = {
 		Emit.load(Rcx, Emit.mem(Rsi, 0)),
 		Emit.plus(Rax, Rcx),
 		Emit.lea(Rdi, Emit.mem(Rax, 8)),
-		Emit.call(Runtime.allocate),
+		Emit.call(Heap.allocate(String)),
 		Emit.restore(Rsi),
 		Emit.restore(Rdx),
 		Emit.load(Rcx, Emit.mem(Rdx, 0)),
@@ -1071,7 +1110,7 @@ operator_items = {
 	cell = [
 		Emit.mark(Runtime.new_cell),
 		Emit.imm(Rdi, 8),
-		Emit.call(Runtime.allocate),
+		Emit.call(Heap.allocate(Cell)),
 		Emit.store(Emit.mem(Rax, 0), Rsi),
 		Emit.ret,
 	]
@@ -1272,7 +1311,7 @@ number_items = {
 			Emit.lea(Rdx, buffer_end),
 			Emit.minus(Rdx, Rsi),
 			Emit.lea(Rdi, Emit.mem(Rdx, 8)),
-			Emit.call(Runtime.allocate),
+			Emit.call(Heap.allocate(String)),
 			Emit.store(Emit.mem(Rax, 0), Rdx),
 			Emit.lea(Rdi, Emit.mem(Rax, 8)),
 			Emit.mov(Rcx, Rdx),
@@ -1338,7 +1377,7 @@ container_items = {
 		Emit.mov(Rdi, Rcx),
 		Emit.shl(Rdi, 3),
 		Emit.plus_imm(Rdi, 24),
-		Emit.call(Runtime.allocate),
+		Emit.call(Heap.allocate(Array)),
 		Emit.restore(Rcx),
 		Emit.restore(Rdx),
 		Emit.store(Emit.mem(Rax, 0), Rdx),
@@ -1351,7 +1390,7 @@ container_items = {
 	new_object = [
 		Emit.mark(Runtime.new_object),
 		Emit.imm(Rdi, 40 + 4 * 16),
-		Emit.call(Runtime.allocate),
+		Emit.call(Heap.allocate(Object)),
 		Emit.zero(Rcx),
 		Emit.store(Emit.mem(Rax, 0), Rcx),
 		Emit.store(Emit.mem(Rax, 24), Rcx),
@@ -1455,7 +1494,7 @@ container_items = {
 			Emit.save(Rdx),
 			Emit.mov(Rdi, R8),
 			Emit.shl(Rdi, 5),
-			Emit.call(Runtime.allocate),
+			Emit.call(Heap.allocate(Entries)),
 			Emit.restore(Rdx),
 			Emit.restore(Rsi),
 			Emit.restore(Rdi),
@@ -1635,7 +1674,7 @@ container_items = {
 		Emit.save(Rsi),
 		Emit.mov(Rdi, R8),
 		Emit.shl(Rdi, 4),
-		Emit.call(Runtime.allocate),
+		Emit.call(Heap.allocate(Items)),
 		Emit.restore(Rsi),
 		Emit.restore(Rdi),
 		Emit.load(R8, Emit.mem(Rdi, 8)),
@@ -1731,7 +1770,7 @@ container_items = {
 			Emit.save(Rdi),
 			Emit.save(Rcx),
 			Emit.imm(Rdi, 9),
-			Emit.call(Runtime.allocate),
+			Emit.call(Heap.allocate(String)),
 			Emit.restore(R8),
 			Emit.restore(Rdi),
 			Emit.imm(Rdx, 1),

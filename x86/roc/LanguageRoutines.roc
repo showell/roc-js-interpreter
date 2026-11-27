@@ -12,6 +12,7 @@
 import Assembly
 import Boxing
 import Emit
+import Heap
 import Runtime
 import RuntimeBuilders
 
@@ -189,7 +190,7 @@ language_items = {
 			Emit.cmp(R8, R9),
 			Emit.jcc(E, "runtime_items_of_made"),
 			Emit.imm(Rdi, 9),
-			Emit.call(Runtime.allocate),
+			Emit.call(Heap.allocate(String)),
 			Emit.imm(Rcx, 1),
 			Emit.store(Emit.mem(Rax, 0), Rcx),
 			RuntimeBuilders.text_byte_item({ reg: Rcx, base: R10 }),
@@ -592,7 +593,7 @@ string_method_items = {
 		Emit.minus(Rdx, Rcx),
 		Emit.save(Rdx),
 		Emit.lea(Rdi, Emit.mem(Rdx, 8)),
-		Emit.call(Runtime.allocate),
+		Emit.call(Heap.allocate(String)),
 		Emit.restore(Rcx),
 		Emit.store(Emit.mem(Rax, 0), Rcx),
 		Emit.lea(Rdi, Emit.mem(Rax, 8)),

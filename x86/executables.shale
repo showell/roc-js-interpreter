@@ -88,9 +88,14 @@ function written_executable(who, exe, argument, path)
 end
 
 -- An executable's run: `{ended, code, out, ms, cpu_ms}`, stdout and stderr
--- together, the code -1 when it didn't exit.
-function executable_run(path)
-  local r = run({real(path)}, {timeout_ms = 60000, whole = 1000000, want = WANT_BINARY})
+-- together, the code -1 when it didn't exit. `argument`, when given, is the
+-- executable's first argument: `heapwalk` walks the heap at its exit and at
+-- a stop, every block's header checked (x86/roc/Heap.roc), and prints
+-- nothing more unless a header is wrong.
+function executable_run(path, argument?)
+  local argv = {real(path)}
+  if argument ~= nil then push(argv, argument) end
+  local r = run(argv, {timeout_ms = 60000, whole = 1000000, want = WANT_BINARY})
   return {ended = r.ended, code = get(r, "code", -1), out = r.out, ms = r.ms, cpu_ms = r.cpu_ms}
 end
 

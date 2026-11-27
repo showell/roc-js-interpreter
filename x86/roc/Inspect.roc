@@ -14,6 +14,7 @@
 import Assembly
 import Boxing
 import Emit
+import Heap
 import Runtime
 import RuntimeBuilders
 
@@ -198,7 +199,7 @@ Inspect :: [].{
 			Emit.mov(Rdi, Rcx),
 			Emit.shl(Rdi, 2),
 			Emit.plus_imm(Rdi, 10),
-			Emit.call(Runtime.allocate),
+			Emit.call(Heap.allocate(String)),
 			Emit.restore(R9),
 			Emit.restore(R10),
 			Emit.save(Rax),
@@ -346,7 +347,7 @@ Inspect :: [].{
 			Emit.plus_imm(Rdi, 2),
 			Emit.store(RuntimeBuilders.local(24), Rdi),
 			Emit.plus_imm(Rdi, 11),
-			Emit.call(Runtime.allocate),
+			Emit.call(Heap.allocate(String)),
 			Emit.load(Rcx, RuntimeBuilders.local(24)),
 			Emit.lea(Rdx, Emit.mem(Rcx, 3)),
 			Emit.store(Emit.mem(Rax, 0), Rdx),
@@ -402,7 +403,7 @@ Inspect :: [].{
 				Emit.minus(Rdx, Rsi),
 				Emit.save(Rdx),
 				Emit.lea(Rdi, Emit.mem(Rdx, 8)),
-				Emit.call(Runtime.allocate),
+				Emit.call(Heap.allocate(String)),
 				Emit.restore(Rcx),
 				Emit.store(Emit.mem(Rax, 0), Rcx),
 				Emit.lea(Rdi, Emit.mem(Rax, 8)),
@@ -577,7 +578,7 @@ list_items = {
 			Emit.store(Emit.mem(R13, 8), Rax),
 			Emit.mov(Rdi, Rcx),
 			Emit.shl(Rdi, 3),
-			Emit.call(Runtime.allocate),
+			Emit.call(Heap.allocate(Texts)),
 			Emit.store(RuntimeBuilders.local(40), Rax),
 			Emit.zero(Rax),
 			Emit.store(RuntimeBuilders.local(48), Rax),
@@ -750,7 +751,7 @@ list_items = {
 		# The braces, and a Map's or a Set's name and size.
 		Emit.plus_imm(Rdi, 40),
 		Emit.save(R10),
-		Emit.call(Runtime.allocate),
+		Emit.call(Heap.allocate(String)),
 		Emit.restore(R10),
 		Emit.store(RuntimeBuilders.local(80), Rax),
 		Emit.lea(Rdi, Emit.mem(Rax, 8)),
@@ -1044,7 +1045,7 @@ columns_items = {
 			Emit.store(row_count, Rax),
 			Emit.mov(Rdi, Rax),
 			Emit.shl(Rdi, 3),
-			Emit.call(Runtime.allocate),
+			Emit.call(Heap.allocate(Texts)),
 			Emit.store(rows, Rax),
 			Emit.zero(Rax),
 			Emit.store(row_start, Rax),
@@ -1094,7 +1095,7 @@ columns_items = {
 			Emit.mark("runtime_columns_length_done"),
 			Emit.store(row_length, R10),
 			Emit.lea(Rdi, Emit.mem(R10, 8)),
-			Emit.call(Runtime.allocate),
+			Emit.call(Heap.allocate(String)),
 			Emit.load(R10, row_length),
 			Emit.store(Emit.mem(Rax, 0), R10),
 			Emit.store(written_row, Rax),

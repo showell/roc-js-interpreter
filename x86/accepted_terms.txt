@@ -46,6 +46,7 @@ jcc    -- the manual's name for the conditional jumps
 ret    -- an instruction's mnemonic
 neg    -- an instruction's mnemonic
 idiv   -- an instruction's mnemonic
+bsr    -- an instruction's mnemonic
 cqo    -- an instruction's mnemonic
 iter   -- Bytecode.Op's own tag names (IterStart, IterNext), which the lowering matches
 al     -- the low byte of rax, by the manual's name

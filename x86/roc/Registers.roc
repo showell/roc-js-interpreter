@@ -407,6 +407,7 @@ direct_registers : X86.Instruction -> List(X86.Register)
 direct_registers = |instruction|
 	match instruction {
 		MovRegReg({ to, from }) | Alu({ operation: _, to, from }) | Imul({ to, from }) => [to, from]
+		Bsr({ to, from }) => [to, from]
 		Cmov({ condition: _, to, from }) => [to, from]
 		MovRegImm({ to, value: _ }) | AluImm({ operation: _, to, value: _ }) => [to]
 		MovRegMem({ to, from: _ }) | Lea({ to, from: _ }) | MovzxByteLoad({ to, from: _ }) => [to]

@@ -26,6 +26,7 @@
 import Assembly
 import Boxing
 import Emit
+import Heap
 import ObjectTable
 import Runtime
 import RuntimeBuilders
@@ -274,7 +275,7 @@ case_items = [
 	[
 		Emit.load(Rdi, Emit.mem(R10, 0)),
 		Emit.plus_imm(Rdi, 8),
-		Emit.call(Runtime.allocate),
+		Emit.call(Heap.allocate(String)),
 		Emit.mov(R11, Rax),
 		Emit.load(Rcx, Emit.mem(R10, 0)),
 		Emit.store(Emit.mem(R11, 0), Rcx),
@@ -428,7 +429,7 @@ repeat_items =
 			Emit.mov(R11, Rax),
 			Emit.mov(Rdi, Rax),
 			Emit.plus_imm(Rdi, 8),
-			Emit.call(Runtime.allocate),
+			Emit.call(Heap.allocate(String)),
 			Emit.store(Emit.mem(Rax, 0), R11),
 			Emit.mov(R11, Rax),
 			Emit.lea(Rdi, Emit.mem(Rax, 8)),
@@ -509,7 +510,7 @@ pad_items =
 			Emit.jcc(G, "runtime_string_too_long"),
 			Emit.mov(Rdi, R9),
 			Emit.plus_imm(Rdi, 8),
-			Emit.call(Runtime.allocate),
+			Emit.call(Heap.allocate(String)),
 			Emit.store(Emit.mem(Rax, 0), R9),
 			Emit.save(Rax),
 			Emit.lea(Rdi, Emit.mem(Rax, 8)),
@@ -704,7 +705,7 @@ replace_items = {
 			Emit.save(Rcx),
 			Emit.mov(Rdi, Rcx),
 			Emit.plus_imm(Rdi, 8),
-			Emit.call(Runtime.allocate),
+			Emit.call(Heap.allocate(String)),
 			Emit.restore(Rcx),
 			Emit.store(Emit.mem(Rax, 0), Rcx),
 			Emit.mov(R8, Rax),

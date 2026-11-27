@@ -173,6 +173,11 @@ register_accesses = |instruction|
 			reads: both(general_unit(to), general_unit(from)),
 			writes: general_unit(to),
 		})
+		# `bsr` leaves its destination as it was when the source is 0.
+		Bsr({ to, from }) => Ok({
+			reads: both(general_unit(to), general_unit(from)),
+			writes: general_unit(to),
+		})
 		Neg(register) => Ok({ reads: general_unit(register), writes: general_unit(register) })
 		# `div r32` reads edx:eax and its divisor, and writes eax and edx,
 		# each zero-extended into its whole register.

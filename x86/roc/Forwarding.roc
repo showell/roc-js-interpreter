@@ -225,7 +225,7 @@ stores_nothing : X86.Instruction -> Bool
 stores_nothing = |instruction|
 	match instruction {
 		MovRegReg(_) | MovRegImm(_) | MovRegMem(_) | Lea(_) | MovzxByteLoad(_) => True
-		Alu(_) | AluImm(_) | Imul(_) | Neg(_) | Div32(_) | Shift(_) | Test(_) => True
+		Alu(_) | AluImm(_) | Imul(_) | Bsr(_) | Neg(_) | Div32(_) | Shift(_) | Test(_) => True
 		Setcc(_) | MovzxByte(_) | Pop(_) | Cmov(_) => True
 		MovsdRegReg(_) | MovsdLoad(_) | Sse(_) | Ucomisd(_) => True
 		Cvtsi2sd(_) | Cvttsd2si(_) | MovqToXmm(_) | MovqFromXmm(_) => True

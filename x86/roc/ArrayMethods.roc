@@ -11,6 +11,7 @@
 import Assembly
 import Boxing
 import Emit
+import Heap
 import Runtime
 import RuntimeBuilders
 
@@ -251,7 +252,7 @@ slice_items = {
 			Emit.test(Rdi, Rdi),
 			Emit.jcc(E, "runtime_join_empty"),
 			Emit.shl(Rdi, 3),
-			Emit.call(Runtime.allocate),
+			Emit.call(Heap.allocate(Texts)),
 			Emit.store(RuntimeBuilders.local(24), Rax),
 			Emit.zero(Rax),
 			Emit.store(RuntimeBuilders.local(32), Rax),
@@ -296,7 +297,7 @@ slice_items = {
 			Emit.mark("runtime_join_counted"),
 			Emit.load(Rdi, RuntimeBuilders.local(40)),
 			Emit.plus_imm(Rdi, 8),
-			Emit.call(Runtime.allocate),
+			Emit.call(Heap.allocate(String)),
 			Emit.store(RuntimeBuilders.local(48), Rax),
 			Emit.load(Rcx, RuntimeBuilders.local(40)),
 			Emit.store(Emit.mem(Rax, 0), Rcx),
@@ -416,7 +417,7 @@ slice_items = {
 			Emit.save(Rsi),
 			Emit.save(Rdx),
 			Emit.lea(Rdi, Emit.mem(Rdx, 8)),
-			Emit.call(Runtime.allocate),
+			Emit.call(Heap.allocate(String)),
 			Emit.restore(Rcx),
 			Emit.restore(Rsi),
 			Emit.restore(R10),
@@ -823,10 +824,10 @@ sort_items = {
 			Emit.load(Rdi, Emit.mem(Rdi, 0)),
 			Emit.shl(Rdi, 3),
 			Emit.save(Rdi),
-			Emit.call(Runtime.allocate),
+			Emit.call(Heap.allocate(Items)),
 			Emit.store(RuntimeBuilders.local(32), Rax),
 			Emit.restore(Rdi),
-			Emit.call(Runtime.allocate),
+			Emit.call(Heap.allocate(Items)),
 			Emit.store(RuntimeBuilders.local(40), Rax),
 			Emit.load(Rdi, RuntimeBuilders.local(8)),
 		])
@@ -1286,7 +1287,7 @@ edit_items = {
 				Emit.save(Rdi),
 				Emit.load(Rdi, Emit.mem(Rdi, 0)),
 				Emit.plus_imm(Rdi, 8),
-				Emit.call(Runtime.allocate),
+				Emit.call(Heap.allocate(String)),
 				Emit.restore(R10),
 				Emit.load(R9, Emit.mem(R10, 0)),
 				Emit.store(Emit.mem(Rax, 0), R9),

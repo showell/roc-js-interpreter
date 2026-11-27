@@ -8,6 +8,7 @@
 ## Runtime; Roc forbids an import cycle, so Runtime cannot list it in its
 ## own routines, and `RuntimeCode` puts the two together.
 import Assembly
+import Heap
 import Runtime
 import RuntimeBuilders
 
@@ -125,9 +126,15 @@ texts = [
 	),
 	(
 		"runtime_text_out_of_memory",
-		"x86: out of memory: the heap of 1 GiB is full, and no collector runs yet\n",
+		"x86: out of memory: the heap of 2 GiB is full, and no collector runs yet\n",
 	),
 	("runtime_text_no_heap", "x86: the heap could not be mapped\n"),
+	(Heap.bad_header_text, "x86: the heap walk found a block whose header is wrong\n"),
+	("runtime_text_heap_counts", "heap: "),
+	("runtime_text_heap_blocks", " blocks, "),
+	("runtime_text_heap_asked", " bytes asked, "),
+	("runtime_text_heap_held", " bytes in blocks, "),
+	("runtime_text_heap_pages", " pages\n"),
 	("runtime_text_length", "length"),
 	("runtime_text_zero", "0"),
 	(

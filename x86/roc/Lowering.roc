@@ -2465,7 +2465,7 @@ meeting_state = |context, { at, one, other }| {
 }
 
 ## A known array's or string's length (`GetProperty` of `length`), as an
-## `Integer`: at most 2^32, since the heap is 1 GiB.
+## `Integer`: at most 2^32, since the heap is 2 GiB.
 length_integer : LoweringBasics.Kind
 length_integer = Integer({ low: 0, high: 4294967296 })
 
@@ -2582,7 +2582,7 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 		GetProperty(key, _) => {
 			kind = LoweringBasics.kind_below(state, 0)
 			# A known array's or string's length is an `Integer`: it can't pass
-			# 2^32 in a heap of 1 GiB.
+			# 2^32 in a heap of 2 GiB.
 			known = kind == String or kind == Array or LoweringBasics.holds_numbers(kind)
 			given = match key {
 				"length" if known =>

@@ -10,6 +10,7 @@
 ## read whole beside the runtime routines they call, and none of them needs
 ## the walk: Lowering's dispatch hands each its site and state, and takes
 ## back what it lowered.
+import Heap
 import js.Bytecode
 import Assembly
 import Boxing
@@ -324,7 +325,7 @@ CallLowering :: [].{
 		count = captures.len()
 		var $items = [
 			Emit.imm(Rdi, (24 + 8 * count).to_i64_wrap()),
-			Emit.call(Runtime.allocate),
+			Emit.call(Heap.allocate(Closure)),
 			Emit.address_of(Rcx, LoweringBasics.value_label(made)),
 			Emit.minus(Rcx, Rax),
 			Emit.store(Emit.mem(Rax, 0), Rcx),

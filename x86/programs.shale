@@ -23,6 +23,8 @@
 --     exactly those x86/corpus.txt lists, one a line: a program that stops
 --     matching fails, and so does one that starts to, until the list (and
 --     the commit that moves it) says so.
+-- Each executable runs with `heapwalk` (HEAP_WALK, below), which checks every
+-- block's header in its heap at its exit and at a stop.
 -- Nothing is skipped: the run fails unless every program passes, and a
 -- folder with no program in it fails too.
 --
@@ -39,6 +41,10 @@ const REPORT = arg("corpus", "held") == "report"
 -- The sites and instructions inlined across x86/tests/: a commit that moves
 -- it says why.
 const INLINED = "inlined: 47 sites, 683 instructions"
+-- Every executable here runs with this first argument: it walks the heap at
+-- its exit and at a stop and checks every block's header, so a header an
+-- allocation wrote wrong stops the program, and its output can't be node's.
+const HEAP_WALK = "heapwalk"
 
 function js_files(dir)
   local out = {}
@@ -63,7 +69,7 @@ function held_to_node(exe, dir, js_path)
   if made.code ~= 0 then return "js-x86 exited " .. made.code .. ": " .. trim(made.out) end
   replace(path, bytes_of_hex(WHO, made.out))
   must(run({"chmod", "755", real(path)}, {timeout_ms = 10000, whole = 4000}))
-  local r = executable_run(path)
+  local r = executable_run(path, HEAP_WALK)
   local n = node_run(js_path)
   if n.code ~= 0 then return "node exited " .. n.code .. ": " .. trim(n.out) end
   if r.ended ~= "exit" or r.code ~= 0 then return "the executable ended " .. r.ended .. " " .. r.code .. ": " .. trim(r.out) end
@@ -101,7 +107,7 @@ function held_to_refusal(exe, dir, js_path)
   local path = executable_path(dir, js_path)
   replace(path, bytes_of_hex(WHO, made.out))
   must(run({"chmod", "755", real(path)}, {timeout_ms = 10000, whole = 4000}))
-  local r = executable_run(path)
+  local r = executable_run(path, HEAP_WALK)
   if r.ended ~= "exit" or r.code ~= 1 then return "the executable ended " .. r.ended .. " " .. r.code .. ", not exit 1" end
   local said = lines(trim(r.out))
   if #said == 0 or said[#said] ~= stops.group then return "the executable's last line is " .. json_write(trim(r.out)) .. ", not " .. json_write(stops.group) end

@@ -56,6 +56,7 @@
 import Assembly
 import Boxing
 import Emit
+import Heap
 import Runtime
 import RuntimeBuilders
 import X86
@@ -247,7 +248,7 @@ index_items = [
 	Emit.mov(Rdi, Rcx),
 	Emit.shl(Rdi, 3),
 	Emit.plus_imm(Rdi, 8),
-	Emit.call(Runtime.allocate),
+	Emit.call(Heap.allocate(Table)),
 	Emit.restore(Rcx),
 	Emit.restore(Rdi),
 	Emit.minus_imm(Rcx, 1),

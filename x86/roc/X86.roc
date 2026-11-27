@@ -95,6 +95,9 @@ X86 :: [].{
 			},
 		),
 		Imul({ to : X86.Register, from : X86.Register }),
+		# The place of `from`'s highest set bit, 0 to 63, in `to` (`bsr`):
+		# the allocator's size class. `to` is left undefined when `from` is 0.
+		Bsr({ to : X86.Register, from : X86.Register }),
 		# rax times the register, signed, the whole 128-bit product in
 		# rdx:rax (`imul r64`): its high half in rdx.
 		ImulWide(X86.Register),
@@ -259,6 +262,14 @@ X86 :: [].{
 				out,
 				integer_layout({
 					opcode: [0x0F, 0xAF],
+					reg: register_number(to),
+					operand: Direct(register_number(from)),
+				}),
+			)
+			Bsr({ to, from }) => append_encoded(
+				out,
+				integer_layout({
+					opcode: [0x0F, 0xBD],
 					reg: register_number(to),
 					operand: Direct(register_number(from)),
 				}),
@@ -682,6 +693,8 @@ X86 :: [].{
 	) == "48 83 f3 80"
 	expect hex_of(Imul({ to: Rax, from: Rbx })) == "48 0f af c3"
 	expect hex_of(Imul({ to: R8, from: R15 })) == "4d 0f af c7"
+	expect hex_of(Bsr({ to: Rcx, from: Rcx })) == "48 0f bd c9"
+	expect hex_of(Bsr({ to: R9, from: Rax })) == "4c 0f bd c8"
 	expect hex_of(ImulWide(Rcx)) == "48 f7 e9"
 	expect hex_of(ImulWide(R8)) == "49 f7 e8"
 	expect hex_of(Div(R8)) == "49 f7 f0"
