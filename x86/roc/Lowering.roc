@@ -261,12 +261,22 @@ items_with_numbers = |program, arrays| {
 	# so they are found once, not once a pass.
 	var $cells_by_code = []
 	var $numbers_by_code = []
+	var $held_by_code = []
+	var $declared_by_code = []
+	var $skipped_by_code = []
 	for index in 0..<program.codes.len() {
 		$cells_by_code = $cells_by_code.append(KnownFunctions.celled_slots(known, index))
 		$numbers_by_code = $numbers_by_code.append(KnownFunctions.constant_numbers(known, index))
+		$held_by_code = $held_by_code.append(held_slots(known, index))
+		code = program.codes.get(index) ?? crash "Lowering.items_with_numbers: a code"
+		$declared_by_code = $declared_by_code.append(declared_statics(statics, code))
+		$skipped_by_code = $skipped_by_code.append(skipped_places(statics, code))
 	}
 	cells_by_code = $cells_by_code
 	numbers_by_code = $numbers_by_code
+	held_by_code = $held_by_code
+	declared_by_code = $declared_by_code
+	skipped_by_code = $skipped_by_code
 	trying = program.codes.any(
 		|code|
 			code.ops.any(
@@ -302,6 +312,9 @@ items_with_numbers = |program, arrays| {
 		for index in 0..<program.codes.len() {
 			cells = cells_by_code.get(index) ?? crash "Lowering.items_with_numbers: cells"
 			numbers = numbers_by_code.get(index) ?? crash "Lowering.items_with_numbers: numbers"
+			held = held_by_code.get(index) ?? crash "Lowering.items_with_numbers: held"
+			declared = declared_by_code.get(index) ?? crash "Lowering.items_with_numbers: declared"
+			skipped = skipped_by_code.get(index) ?? crash "Lowering.items_with_numbers: skipped"
 			context = {
 				program,
 				makers,
@@ -309,6 +322,9 @@ items_with_numbers = |program, arrays| {
 				escaped_codes: $escaped_codes,
 				cells,
 				numbers,
+				held,
+				declared,
+				skipped,
 				trying,
 				arrays,
 				returns: $returns,
@@ -712,7 +728,6 @@ start_state : LoweringBasics.Context,
 	entered : List(U64),
 } -> Try(LoweringBasics.State, [Refused(Str)])
 start_state = |context, { code, entered }| {
-	known = known_functions(context)
 	var $slots = List.repeat(Unready, code.frame_size)
 	for slot in 0..<parameter_count(code) {
 		kind =
@@ -750,9 +765,9 @@ start_state = |context, { code, entered }| {
 				) ?? crash "Lowering.start_state: a boxed parameter has a slot"
 			}
 			CapturedBox({ slot, capture: _ }) => {
-				kind = match KnownFunctions.held_function(known, { code: context.index, slot }) {
+				kind = match context.held.get(slot) {
 					Ok(made) => Function(made)
-					Err(Unheld) => Value
+					Err(_) => Value
 				}
 				$slots = $slots.set(
 					slot,
@@ -761,13 +776,11 @@ start_state = |context, { code, entered }| {
 			}
 		}
 	}
-	for (slot, made) in KnownFunctions.declared_functions(code).to_list() {
-		if context.statics.contains(made) {
-			$slots = $slots.set(
-				slot,
-				Ready(Function(made)),
-			) ?? crash "Lowering.start_state: a declaration has a slot"
-		}
+	for (slot, made) in context.declared {
+		$slots = $slots.set(
+			slot,
+			Ready(Function(made)),
+		) ?? crash "Lowering.start_state: a declaration has a slot"
 	}
 	Ok({ slots: $slots, stack_kinds: [] })
 }
@@ -781,34 +794,51 @@ parameter_count = |code|
 		Packed(_) => 0
 	}
 
-## What `KnownFunctions` reads of a function's context (`Known`).
-known_functions : LoweringBasics.Context -> LoweringBasics.Known
-known_functions = |context| {
-	program: context.program,
-	makers: context.makers,
-	statics: context.statics,
-}
-
 ## The places of the instructions a code starts with that declare its
 ## functions known before the program runs: they make no code, since the
 ## name holds the function from the start.
-skipped_places : LoweringBasics.Context, Bytecode.Code -> List(U64)
-skipped_places = |context, code| {
+skipped_places : List(U64), Bytecode.Code -> List(U64)
+skipped_places = |statics, code| {
 	var $out = []
-	for (slot, made) in KnownFunctions.declared_functions(code).to_list() {
-		if context.statics.contains(made) {
-			# Each declaration is a `MakeClosure` then its `SetBoxed`.
-			at = code.ops.find_first_index(
-				|instruction|
-					match instruction {
-						SetBoxed(set) => set == slot
-						_ => False
-					},
-			) ?? crash "Lowering.skipped_places: a declaration's SetBoxed"
-			$out = $out.concat([at - 1, at])
-		}
+	for (slot, _) in declared_statics(statics, code) {
+		# Each declaration is a `MakeClosure` then its `SetBoxed`.
+		at = code.ops.find_first_index(
+			|instruction|
+				match instruction {
+					SetBoxed(set) => set == slot
+					_ => False
+				},
+		) ?? crash "Lowering.skipped_places: a declaration's SetBoxed"
+		$out = $out.concat([at - 1, at])
 	}
 	$out
+}
+
+## The functions known before the program runs that a code declares at its
+## start, each with its slot, in `KnownFunctions.declared_functions`' order.
+declared_statics : List(U64), Bytecode.Code -> List((U64, U64))
+declared_statics = |statics, code|
+	KnownFunctions.declared_functions(code).to_list().keep_if(|(_, made)| statics.contains(made))
+
+## The function known before the program runs that each captured slot of
+## code `index` holds (`KnownFunctions.held_function`), by the slot.
+held_slots : LoweringBasics.Known, U64 -> Dict(U64, U64)
+held_slots = |known, index| {
+	code = known.program.codes.get(index) ?? crash "Lowering.held_slots: a code"
+	var $held = Dict.empty()
+	for step in code.entry {
+		match step {
+			CapturedBox({ slot, capture: _ }) =>
+				match KnownFunctions.held_function(known, { code: index, slot }) {
+					Ok(made) => {
+						$held = $held.insert(slot, made)
+					}
+					Err(Unheld) => {}
+				}
+			_ => {}
+		}
+	}
+	$held
 }
 
 ## What one function does that the lowering refuses, and where.
@@ -991,7 +1021,7 @@ code_walk = |context, { heads, doubted, demoted }| {
 	code = context.program.codes.get(context.index) ?? crash "Lowering.code_walk: a code's index"
 	entered = entry_doubles(context, { code, demoted })
 	start = start_state(context, { code, entered })?
-	skipped = skipped_places(context, code)
+	skipped = context.skipped
 	looped_to = loop_targets(code)
 	# The places of the `JumpIfFalse`s an ordering before took as its own.
 	var $fused = []

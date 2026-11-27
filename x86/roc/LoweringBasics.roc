@@ -97,6 +97,13 @@ LoweringBasics :: [].{
 		# The captured cells that hold one number for good, with the number
 		# (`KnownFunctions.constant_numbers`).
 		numbers : Dict(U64, F64),
+		# The function known before the program runs that each captured slot
+		# holds, the functions this code declares at its start (each with its
+		# slot), and the places of those declarations, which make no code:
+		# found once for every pass (`Lowering.held_slots`).
+		held : Dict(U64, U64),
+		declared : List((U64, U64)),
+		skipped : List(U64),
 		# Whether the program has a `try` anywhere, which keeps every value of
 		# every frame in the frame (`Registers.roc`).
 		trying : Bool,
