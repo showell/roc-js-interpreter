@@ -86,10 +86,10 @@ stopped_at = |src, phase| {
 			Ok(program.codes.len())
 		}
 		"stop=lower" => Ok(lowering_of(src)?.statements.len())
-		"stop=assemble" => Ok(assembled(lowering_of(src)?.statements)?.len())
-		"stop=elf" => Ok(Elf.executable(assembled(lowering_of(src)?.statements)?).len())
+		"stop=assemble" => Ok(code_of(lowering_of(src)?.statements)?.len())
+		"stop=elf" => Ok(Elf.executable(code_of(lowering_of(src)?.statements)?).len())
 		"stop=hex" => Ok(X86.hex_text(executable_of(src)?).count_utf8_bytes())
-		"stop=runtime-assemble" => Ok(assembled(RuntimeCode.items)?.len())
+		"stop=runtime-assemble" => Ok(code_of(RuntimeCode.items)?.len())
 		"stop=runtime-posts" => Ok(posts(RuntimeCode.items).len())
 		"stop=jumps-again" => Ok(Jumps.thread_jumps(lowering_of(src)?.statements).len())
 		"stop=forwarding-again" => Ok(Forwarding.forward_loads(lowering_of(src)?.statements).len())
@@ -101,12 +101,14 @@ stopped_at = |src, phase| {
 
 ## Lowering's post-passes, in its order.
 posts : List(Assembly.Statement) -> List(Assembly.Statement)
-posts = |statements|
-	Jumps.thread_jumps(Moves.trim_moves(Forwarding.forward_loads(Jumps.thread_jumps(statements))))
+posts = |statements| {
+	forwarded = Forwarding.forward_loads(Jumps.thread_jumps(statements))
+	Jumps.thread_jumps(Moves.trim_moves(forwarded))
+}
 
 ## The code for `statements`, or why it has none.
-assembled : List(Assembly.Statement) -> Try(List(U8), Str)
-assembled = |statements|
+code_of : List(Assembly.Statement) -> Try(List(U8), Str)
+code_of = |statements|
 	match Assembly.assemble(statements) {
 		Ok(code) => Ok(code)
 		Err(UnknownLabel(label)) => Err("no label ${label}")
@@ -178,7 +180,7 @@ write_labels! = |src| {
 executable_of : Str -> Try(List(U8), Str)
 executable_of = |src| {
 	lowered = lowering_of(src)?
-	Ok(Elf.executable(assembled(lowered.statements)?))
+	Ok(Elf.executable(code_of(lowered.statements)?))
 }
 
 ## A program's lowering, or why it has none.

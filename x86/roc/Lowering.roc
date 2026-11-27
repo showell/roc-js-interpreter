@@ -300,13 +300,15 @@ items_with_numbers = |program, arrays| {
 		var $calls = []
 		var $refused = []
 		for index in 0..<program.codes.len() {
+			cells = cells_by_code.get(index) ?? crash "Lowering.items_with_numbers: cells"
+			numbers = numbers_by_code.get(index) ?? crash "Lowering.items_with_numbers: numbers"
 			context = {
 				program,
 				makers,
 				statics,
 				escaped_codes: $escaped_codes,
-				cells: cells_by_code.get(index) ?? crash "Lowering.items_with_numbers: a code's cells",
-				numbers: numbers_by_code.get(index) ?? crash "Lowering.items_with_numbers: a code's numbers",
+				cells,
+				numbers,
 				trying,
 				arrays,
 				returns: $returns,
