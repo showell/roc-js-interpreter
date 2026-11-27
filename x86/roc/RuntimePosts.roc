@@ -43,9 +43,10 @@
 ## every unit done once fits. The units that most programs pass are found
 ## when js-x86 is built (`seed`), so most compiles fit at the first try.
 ## The allocator's kind entries are such units: each ends with a jump to
-## the shared path, and the last one a program keeps runs into it. The program's code must end with a `ret` or a `jmp`,
-## and the tail must be labels, data and distances; where either isn't so,
-## or the units passed keep growing, the whole is passed as before.
+## the shared path, and the last one a program keeps runs into it. The
+## program's code must end with a `ret` or a `jmp`, and the tail must be
+## labels, data and distances; where either isn't so, or the units passed
+## keep growing, the whole is passed as before.
 ##
 ## The runtime names no label of the program's or the tail's, so the
 ## program's passes take the runtime's labels as they stand beside it (its
@@ -61,9 +62,9 @@ import RuntimeCode
 RuntimePosts :: [].{
 
 	## The post-passes of `program_statements`, then the runtime's
-	## statements, then `tail_statements`, as `posts_of_whole` makes them, and how they were run (`way`):
-	## `beside` when the runtime's were taken as done, else why the whole
-	## was passed.
+	## statements, then `tail_statements`, as `posts_of_whole` makes them,
+	## and how they were run (`way`): `beside` when the runtime's were taken
+	## as done, else why the whole was passed.
 	posts : {
 		program_statements : List(Assembly.Statement),
 		tail_statements : List(Assembly.Statement),
@@ -135,8 +136,8 @@ pieces = {
 }
 
 ## The pieces with the seam between each two.
-join_with_seams : List(List(Assembly.Statement)) -> List(Assembly.Statement)
-join_with_seams = |parts| {
+seamed_statements : List(List(Assembly.Statement)) -> List(Assembly.Statement)
+seamed_statements = |parts| {
 	var $out = []
 	for part in parts {
 		if !$out.is_empty() {
@@ -148,8 +149,8 @@ join_with_seams = |parts| {
 }
 
 ## Statements cut at each seam, the seams left out.
-cut_at_seams : List(Assembly.Statement) -> List(List(Assembly.Statement))
-cut_at_seams = |statements| {
+pieces_between_seams : List(Assembly.Statement) -> List(List(Assembly.Statement))
+pieces_between_seams = |statements| {
 	var $out = []
 	var $now = []
 	for statement in statements {
@@ -304,7 +305,10 @@ first_jumps : {
 	rounds : U64,
 	settled : Bool,
 }
-first_jumps = Jumps.thread_jumps_beside(join_with_seams(pieces), { named: first_labels, hops: Dict.empty() })
+first_jumps = Jumps.thread_jumps_beside(
+	seamed_statements(pieces),
+	{ named: first_labels, hops: Dict.empty() },
+)
 
 ## The labels named while the runtime's Forwarding and Moves run alone.
 alone_named : Set(Str)
@@ -428,10 +432,10 @@ segments_of = |statements| {
 ## The runtime's units, in its order.
 units : List(Unit)
 units = {
-	firsts = cut_at_seams(first_jumps.threaded)
-	befores = cut_at_seams(forwarded)
-	thirds = cut_at_seams(trimmed.trimmed)
-	seconds = cut_at_seams(second_jumps.threaded)
+	firsts = pieces_between_seams(first_jumps.threaded)
+	befores = pieces_between_seams(forwarded)
+	thirds = pieces_between_seams(trimmed.trimmed)
+	seconds = pieces_between_seams(second_jumps.threaded)
 	var $out = []
 	for at in 0..<pieces.len() {
 		piece = pieces.get(at) ?? crash "RuntimePosts.units: a piece"
@@ -505,7 +509,12 @@ units = {
 ## before the passes: no pass took a label out or added one.
 labels_kept : Bool
 labels_kept = {
-	forms = [first_jumps.threaded, forwarded, trimmed.trimmed, second_jumps.threaded].map(cut_at_seams)
+	forms = [
+		first_jumps.threaded,
+		forwarded,
+		trimmed.trimmed,
+		second_jumps.threaded,
+	].map(pieces_between_seams)
 	List.map_with_index(
 		pieces,
 		|piece, at| {
@@ -527,7 +536,7 @@ labels_kept = {
 closed : Bool
 closed = {
 	counts = [first_jumps.threaded, forwarded, trimmed.trimmed, second_jumps.threaded].all(
-		|statements| cut_at_seams(statements).len() == pieces.len(),
+		|statements| pieces_between_seams(statements).len() == pieces.len(),
 	)
 	settles = |jumps| {
 		again = Jumps.thread_jumps_beside(
@@ -545,10 +554,10 @@ expect closed
 ## (a round only drops statements, so none was dropped) and every jump to
 ## the same label (the threading changes nothing else).
 same_jumps : List(Assembly.Statement), List(Assembly.Statement) -> Bool
-same_jumps = |later, earlier|
-	later.len() == earlier.len() and List.map2(
-		later,
-		earlier,
+same_jumps = |later_statements, earlier_statements|
+	later_statements.len() == earlier_statements.len() and List.map2(
+		later_statements,
+		earlier_statements,
 		|one, other|
 			match (one, other) {
 				(JmpTo(late), JmpTo(early)) => late == early
@@ -1289,7 +1298,10 @@ reads_held = |reads, { standing, passed, addressed }| {
 
 ## The units a check found that don't fit, or none; a rule no unit's
 ## passing would meet stays `Apart`.
-units_to_grow : Try({}, [Apart(Str), Grow(List(U64))]) -> Try(List(U64), [Apart(Str), Grow(List(U64))])
+units_to_grow : Try({}, [Apart(Str), Grow(List(U64))]) -> Try(
+	List(U64),
+	[Apart(Str), Grow(List(U64))],
+)
 units_to_grow = |checked|
 	match checked {
 		Ok({}) => Ok([])
@@ -1439,8 +1451,8 @@ ends_apart = |cut, { standing, passed, last, length }| {
 			}
 			_ => {
 				match $own_before {
-					Ok(earlier) =>
-						match earlier.ending {
+					Ok(earlier_piece) =>
+						match earlier_piece.ending {
 							Ok(label) if kept.starting.contains(label) and !$between.is_empty() => {
 								$grow = $grow.concat($between)
 							}
