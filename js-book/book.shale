@@ -8,7 +8,9 @@
 -- The book builder is roc-apps', in the roc-apps checkout beside this one
 -- (ROC_APPS), and its tools run with that checkout as their root, so they
 -- name this checkout's files through its mount (HERE): this script runs from
--- the checkout at HERE alone, and stops elsewhere. The book is the app
+-- the main checkout or from a lane's worktree in build:lanes, and stops
+-- elsewhere. A lane's book goes to the channel's /js-book-<lane>/, never
+-- /js-book/ (lane_name, below). The book is the app
 -- app/main.roc on the book platform, which reads this checkout from its root
 -- and prints every page. First every commit the manuscript cites is held to
 -- resolve (check_citations, below). Its pre-step draws each
@@ -42,10 +44,22 @@ const PICTURES = "js-book/shots"
 const GITHUB = "https://github.com/showell/roc-js-interpreter/blob/master/"
 const VM_WANT = "js-vm: each console sample's output for the appendix"
 const NEXT = "build:roc-apps/next"
-const DEST_NAME = "js-book"
-const STAGED_NAME = "js-book.staging"
 const ROC_APPS = "repos:roc-apps"
-const HERE = "repos:roc-js-interpreter"
+const MAIN_CHECKOUT = "repos:roc-js-interpreter"
+const LANES = "build:lanes"
+
+-- A lane's worktree is a folder of build:lanes. Run there, the book is read
+-- through that folder's mount path and goes to the channel's
+-- /js-book-<lane>/, so a lane never replaces the book the author reads.
+function lane_name()
+  local here = real(".")
+  if not starts_with(here, real(LANES) .. "/") then return "" end
+  return basename(here)
+end
+const LANE = lane_name()
+const HERE = (LANE == "") and MAIN_CHECKOUT or (LANES .. "/" .. LANE)
+const DEST_NAME = (LANE == "") and "js-book" or ("js-book-" .. LANE)
+const STAGED_NAME = DEST_NAME .. ".staging"
 const DRAW = "book_builder/tools/draw_diagrams.shale"
 const MOVE = "book_builder/tools/move_stage.shale"
 const CHECKER = "book_builder/tools/book_check.mjs"
