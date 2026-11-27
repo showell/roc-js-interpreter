@@ -118,8 +118,34 @@ LoweringBasics :: [].{
 		# The places a class's table is expected to hold each key at, and the
 		# codes it may hold there (`MethodTables.method_tables`).
 		methods : LoweringBasics.MethodGuesses,
+		# The loops of this code placed twice (`Versioning`).
+		versions : LoweringBasics.Versions,
 		index : U64,
 	}
+
+	## The loops `Versioning` placed twice in one code: at each guard's place,
+	## what the guard tests and copies; at each exit's place, the fast copy's
+	## slots copied back to their own.
+	Versions : {
+		guards : Dict(U64, LoweringBasics.Guard),
+		exits : Dict(U64, List(LoweringBasics.SlotCopy)),
+	}
+
+	## A versioned loop's guard: the slots it tests for whole numbers of 32
+	## bits (`checked`, each made an `Integer` in its fast slot), the slots it
+	## copies as they are, and the place the fast copy starts at.
+	Guard : {
+		checked : List(LoweringBasics.SlotCopy),
+		copied : List(LoweringBasics.SlotCopy),
+		fast : U64,
+	}
+
+	## A slot's value moved to another slot.
+	SlotCopy : { from : U64, to : U64 }
+
+	## A code with no loop placed twice.
+	no_versions : LoweringBasics.Versions
+	no_versions = { guards: Dict.empty(), exits: Dict.empty() }
 
 	## For each key some class's table holds, the places among a table's
 	## entries it is expected at, and the codes of the methods it may hold.

@@ -7,6 +7,7 @@ app [main!] { js: "../../js/roc/main.roc" }
 #
 #   js-x86 "<program>"
 #   js-x86 "<program>" inlined    # the sites Inlining put in line
+#   js-x86 "<program>" versioned  # the loops Versioning placed twice
 #   js-x86 "<program>" labels     # each label's offset in the code
 #   js-x86 "<program>" posts      # how the post-passes ran (RuntimePosts)
 #
@@ -38,12 +39,13 @@ main! = |arguments| {
 	match (arguments.get(0), arguments.get(1)) {
 		(Ok(src), Err(_)) => write_program!(src)
 		(Ok(src), Ok("inlined")) => write_inlined!(src)
+		(Ok(src), Ok("versioned")) => write_versioned!(src)
 		(Ok(src), Ok("labels")) => write_labels!(src)
 		(Ok(src), Ok("posts")) => write_posts!(src)
 
 		(Ok(src), Ok(phase)) => write_stopped!(src, phase)
 		_ => {
-			echo!("usage: js-x86 \"<program>\" [inlined | labels | posts | stop=<phase>]\n")
+			echo!("usage: js-x86 \"<program>\" [inlined | versioned | labels | posts | stop=<phase>]\n")
 			Err(Exit(2))
 		}
 	}
@@ -152,6 +154,25 @@ write_inlined! = |src| {
 	}
 }
 
+## The line `versioned: <loops> loops, <instructions> instructions` for a
+## program that lowers: how many loops Versioning placed twice, and the
+## instructions their fast copies hold, for x86/programs.shale's held count.
+write_versioned! : Str => Try({}, [Exit(I8)])
+write_versioned! = |src| {
+	match lowering_of(src) {
+		Ok(lowered) => {
+			loops = lowered.versioned.loops.to_str()
+			instructions = lowered.versioned.instructions.to_str()
+			echo!("versioned: ${loops} loops, ${instructions} instructions\n")
+			Ok({})
+		}
+		Err(why) => {
+			echo!("js-x86: ${why}\n")
+			Err(Exit(1))
+		}
+	}
+}
+
 ## The line `posts: beside` for a program whose post-passes took the
 ## runtime's as done when js-x86 was built, or `posts: <why>` naming why
 ## the whole was passed (RuntimePosts), for x86/programs.shale's check.
@@ -208,6 +229,7 @@ lowering_of : Str -> Try(
 	{
 		statements : List(Assembly.Statement),
 		inlined : { sites : U64, instructions : U64 },
+		versioned : { loops : U64, instructions : U64 },
 		posts : Str,
 	},
 	Str,
