@@ -1117,22 +1117,31 @@ code_walk = |context, { heads, doubted, demoted }| {
 					}
 				$escaped = $escaped.concat(valued.escaped)
 				# A call's kinds are its arguments' before any was made a double.
-				integers_before = List.map2(
-					state.stack_kinds,
-					valued.state.stack_kinds,
-					|before, after|
-						if LoweringBasics.is_integer(before) {
-							before
-						} else {
-							after
-						},
-				)
+				# With no `Integer` before, of a stack as deep, the kinds after are
+				# the call's, and no list is made of them.
+				same_depth = state.stack_kinds.len() == valued.state.stack_kinds.len()
+				integers_before =
+					if same_depth and !state.stack_kinds.any(LoweringBasics.is_integer) {
+						valued.state.stack_kinds
+					} else {
+						List.map2(
+							state.stack_kinds,
+							valued.state.stack_kinds,
+							|before, after|
+								if LoweringBasics.is_integer(before) {
+									before
+								} else {
+									after
+								},
+						)
+					}
 				called_state = { ..valued.state, stack_kinds: integers_before }
 				$calls = match call_kinds(context, { instruction, state: called_state }) {
 					Ok(call) => $calls.append(call)
 					Err(NoCall) => $calls
 				}
-				ahead = [1, 2, 3, 4, 5].any(|step| joined_at(at + step))
+				near = joined_at(at + 1) or joined_at(at + 2) or joined_at(at + 3)
+				ahead = near or joined_at(at + 4) or joined_at(at + 5)
 				fused = fused_jump(
 					site,
 					{
@@ -2198,6 +2207,16 @@ integers_met = |code, { state, kept }| {
 ## (`Demoted`).
 integer_clashes : LoweringBasics.State, LoweringBasics.State -> List(U64)
 integer_clashes = |one, other| {
+	# A clash needs an `Integer` on one of the two ways.
+	holds_integer = |state| state.slots.any(
+		|held| match held {
+			Ready(Integer(_)) => True
+			_ => False
+		},
+	)
+	if !holds_integer(one) and !holds_integer(other) {
+		return []
+	}
 	var $out = []
 	pairs = List.map2(
 		one.slots,
