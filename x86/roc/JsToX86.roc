@@ -9,6 +9,8 @@ app [main!] { js: "../../js/roc/main.roc" }
 #   js-x86 "<program>" inlined    # the sites Inlining put in line
 #   js-x86 "<program>" labels     # each label's offset in the code
 #   js-x86 "<program>" posts      # how the post-passes ran (RuntimePosts)
+#   js-x86 "<program>" counted    # the executable, counting its blocks (Counter)
+#   js-x86 "<program>" countmap   # each counter's place in the uncounted code
 #
 # It runs on Roc's default platform, whose one effect writes text to
 # stdout, so it prints the executable's bytes as hex (X86.hex_text: two
@@ -26,6 +28,7 @@ app [main!] { js: "../../js/roc/main.roc" }
 import js.Compile
 import js.Parser
 import Assembly
+import Counter
 import Elf
 import Forwarding
 import Jumps
@@ -40,10 +43,12 @@ main! = |arguments| {
 		(Ok(src), Ok("inlined")) => write_inlined!(src)
 		(Ok(src), Ok("labels")) => write_labels!(src)
 		(Ok(src), Ok("posts")) => write_posts!(src)
+		(Ok(src), Ok("counted")) => write_counted!(src)
+		(Ok(src), Ok("countmap")) => write_count_map!(src)
 
 		(Ok(src), Ok(phase)) => write_stopped!(src, phase)
 		_ => {
-			echo!("usage: js-x86 \"<program>\" [inlined | labels | posts | stop=<phase>]\n")
+			echo!("usage: js-x86 \"<program>\" [inlined | labels | posts | counted | countmap | stop=<phase>]\n")
 			Err(Exit(2))
 		}
 	}
@@ -194,6 +199,46 @@ write_labels! = |src| {
 	}
 	echo!($text)
 	Ok({})
+}
+
+## The executable of js-x86's `counted` mode (Counter): the program's code
+## with a counter at each block's start, which writes `x86.counts` in its
+## working folder.
+write_counted! : Str => Try({}, [Exit(I8)])
+write_counted! = |src| {
+	made = match lowering_of(src) {
+		Ok(lowered) => code_of(Counter.plan(lowered.statements).counted).map_ok(Elf.executable)
+		Err(why) => Err(why)
+	}
+	match made {
+		Ok(file) => {
+			echo!(X86.hex_text(file))
+			Ok({})
+		}
+		Err(why) => {
+			echo!("js-x86: ${why}\n")
+			Err(Exit(1))
+		}
+	}
+}
+
+## Counter's map of the program's counters, for x86/cost.shale.
+write_count_map! : Str => Try({}, [Exit(I8)])
+write_count_map! = |src| {
+	made = match lowering_of(src) {
+		Ok(lowered) => Counter.map_text(Counter.plan(lowered.statements))
+		Err(why) => Err(why)
+	}
+	match made {
+		Ok(text) => {
+			echo!(text)
+			Ok({})
+		}
+		Err(why) => {
+			echo!("js-x86: ${why}\n")
+			Err(Exit(1))
+		}
+	}
 }
 
 ## The executable a program compiles to, or why it doesn't.
