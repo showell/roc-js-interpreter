@@ -3,11 +3,14 @@
 ## the VM would run them. It holds the passes over the program's functions
 ## until their kinds settle (`items_with_numbers`), the walk over one function's
 ## instructions, and the match that hands each instruction to the module
-## that lowers its family: `OperatorLowering`, `BuiltinLowering` and
-## `CallLowering`, beside `KnownFunctions`, which finds the functions known
-## before the program runs, and `LoweringBasics`, the types and basics they
-## all share. What it can't lower yet, a class for one, is refused by name
-## before a byte is written.
+## that lowers its family: `OperatorLowering`, `BuiltinLowering`,
+## `CallLowering` and `IndexLowering`, beside `KnownFunctions`, which finds
+## the functions known before the program runs, and `LoweringBasics`, the
+## types and basics they all share. Classes are lowered too (the parser
+## writes them as plain functions; `NewInstance` and `InstanceOf` below,
+## `FieldSlots` and `MethodTables`). What it can't lower, a function known
+## by its code met with another kind where two ways meet for one
+## (x86/README.md, "Refused"), is refused by name before a byte is written.
 ##
 ## **EVERY VALUE'S KIND IS KNOWN BEFORE THE PROGRAM RUNS.** The lowering
 ## walks each function's instructions in order and keeps, for each slot of

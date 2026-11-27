@@ -1,5 +1,7 @@
 # The JS book: a new title and a compiler-first order (proposal)
 
+**History, not current:** this proposal was carried out on 2026-11-27; `js-book/book.md` is the book as it stands, and `docs/BOOK_AUDIT.md` its audit.
+
 A survey of `js-book/book.md` at master `5ef49e2`, and a proposal. Nothing
 in the book is moved yet; this file is for Steve to agree or change first.
 Word counts are the builder's own ("words of prose", from the last build's
