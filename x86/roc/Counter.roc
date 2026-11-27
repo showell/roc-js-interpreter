@@ -68,7 +68,11 @@ Counter :: [].{
 	## run's labels, joined with `,` (`-` for none); `flags` is `set`
 	## where the counter is the `inc` alone and `kept` where the flags are
 	## live and kept around it.
-	Point : { kind : Str, labels : Str, flags : Str }
+	Point : {
+		kind : Str,
+		labels : Str,
+		flags : Str,
+	}
 
 	## The program's code with its counters: `counted` the statements to
 	## assemble (the start that maps the counts first), `marked` the
@@ -110,17 +114,24 @@ Counter :: [].{
 					$after_jcc = False
 				}
 				_ => {
-					start = start_of({ run: $run, after_jcc: $after_jcc, first: at == 0, named })
+					start = start_of({
+						marks: $run,
+						after_jcc: $after_jcc,
+						first: at == 0,
+						named,
+					})
 					match start {
 						Ok(point) => {
-							live = match flags_at(statements, places, at) {
+							live = match flags_at({ statements, places }, at) {
 								Live => True
 								AtReturn => returns_read > 0
 								Dead => False
 							}
 							if !live or point.kind != "unnamed" {
 								counter = Mark("count_${$points.len().to_str()}")
-								$counted = $counted.append(counter).concat(counter_items($points.len(), live))
+								$counted = $counted.append(counter).concat(
+									counter_items($points.len(), live),
+								)
 								$marked = $marked.append(counter)
 								$points = $points.append({
 									..point,
@@ -163,14 +174,16 @@ Counter :: [].{
 			Ok(it) => it
 			Err(_) => return Err("the code does not assemble")
 		}
-		offset = |label| laid.marks.get(label) ?? crash "Counter.map_text: a counter's label is marked"
+		offset = |label|
+			laid.marks.get(label) ?? crash "Counter.map_text: a counter's label is marked"
 		points = counters.points.len().to_str()
 		kept = counters.points.keep_if(|point| point.flags == "kept").len().to_str()
 		var $text = "points ${points} kept ${kept} returns_read ${counters.returns_read.to_str()}\n"
 		for k in 0..<counters.points.len() {
 			point = counters.points.get(k) ?? crash "Counter.map_text: a point"
 			at = offset("count_${k.to_str()}").to_str()
-			$text = $text.concat("point ${k.to_str()} ${at} ${point.kind} ${point.labels} ${point.flags}\n")
+			what = "${point.kind} ${point.labels} ${point.flags}"
+			$text = $text.concat("point ${k.to_str()} ${at} ${what}\n")
 		}
 		for k in 0..<counters.data {
 			at = offset("count_data_${k.to_str()}").to_str()
@@ -183,10 +196,10 @@ Counter :: [].{
 	## `FF /0`, a ModRM of a SIB with no base and no index, then the
 	## absolute disp32.
 	increment : U64 -> Assembly.Statement
-	increment = |k| Data(
+	increment = |index| Data(
 		X86.append_little_endian(
 			[0x48, 0xFF, 0x04, 0x25],
-			{ value: counts_address + 8 * k.to_i64_wrap(), size: 4 },
+			{ value: counts_address + 8 * index.to_i64_wrap(), size: 4 },
 		),
 	)
 }
@@ -194,11 +207,15 @@ Counter :: [].{
 ## The counter `k`, the flags kept around it (`pushfq` and `popfq`) when
 ## they are live.
 counter_items : U64, Bool -> List(Assembly.Statement)
-counter_items = |k, live|
+counter_items = |index, live|
 	if live {
-		[Data([0x9C]), Counter.increment(k), Data([0x9D])]
+		[
+			Data([0x9C]),
+			Counter.increment(index),
+			Data([0x9D]),
+		]
 	} else {
-		[Counter.increment(k)]
+		[Counter.increment(index)]
 	}
 
 ## Each label's statement's place.
@@ -219,16 +236,16 @@ mark_places = |statements| {
 ## The block that starts at a statement of code, if one does: after a run
 ## of labels, after a conditional jump, or at the code's first statement.
 start_of : {
-	run : List(Str),
+	marks : List(Str),
 	after_jcc : Bool,
 	first : Bool,
 	named : Set(Str),
 } -> Try(Counter.Point, [NoStart])
-start_of = |{ run, after_jcc, first, named }| {
-	labels = Str.join_with(run, ",")
-	if !run.is_empty() {
+start_of = |{ marks, after_jcc, first, named }| {
+	labels = Str.join_with(marks, ",")
+	if !marks.is_empty() {
 		var $kind = "unnamed"
-		for label in run {
+		for label in marks {
 			if named.contains(label) {
 				$kind = "named"
 			}
@@ -243,9 +260,17 @@ start_of = |{ run, after_jcc, first, named }| {
 			flags: "set",
 		})
 	} else if after_jcc {
-		Ok({ kind: "after_jcc", labels: "-", flags: "set" })
+		Ok({
+			kind: "after_jcc",
+			labels: "-",
+			flags: "set",
+		})
 	} else if first {
-		Ok({ kind: "entry", labels: "-", flags: "set" })
+		Ok({
+			kind: "entry",
+			labels: "-",
+			flags: "set",
+		})
 	} else {
 		Err(NoStart)
 	}
@@ -262,7 +287,7 @@ calls_reading_flags = |statements, places| {
 			_ => False
 		}
 		if call {
-			match flags_at(statements, places, at + 1) {
+			match flags_at({ statements, places }, at + 1) {
 				Live => {
 					$count = $count + 1
 				}
@@ -284,8 +309,12 @@ most_steps = 4096
 ## (`AtReturn`). Data, the code's end, a call and a jump to no label of
 ## these statements end the walk as setting them, but for a jump whose
 ## target is unknown (an `X86.Jmp`'s offset), which is live.
-flags_at : List(Assembly.Statement), Dict(Str, U64), U64 -> [Live, Dead, AtReturn]
-flags_at = |statements, places, start| {
+flags_at : {
+	statements : List(Assembly.Statement),
+	places : Dict(Str, U64),
+},
+U64 -> [Live, Dead, AtReturn]
+flags_at = |{ statements, places }, start| {
 	var $at = start
 	var $steps = 0
 	while $steps < most_steps {
@@ -383,9 +412,7 @@ start_items = |counters| {
 		Emit.mov(Rdi, R8),
 		Emit.syscall,
 	]
-		.concat(
-			[Rax, Rcx, Rdx, Rsi, Rdi, R8, R9, R10, R11].map(|reg| Emit.zero(reg)),
-		)
+		.concat([Rax, Rcx, Rdx, Rsi, Rdi, R8, R9, R10, R11].map(|reg| Emit.zero(reg)))
 		.concat([
 			Emit.jmp("count_started"),
 			Emit.mark("count_failed"),
@@ -416,7 +443,10 @@ text_items = [
 
 # The counter's bytes, as objdump reads them back:
 # `inc QWORD PTR ds:0x20000018`.
-expect Assembly.assemble([Counter.increment(3)]).map_ok(X86.hex_text) == Ok("48 ff 04 25 18 00 00 20")
+expect {
+	bytes = Assembly.assemble([Counter.increment(3)]).map_ok(X86.hex_text)
+	bytes == Ok("48 ff 04 25 18 00 00 20")
+}
 
 # A label a jump reaches gets a counter; a label nobody names between a
 # compare and its jump is passed by; the fall through after a jump gets
@@ -424,10 +454,22 @@ expect Assembly.assemble([Counter.increment(3)]).map_ok(X86.hex_text) == Ok("48 
 expect {
 	counters = Counter.plan([
 		Mark("top"),
-		Instruction(AluImm({ operation: Cmp, to: Rax, value: 1 })),
+		Instruction(
+			AluImm({
+				operation: Cmp,
+				to: Rax,
+				value: 1,
+			}),
+		),
 		Mark("place"),
 		JccTo({ condition: E, label: "out" }),
-		Instruction(AluImm({ operation: Add, to: Rax, value: 1 })),
+		Instruction(
+			AluImm({
+				operation: Add,
+				to: Rax,
+				value: 1,
+			}),
+		),
 		JmpTo("top"),
 		Mark("out"),
 		Instruction(Ret),
@@ -440,7 +482,13 @@ expect {
 # jump on the same flags, keep the flags around their counters.
 expect {
 	counters = Counter.plan([
-		Instruction(AluImm({ operation: Cmp, to: Rax, value: 1 })),
+		Instruction(
+			AluImm({
+				operation: Cmp,
+				to: Rax,
+				value: 1,
+			}),
+		),
 		Mark("there"),
 		JccTo({ condition: E, label: "out" }),
 		JmpTo("there"),

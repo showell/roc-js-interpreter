@@ -48,7 +48,8 @@ main! = |arguments| {
 
 		(Ok(src), Ok(phase)) => write_stopped!(src, phase)
 		_ => {
-			echo!("usage: js-x86 \"<program>\" [inlined | labels | posts | counted | countmap | stop=<phase>]\n")
+			modes = "inlined | labels | posts | counted | countmap | stop=<phase>"
+			echo!("usage: js-x86 \"<program>\" [${modes}]\n")
 			Err(Exit(2))
 		}
 	}
