@@ -1088,14 +1088,7 @@ Roc has two backends. The dev backend (`--opt=dev`) compiles in about a second a
 
 ### A dev timing says little
 
-Dev timings fail to predict release timings, even in direction:
-
-| change | dev fib(22) | release fib(22) | source |
-|---|---|---|---|
-| walker: variables read by slot | 674 to 435 ms | 83 to 67 ms | `920cda0c` |
-| walker: the Map control's branch against master | 676 to 642 ms | 121 to 169 ms | `3b4f9bd1` |
-
-The second row is a branch that was faster than master on dev and 40% slower in release.
+Dev timings fail to predict release timings, even in direction. On 2026-11-23 a branch of the walker, `js-run`, the project's first interpreter, which walked the program's tree and has since been deleted, ran fib(22) in 642 ms on the dev build against master's 676, and in 169 ms on the release build against master's 121: faster than master on dev, and 40% slower in release (`3b4f9bd1`).
 
 ### Some copies happen only in dev
 
@@ -1121,31 +1114,11 @@ digraph {
 }
 ```
 
-## Build times
+### The interpreter's release build
 
-A build's time sets the pace of every change, and RC1's release builds were the slowest step in the project's loop. This chapter is about two kinds of build: Roc building the two programs, and js-x86 building a JavaScript program.
+A build's time sets the pace of every change, and RC1's release builds were the slowest step in the project's loop. `js-vm`'s release build takes 91 s today (`js/README.md`'s status line), against about a second for a dev build. Its first release build took 670 s (`29cb46ec`), while the VM still imported the walker's module for the value rules. Once those rules moved into a module of their own and the import went (`d8d6b7fe`), the build fell to 84 s (`15686d94`). The commits leave the cause of the drop unstated.
 
-### Roc building the interpreter
-
-RC1's release builds were the project's slowest loop, against under a second for a dev build of the same code (the message of roc-apps' tag `rc1-slow-release-build`). The walker's release build grew with the language:
-
-| the walker's release build | time | source |
-|---|---|---|
-| when the controls first landed | 65 s | `84263a4b` |
-| after the language gaps | 686 s | `f0837ff4` |
-| `js-run`, about 10,000 lines of Roc | 1,052 s | roc-apps' tag `rc1-slow-release-build` |
-| the JavaScript tier, most of it in RC1's SpecConstr pass | 11 to 17 min | roc-apps' [`762c7d3a`](https://github.com/showell/roc-apps/commit/762c7d3a) |
-
-The VM's first round still imported the walker's module for the value rules. After the value rules moved into a module of their own and the VM dropped that import (`d8d6b7fe`), its build fell to an eighth, while `js-run` still took 481 s. The commits leave the cause of the drop unstated.
-
-| the VM's release build | time | source |
-|---|---|---|
-| the first round, importing the walker | 670 s | `29cb46ec` |
-| after the import was dropped | 84 s | `15686d94`, `d7ce2f2c` |
-| after the collector | 110 s | `f9188b2f` |
-| today | 91 s | `js/README.md`'s status line |
-
-The interpreter works RC1's release pipeline harder than most Roc projects do. Jack Scully profiled the compiler on this code at roc-apps' [`762c7d3a`](https://github.com/showell/roc-apps/commit/762c7d3a) and opened three pull requests against RC1's SpecConstr pass. Each is measured alone, on his machine, against `js-run`'s 271 s release build before them (the pull requests' descriptions):
+The interpreter works RC1's release pipeline harder than most Roc projects do. Jack Scully profiled the compiler on this code at roc-apps' [`762c7d3a`](https://github.com/showell/roc-apps/commit/762c7d3a), where most of a build's time went to SpecConstr, a pass of RC1's release pipeline, and he opened three pull requests against that pass. Each is measured alone, on his machine, against the walker's 271 s release build before them (the pull requests' descriptions):
 
 | pull request | what it changes | `js-run`'s release build |
 |---|---|---|
