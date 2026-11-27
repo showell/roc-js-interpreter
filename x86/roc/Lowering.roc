@@ -115,6 +115,7 @@ import Assembly
 import Boxing
 import BuiltinLowering
 import Emit
+import FrameValues
 import KnownFunctions
 import LoweringBasics
 import FieldSlots
@@ -129,6 +130,7 @@ import Registers
 import Runtime
 import RuntimeBuilders
 import RuntimePosts
+import Versioning
 import X86
 
 Lowering :: [].{
@@ -141,49 +143,152 @@ Lowering :: [].{
 		Ok(lowered.statements)
 	}
 
-	## The program's machine code, and how many call sites `Inlining` put
-	## in line and the instructions their bodies placed: the inlined
-	## program's, or the program's as it was when the inlined one is refused,
-	## so inlining never refuses a program.
+	## The program's machine code, how many call sites `Inlining` put in
+	## line and the instructions their bodies placed, and how many loops
+	## `Versioning` placed twice and the instructions their fast copies hold:
+	## the inlined program's, or the program's as it was when the inlined one
+	## is refused, so inlining never refuses a program; and that program's
+	## loops versioned, or the program as it was when the versioned one is
+	## refused, so versioning never refuses one either. A program with no loop
+	## to version is lowered once.
 	##
 	## `posts` says how the post-passes ran (RuntimePosts.posts' `way`).
 	program_lowering : Bytecode.Program -> Try(
 		{
 			statements : List(Assembly.Statement),
 			inlined : { sites : U64, instructions : U64 },
+			versioned : { loops : U64, instructions : U64 },
 			posts : Str,
 		},
 		[Refused(Str)],
 	)
-	program_lowering = |compiled| {
+	program_lowering = |compiled| Lowering.program_lowering_with(compiled, { flip: False })
+
+	## The same, with each side exit of a versioned loop's fast copy also
+	## taken at every eighth of its tests the program makes when `flip` says
+	## so (js-x86's `guardsflip`, LoweringBasics.Versions' `flip`).
+	program_lowering_with : Bytecode.Program,
+	{ flip : Bool } -> Try(
+		{
+			statements : List(Assembly.Statement),
+			inlined : { sites : U64, instructions : U64 },
+			versioned : { loops : U64, instructions : U64 },
+			posts : Str,
+		},
+		[Refused(Str)],
+	)
+	program_lowering_with = |compiled, { flip }| {
 		threaded = { ..compiled, codes: compiled.codes.map(threaded_skips) }
 		inlining = Inlining.inlined_program(threaded)
 		if inlining.sites > 0 {
 			match rules_items(inlining.program) {
-				Ok({ statements, posts }) => return Ok({
-					statements,
-					inlined: { sites: inlining.sites, instructions: inlining.instructions },
-					posts,
-				})
+				Ok(lowered) => return Ok(
+					versions_tried(
+						inlining.program,
+						{
+							lowered,
+							inlined: { sites: inlining.sites, instructions: inlining.instructions },
+							flip,
+						},
+					),
+				)
 				Err(_) => {}
 			}
 		}
 		rules_items(threaded).map_ok(
-			|{ statements, posts }| {
-				statements,
-				inlined: { sites: 0, instructions: 0 },
-				posts,
-			},
+			|lowered| versions_tried(
+				threaded,
+				{
+					lowered,
+					inlined: { sites: 0, instructions: 0 },
+					flip,
+				},
+			),
 		)
 	}
 }
 
+## A program lowered (`lowered`, by `rule`), and then with its loops
+## versioned where `Versioning` finds some, lowered again by the same rule:
+## that lowering's code when it lowers, else the program's as it was.
+versions_tried : Bytecode.Program,
+{
+	lowered : RulesLowered,
+	inlined : { sites : U64, instructions : U64 },
+	flip : Bool,
+} -> {
+	statements : List(Assembly.Statement),
+	inlined : { sites : U64, instructions : U64 },
+	versioned : { loops : U64, instructions : U64 },
+	posts : Str,
+}
+versions_tried = |program, { lowered, inlined, flip }| {
+	unversioned = {
+		statements: lowered.statements,
+		inlined,
+		versioned: { loops: 0, instructions: 0 },
+		posts: lowered.posts,
+	}
+	makers = match KnownFunctions.makers_of(program) {
+		Ok(found) => found
+		Err(_) => return unversioned
+	}
+	known = {
+		program,
+		makers,
+		statics: KnownFunctions.statics_of(program, makers),
+	}
+	var $cells = []
+	for index in 0..<program.codes.len() {
+		$cells = $cells.append(KnownFunctions.celled_slots(known, index))
+	}
+	cells = $cells
+	versioning = Versioning.versioned_program({ program, heads: lowered.heads, cells, flip })
+	if versioning.loops == 0 {
+		return unversioned
+	}
+	# The versioned program has the codes and parameters of the program as
+	# it was, so its passes start from that lowering's settled kinds: most
+	# settle at the first pass.
+	match items_with_numbers(
+		versioning.program,
+		{
+			arrays: lowered.rule,
+			versions: versioning.versions,
+			seed: Seeded(lowered.settled),
+		},
+	) {
+		Ok(again) => {
+			statements: again.statements,
+			inlined,
+			versioned: { loops: versioning.loops, instructions: versioning.instructions },
+			posts: again.posts,
+		}
+		Err(_) => unversioned
+	}
+}
+
+## A program's lowering: its code, how its post-passes ran, the kinds at
+## each code's loops' heads, and the rule for arrays of numbers it took.
+RulesLowered : {
+	statements : List(Assembly.Statement),
+	posts : Str,
+	heads : List(Dict(U64, LoweringBasics.State)),
+	rule : LoweringBasics.ArrayRule,
+	settled : Settled,
+}
+
+## The kinds a lowering's passes settled at: each function's result, its
+## parameters', and the functions a value may hold.
+Settled : {
+	returns : Dict(U64, LoweringBasics.Kind),
+	parameters : Dict(U64, List(LoweringBasics.Kind)),
+	escaped : List(U64),
+}
+
 ## The program's machine code under the first rule for arrays of numbers
 ## that lowers it.
-rules_items : Bytecode.Program -> Try(
-	{ statements : List(Assembly.Statement), posts : Str },
-	[Refused(Str)],
-)
+rules_items : Bytecode.Program -> Try(RulesLowered, [Refused(Str)])
 rules_items = |program| {
 	# Any refusal with arrays of numbers on may be one of an array of
 	# numbers escaping, or of whole numbers taking another, so the program
@@ -197,13 +302,32 @@ rules_items = |program| {
 		}
 	var $answer = Err(Refused("Lowering.program_items: no rule"))
 	for rule in rules {
-		$answer = items_with_numbers(program, rule)
-		if $answer.is_ok() {
-			return $answer
+		match items_with_numbers(
+			program,
+			{
+				arrays: rule,
+				versions: plain_versions_of(program),
+				seed: Unseeded,
+			},
+		) {
+			Ok(lowered) => return Ok({
+				statements: lowered.statements,
+				posts: lowered.posts,
+				heads: lowered.heads,
+				rule,
+				settled: lowered.settled,
+			})
+			Err(refused) => {
+				$answer = Err(refused)
+			}
 		}
 	}
 	$answer
 }
+
+## No loop of the program's codes placed twice.
+plain_versions_of : Bytecode.Program -> List(LoweringBasics.Versions)
+plain_versions_of = |program| program.codes.map(|_| LoweringBasics.plain_versions)
 
 ## A code with each `SkipIfFalsy` that comes to a `JumpIfFalse` made that
 ## jump (the header's `A && THAT AN if TESTS JUMPS ONCE`).
@@ -246,13 +370,25 @@ threaded_skips = |code| {
 }
 
 ## The program's machine code, with array literals of numbers made
-## `Numbers` or `Integers` as `arrays` says.
+## `Numbers` or `Integers` as `arrays` says and each code's loops placed
+## twice as `versions` says, and the kinds at each code's loops' heads and
+## those its passes settled at. The passes start from `seed`'s kinds when it
+## has some (`Seeded`), else from every result and parameter a number.
 items_with_numbers : Bytecode.Program,
-LoweringBasics.ArrayRule -> Try(
-	{ statements : List(Assembly.Statement), posts : Str },
+{
+	arrays : LoweringBasics.ArrayRule,
+	versions : List(LoweringBasics.Versions),
+	seed : [Unseeded, Seeded(Settled)],
+} -> Try(
+	{
+		statements : List(Assembly.Statement),
+		posts : Str,
+		heads : List(Dict(U64, LoweringBasics.State)),
+		settled : Settled,
+	},
 	[Refused(Str)],
 )
-items_with_numbers = |program, arrays| {
+items_with_numbers = |program, { arrays, versions, seed }| {
 	makers = KnownFunctions.makers_of(program)?
 	literals = literals_of(program)?
 	field_slots = FieldSlots.with_literal_slots(FieldSlots.field_slots(program, makers), program)
@@ -269,6 +405,14 @@ items_with_numbers = |program, arrays| {
 	var $parameters = Dict.empty()
 	for (code, index) in program.codes.map_with_index(|code, index| (code, index)) {
 		$parameters = $parameters.insert(index, List.repeat(Number, parameter_count(code)))
+	}
+	match seed {
+		Seeded(settled) => {
+			$returns = settled.returns
+			$parameters = settled.parameters
+			$escaped_codes = settled.escaped
+		}
+		Unseeded => {}
 	}
 	known = { program, makers, statics }
 	methods = MethodTables.method_tables(known)
@@ -307,7 +451,7 @@ items_with_numbers = |program, arrays| {
 	var $rising = False
 	var $begun = []
 	for pass in 0..<(most_passes + most_rises(program)) {
-		var $items = Runtime.start_items(LoweringBasics.code_label(program.main))
+		var $functions = []
 		var $found = $returns
 		var $called =
 			if $rising {
@@ -324,6 +468,7 @@ items_with_numbers = |program, arrays| {
 		var $first_refusal = Ok({})
 		var $calls = []
 		var $refused = []
+		var $heads = []
 		for index in 0..<program.codes.len() {
 			cells = cells_by_code.get(index) ?? crash "Lowering.items_with_numbers: cells"
 			numbers = numbers_by_code.get(index) ?? crash "Lowering.items_with_numbers: numbers"
@@ -347,11 +492,13 @@ items_with_numbers = |program, arrays| {
 				literals,
 				field_slots,
 				methods,
+				versions: versions.get(index) ?? LoweringBasics.plain_versions,
 				index,
 			}
 			match code_items(context) {
 				Ok(lowered) => {
-					$items = $items.concat(lowered.statements)
+					$functions = $functions.append({ index, statements: lowered.statements })
+					$heads = $heads.append(lowered.heads)
 					$found = match lowered.result {
 						Gives(kind) =>
 							if $rising {
@@ -417,10 +564,21 @@ items_with_numbers = |program, arrays| {
 					# closure records, through the post-passes, the runtime's done
 					# once when js-x86 is built where they may be (RuntimePosts).
 					posted = RuntimePosts.posts({
-						program_statements: $items,
+						program_statements: Runtime.start_items(
+							LoweringBasics.code_label(program.main),
+						).concat(functions_trimmed({ functions: $functions, trying })),
 						tail_statements: literal_statements(literals).concat(closures),
 					})
-					Ok({ statements: posted.statements, posts: posted.way })
+					Ok({
+						statements: posted.statements,
+						posts: posted.way,
+						heads: $heads,
+						settled: {
+							returns: $returns,
+							parameters: $parameters,
+							escaped: $escaped_codes,
+						},
+					})
 				}
 				Err(refused) => Err(refused)
 			}
@@ -886,6 +1044,8 @@ CodeItems : {
 	calls : List(LoweringBasics.CallKinds),
 	# The functions known before the program runs that it uses as values.
 	escaped : List(U64),
+	# The kinds at each loop's head, by the head's place.
+	heads : Dict(U64, LoweringBasics.State),
 }
 
 ## One function's machine code: its entry, which makes its frame and
@@ -1144,17 +1304,35 @@ code_walk = |context, { heads, doubted, demoted }| {
 				# What an instruction's `Integer`s are made doubles by changes no
 				# value, so what the run proved holds past it; a function made a
 				# value (`values_made`) forgets it.
+				# In a versioned loop's fast copy, the kinds `Int32Items` this
+				# instruction can't take are arrays, and a store into a slot the
+				# fast copy keeps as one is tested first (`fast_before`).
+				fast = context.versions.fast.get(at)
 				valued =
 					if skipped.contains(at) or $fused.contains(at) {
-						{ statements: [], state, escaped: [], converted: [] }
+						{
+							statements: [],
+							state,
+							escaped: [],
+							converted: [],
+							exit: NoExit,
+						}
 					} else {
 						converted = integers_made(site, { instruction, state, demoted, joined })
 						made = values_made(site, { instruction, state: converted.state })
+						before = match fast {
+							Ok(info) => fast_before(
+								site,
+								{ instruction, state: made.state, fast: info },
+							)
+							Err(_) => { statements: [], state: made.state, exit: NoExit }
+						}
 						{
-							statements: made.statements,
-							state: made.state,
+							statements: made.statements.concat(before.statements),
+							state: before.state,
 							escaped: made.escaped,
 							converted: converted.statements,
+							exit: before.exit,
 						}
 					}
 				$escaped = $escaped.concat(valued.escaped)
@@ -1208,7 +1386,7 @@ code_walk = |context, { heads, doubted, demoted }| {
 							},
 						)
 					}
-				lowered =
+				lowered_here =
 					if $fused.contains(at) {
 						LoweringBasics.falling([], valued.state)
 					} else {
@@ -1230,26 +1408,60 @@ code_walk = |context, { heads, doubted, demoted }| {
 								)
 							}
 							(Unfused, Err(NotInteger)) =>
-								match instruction_items(
+								match versioned_items(
 									site,
 									{
 										instruction,
 										state: valued.state,
-										unconverted: integers_before,
-										checked,
+										demoted,
+										pending: $pending,
 									},
 								) {
 									Ok(done) => done
-									Err(refused) => return Ok(Halted({ refused, calls: $calls }))
+									Err(Unversioned) =>
+										match instruction_items(
+											site,
+											{
+												instruction,
+												state: valued.state,
+												unconverted: integers_before,
+												checked,
+											},
+										) {
+											Ok(done) => done
+											Err(refused) => return Ok(
+												Halted({ refused, calls: $calls }),
+											)
+										}
 								}
 						}
 					}
+				lowered = match fast {
+					Ok(info) if !skipped.contains(at) =>
+						match fast_after(
+							site,
+							{
+								instruction,
+								before: valued.state,
+								lowered: lowered_here,
+								fast: info,
+								exit: valued.exit,
+							},
+						) {
+							Ok(done) => done
+							Err(refused) => return Ok(Halted({ refused, calls: $calls }))
+						}
+					_ => lowered_here
+				}
 				$body = $body.concat(valued.converted)
 				$body = $body.concat(valued.statements).concat(lowered.statements)
 				$checked = match lowered.falls {
 					Falls(next) => {
 						depth = next.stack_kinds.len()
 						if $fused.contains(at) and depth == checked.origins.len() {
+							checked
+						} else if context.versions.guards.contains(at) {
+							# A guard changes no slot of the generic copy's.
 							checked
 						} else if skipped.contains(at) or !valued.statements.is_empty() {
 							IndexLowering.nothing_proved(depth)
@@ -1365,16 +1577,640 @@ code_walk = |context, { heads, doubted, demoted }| {
 				statements: made,
 				frame_bytes,
 				worth_renaming: !looped_to.is_empty() or !code.ops.any(calls_code),
+				cold: generic_labels(context),
 			})
 		}
+	var $heads = Dict.empty()
+	for head in looped_to {
+		match $seen.get(head) {
+			Ok(state) => {
+				$heads = $heads.insert(head, state)
+			}
+			Err(_) => {}
+		}
+	}
 	Ok(
 		Walked({
 			statements,
 			result: $result,
 			calls: $calls,
 			escaped: $escaped,
+			heads: $heads,
 		}),
 	)
+}
+
+## The settled functions' statements, each with its frame traffic that
+## carries nothing taken out (FrameValues), but in a program with a `try`,
+## whose handlers read the frame where no jump shows it. Run once, on the
+## pass whose kinds settled, so the passes before it pay nothing for it.
+functions_trimmed : {
+	functions : List({ index : U64, statements : List(Assembly.Statement) }),
+	trying : Bool,
+} -> List(Assembly.Statement)
+functions_trimmed = |{ functions, trying }|
+	functions.join_map(
+		|{ index, statements }|
+			if trying {
+				statements
+			} else {
+				# Only the function's own places' labels are named by its own
+				# statements alone; its entries are named from outside it.
+				own = "${LoweringBasics.code_label(index)}_"
+				outside = |label| !is_place_label(label, own)
+				FrameValues.trim_frame_statements({ statements, outside })
+			},
+	)
+
+## The labels of a versioned loop's generic copy's places: each fast place's
+## twin, where its side exits go. Registers counts only the rest.
+generic_labels : LoweringBasics.Context -> Set(Str)
+generic_labels = |context| {
+	var $labels = Set.empty()
+	for (_, fast) in context.versions.fast.to_list() {
+		$labels = $labels.insert(LoweringBasics.place_label(context, fast.generic))
+	}
+	$labels
+}
+
+## Whether a label is one of the function's places' (`code_<f>_<n>`, or one
+## of its own labels, `code_<f>_<n>_slow`), given `code_<f>_`.
+is_place_label : Str, Str -> Bool
+is_place_label = |label, own|
+	if label.starts_with(own) {
+		rest = label.to_utf8().drop_first(own.count_utf8_bytes())
+		match rest.first() {
+			Ok(byte) => byte >= '0' and byte <= '9'
+			Err(_) => False
+		}
+	} else {
+		False
+	}
+
+## A versioned loop's guard or exit at the site (`Versioning`), lowered, or
+## `Unversioned` for any other instruction.
+versioned_items : LoweringBasics.Site,
+{
+	instruction : Bytecode.Op,
+	state : LoweringBasics.State,
+	demoted : List(U64),
+	pending : Dict(U64, LoweringBasics.State),
+} -> Try(LoweringBasics.Lowered, [Unversioned])
+versioned_items = |site, { instruction, state, demoted, pending }| {
+	versions = site.context.versions
+	match versions.guards.get(site.at) {
+		Ok(guard) => Ok(guard_items(site, { state, guard, demoted }))
+		Err(_) =>
+			match (versions.exits.get(site.at), instruction) {
+				(Ok(copies), Jump(skip)) => {
+					target = LoweringBasics.forward(site, skip)
+					Ok(
+						exit_items(
+							site,
+							{
+								state,
+								copies,
+								demoted,
+								target,
+								waiting: pending.get(target),
+							},
+						),
+					)
+				}
+				(Ok(_), _) => crash "Lowering.versioned_items: an exit is a jump"
+				(Err(_), _) => Err(Unversioned)
+			}
+	}
+}
+
+## A versioned loop's guard: each slot `checked` that holds a value or a
+## number tested for a whole number of 32 bits (`int32_tested_items`) and
+## its fast slot given the `Integer`, the rest copied as they are, then the
+## jump to the fast copy; a test that fails falls to the generic copy,
+## whose slots the guard left as they were. A fast slot the walk demoted
+## takes its slot's value as it is, untested.
+guard_items : LoweringBasics.Site,
+{
+	state : LoweringBasics.State,
+	guard : LoweringBasics.Guard,
+	demoted : List(U64),
+} -> LoweringBasics.Lowered
+guard_items = |site, { state, guard, demoted }| {
+	failed = LoweringBasics.place_label(site.context, guard.generic)
+	held = |slot| state.slots.get(slot) ?? crash "Lowering.guard_items: a slot of the frame"
+	var $items = []
+	var $slots = state.slots
+	for { from, to } in guard.checked {
+		kind = held(from)
+		tested = match kind {
+			Ready(Value) | Ready(Number) => !demoted.contains(to)
+			_ => False
+		}
+		if tested {
+			$items = $items.concat(
+				int32_tested_items({
+					from: LoweringBasics.slot_place(from),
+					to: LoweringBasics.slot_place(to),
+					failed,
+				}),
+			)
+			$slots = $slots.set(
+				to,
+				Ready(int32_integer),
+			) ?? crash "Lowering.guard_items: a fast slot"
+		} else {
+			copied = guard_copy_items({ from, to, kind, demoted })
+			$items = $items.concat(copied.statements)
+			$slots = $slots.set(to, copied.kind) ?? crash "Lowering.guard_items: a fast slot"
+		}
+	}
+	for { from, to } in guard.arrays {
+		kind = held(from)
+		tagged = match kind {
+			Ready(Value) => Ok(True)
+			Ready(Array) => Ok(False)
+			_ => Err(Untested)
+		}
+		match tagged {
+			Ok(tag) => {
+				$items = $items.concat(
+					int32_array_tested_items({
+						from: LoweringBasics.slot_place(from),
+						tagged: tag,
+						failed,
+					}),
+				)
+				$items = $items.append(Emit.store(LoweringBasics.slot_place(to), Rax))
+				$slots = $slots.set(
+					to,
+					Ready(Int32Items),
+				) ?? crash "Lowering.guard_items: a fast slot"
+			}
+			Err(Untested) => {
+				copied = guard_copy_items({ from, to, kind, demoted })
+				$items = $items.concat(copied.statements)
+				$slots = $slots.set(to, copied.kind) ?? crash "Lowering.guard_items: a fast slot"
+			}
+		}
+	}
+	for { from, to } in guard.copied {
+		copied = guard_copy_items({
+			from,
+			to,
+			kind: held(from),
+			demoted,
+		})
+		$items = $items.concat(copied.statements)
+		$slots = $slots.set(to, copied.kind) ?? crash "Lowering.guard_items: a fast slot"
+	}
+	{
+		statements: $items,
+		falls: Falls({ ..state, slots: $slots }),
+		branch: Branch({ target: guard.generic, state }),
+		result: GivesNothing,
+	}
+}
+
+## A slot's value copied by a guard into its fast slot as it is, but an
+## `Integer` into a fast slot the walk demoted, which is made a double; the
+## fast slot's kind.
+guard_copy_items : {
+	from : U64,
+	to : U64,
+	kind : LoweringBasics.Slot,
+	demoted : List(U64),
+} -> { statements : List(Assembly.Statement), kind : LoweringBasics.Slot }
+guard_copy_items = |{ from, to, kind, demoted }| {
+	from_place = LoweringBasics.slot_place(from)
+	to_place = LoweringBasics.slot_place(to)
+	match kind {
+		Ready(Integer(_)) if demoted.contains(to) => {
+			statements: [
+				Emit.load(Rax, from_place),
+				Instruction(Cvtsi2sd({ to: Xmm0, from: Rax })),
+				Instruction(MovsdStore({ to: to_place, from: Xmm0 })),
+			],
+			kind: Ready(Number),
+		}
+		_ => { statements: LoweringBasics.copy_items({ from: from_place, to: to_place }), kind }
+	}
+}
+
+## The value at `from` tested for an array whose header says Int32, its
+## bits left in `rax`; a jump to `failed` when it isn't one. `tagged` says
+## whether its tag is tested (a `Value`'s) or known (an `Array`'s). They
+## change `rax`, `rcx` and `rdi`.
+int32_array_tested_items : {
+	from : X86.Mem,
+	tagged : Bool,
+	failed : Str,
+} -> List(Assembly.Statement)
+int32_array_tested_items = |{ from, tagged, failed }| {
+	tag_tested =
+		if tagged {
+			[
+				Emit.mov(Rcx, Rax),
+				Emit.shr(Rcx, Boxing.tag_shift),
+				Emit.cmp_imm(Rcx, Boxing.array_tag),
+				Emit.jcc(Ne, failed),
+			]
+		} else {
+			[]
+		}
+	[Emit.load(Rax, from)]
+		.concat(tag_tested)
+		.concat(int32_kind_tested_items(failed))
+}
+
+## The array whose bits are in `rax` tested for a header that says Int32,
+## a jump to `failed` when it doesn't. They change `rcx` and `rdi`.
+int32_kind_tested_items : Str -> List(Assembly.Statement)
+int32_kind_tested_items = |failed|
+	[Emit.mov(Rdi, Rax)]
+		.concat(RuntimeBuilders.unboxed_items(Rdi))
+		.concat([
+			Emit.byte_load(Rcx, Heap.element_kind_place),
+			Emit.cmp_imm(Rcx, Heap.element_code(Int32)),
+			Emit.jcc(Ne, failed),
+		])
+
+## What a side exit of a versioned loop's fast copy leaves to: the label of
+## its code, out of line, and the code, which makes each `Integer` on the
+## stack a double, copies the fast slots the loop writes back to their own
+## (`exit_copies_items`) and jumps to the generic copy's place, with the
+## state it carries there.
+SideExit : {
+	label : Str,
+	statements : List(Assembly.Statement),
+	target : U64,
+	sent : LoweringBasics.State,
+}
+
+## The side exit from the instruction at the site to the generic copy's
+## `target`, with the kinds `state` (`SideExit`).
+side_exit_items : LoweringBasics.Site,
+{
+	state : LoweringBasics.State,
+	fast : LoweringBasics.Fast,
+	target : U64,
+	piece : Str,
+} -> SideExit
+side_exit_items = |site, { state, fast, target, piece }| {
+	label = LoweringBasics.inner_label(site, piece)
+	stacked = integers_met(site.code, { state, kept: [] })
+	copied = exit_copies_items({ state: stacked.state, copies: fast.copies, generic_integers: [] })
+
+	{
+		label,
+		statements: [Mark(label)]
+			.concat(stacked.statements)
+			.concat(copied.statements)
+			.append(JmpTo(LoweringBasics.place_label(site.context, target))),
+		target,
+		sent: arrays_retyped(copied.state),
+	}
+}
+
+## The fast slots copied back to their own (`copies`), each `Integer` made a
+## double unless its own slot is among `generic_integers`, and each
+## `Int32Items` an array; the state after.
+exit_copies_items : {
+	state : LoweringBasics.State,
+	copies : List(LoweringBasics.SlotCopy),
+	generic_integers : List(U64),
+} -> { statements : List(Assembly.Statement), state : LoweringBasics.State }
+exit_copies_items = |{ state, copies, generic_integers }| {
+	var $items = []
+	var $slots = state.slots
+	for { from, to } in copies {
+		kind = state.slots.get(from) ?? crash "Lowering.exit_copies_items: a fast slot"
+		from_place = LoweringBasics.slot_place(from)
+		to_place = LoweringBasics.slot_place(to)
+		match kind {
+			Ready(Integer(_)) if !generic_integers.contains(to) => {
+				$items = $items.concat([
+					Emit.load(Rax, from_place),
+					Instruction(Cvtsi2sd({ to: Xmm0, from: Rax })),
+					Instruction(MovsdStore({ to: to_place, from: Xmm0 })),
+				])
+				$slots = $slots.set(to, Ready(Number)) ?? crash "Lowering.exit_copies_items: a slot"
+			}
+			_ => {
+				$items = $items.concat(
+					LoweringBasics.copy_items({ from: from_place, to: to_place }),
+				)
+				$slots = $slots.set(to, kind) ?? crash "Lowering.exit_copies_items: a slot"
+			}
+		}
+	}
+	{ statements: $items, state: arrays_retyped({ ..state, slots: $slots }) }
+}
+
+## A state with each `Int32Items` an array: past a fast copy, or where its
+## facts may not hold. The bits are the same, so no code is needed.
+arrays_retyped : LoweringBasics.State -> LoweringBasics.State
+arrays_retyped = |state| {
+	retyped = |kind|
+		if kind == Int32Items {
+			Array
+		} else {
+			kind
+		}
+	{
+		slots: state.slots.map(
+			|held|
+				match held {
+					Ready(Int32Items) => Ready(Array)
+					_ => held
+				},
+		),
+		stack_kinds: state.stack_kinds.map(retyped),
+	}
+}
+
+## A state with the top `count` places that hold `Int32Items` arrays.
+top_arrays_retyped : LoweringBasics.State, U64 -> LoweringBasics.State
+top_arrays_retyped = |state, count| {
+	depth = state.stack_kinds.len()
+	kept = depth - U64.min(count, depth)
+	{
+		..state,
+		stack_kinds: state.stack_kinds.map_with_index(
+			|kind, place|
+				if place >= kept and kind == Int32Items {
+					Array
+				} else {
+					kind
+				},
+		),
+	}
+}
+
+## In js-x86's `guardsflip` mode (LoweringBasics.Versions' `flip`), the
+## count of side exits' tests made one more, and a jump to `exit` at every
+## eighth; nothing otherwise. They change `rax`.
+flip_items : LoweringBasics.Site, Str -> List(Assembly.Statement)
+flip_items = |site, exit|
+	if site.context.versions.flip {
+		[
+			Emit.load(Rax, Heap.spare_place),
+			Emit.plus_imm(Rax, 1),
+			Emit.store(Heap.spare_place, Rax),
+			Emit.bit_and_imm(Rax, 7),
+			Emit.jcc(E, exit),
+		]
+	} else {
+		[]
+	}
+
+## Before an instruction of a versioned loop's fast copy: the stack's
+## `Int32Items` it doesn't take made arrays (`int32_items_taken`); and a
+## store into a slot the fast copy keeps as one (`fast.arrays`) of a value
+## not known to be one tested for an array whose header says Int32, the
+## stored value then one, and a side exit to the generic copy's same
+## instruction when it isn't.
+fast_before : LoweringBasics.Site,
+{
+	instruction : Bytecode.Op,
+	state : LoweringBasics.State,
+	fast : LoweringBasics.Fast,
+} -> {
+	statements : List(Assembly.Statement),
+	state : LoweringBasics.State,
+	exit : [Exits(SideExit), NoExit],
+}
+fast_before = |site, { instruction, state, fast }| {
+	taken = match int32_items_taken(instruction) {
+		Top(count) => top_arrays_retyped(state, count)
+		Every => top_arrays_retyped(state, state.stack_kinds.len())
+	}
+	stored = match instruction {
+		StoreLocal(slot) | SetLocal(slot) if fast.arrays.contains(slot) => Ok(slot)
+		_ => Err(NoSlot)
+	}
+	top_kind =
+		if taken.stack_kinds.is_empty() {
+			Undefined
+		} else {
+			LoweringBasics.kind_below(taken, 0)
+		}
+	tagged = match (stored, top_kind) {
+		(Ok(_), Value) => Ok(True)
+		(Ok(_), Array) => Ok(False)
+		_ => Err(Untested)
+	}
+	match tagged {
+		Ok(tag) => {
+			exit = side_exit_items(
+				site,
+				{
+					state: taken,
+					fast,
+					target: fast.generic,
+					piece: "store_exit",
+				},
+			)
+			top = LoweringBasics.stack_place(site.code, taken.stack_kinds.len() - 1)
+			{
+				statements: flip_items(site, exit.label).concat(
+					int32_array_tested_items({
+						from: top,
+						tagged: tag,
+						failed: exit.label,
+					}),
+				),
+				state: LoweringBasics.with_top(LoweringBasics.without_top(taken, 1), Int32Items),
+				exit: Exits(exit),
+			}
+		}
+		Err(Untested) => { statements: [], state: taken, exit: NoExit }
+	}
+}
+
+## How many of the stack's places on top an instruction takes that may hold
+## an `Int32Items` it can't take as one (`Top`), or whether it may take any
+## of them (`Every`). A load or a push takes none; a store takes its value
+## into the slot as it is; an item read or write takes its receiver as one
+## and its index (and value) as values.
+int32_items_taken : Bytecode.Op -> [Top(U64), Every]
+int32_items_taken = |instruction|
+	match instruction {
+		LoadLocal(_) | PushNumber(_) | PushText(_) | PushBoolean(_) => Top(0)
+		PushNull | PushUndefined | LoadBoxed(_) | PeekBoxed(_) | LoadBuiltin(_) => Top(0)
+		StoreLocal(_) | SetLocal(_) | UpdateLocal(_) | Pop | Duplicate => Top(0)
+		Jump(_) | Loop(_) => Top(0)
+		GetIndex(_) => Top(1)
+		SetIndex(_) | Binary(_, _) | JumpIfSame(_) => Top(2)
+		Unary(_, _) | GetProperty(_, _) | MethodLookup(_, _) | JumpIfFalse(_) => Top(1)
+		SkipIfFalsy(_) | SkipIfTruthy(_) | SkipIfDefined(_) | SkipIfNotUndefined(_) => Top(1)
+		ShortIfNullish(_) => Top(1)
+		_ => Every
+	}
+
+## After an instruction of a versioned loop's fast copy: the side exit
+## `fast_before` made, out of line; and after one that may lower an array's
+## element kind (`keeps_element_kinds`), each slot that holds `Int32Items`
+## tested again, a side exit to the generic copy's next instruction when
+## one's header no longer says Int32. An instruction that both branches and
+## needs a side exit is refused, which drops the versioned program.
+fast_after : LoweringBasics.Site,
+{
+	instruction : Bytecode.Op,
+	before : LoweringBasics.State,
+	lowered : LoweringBasics.Lowered,
+	fast : LoweringBasics.Fast,
+	exit : [Exits(SideExit), NoExit],
+} -> Try(LoweringBasics.Lowered, [Refused(Str)])
+fast_after = |site, { instruction, before, lowered, fast, exit }| {
+	tested = match lowered.falls {
+		Falls(next) if !keeps_element_kinds(instruction, before) =>
+			next.slots
+				.map_with_index(|held, slot| (held, slot))
+				.keep_if(|(held, _)| held == Ready(Int32Items))
+				.map(|(_, slot)| slot)
+		_ => []
+	}
+	after = match (lowered.falls, tested.is_empty()) {
+		(Falls(next), False) => {
+			made = side_exit_items(
+				site,
+				{
+					state: next,
+					fast,
+					target: fast.generic + 1,
+					piece: "kinds_exit",
+				},
+			)
+			var $items = flip_items(site, made.label)
+			for slot in tested {
+				$items = $items
+					.append(Emit.load(Rax, LoweringBasics.slot_place(slot)))
+					.concat(int32_kind_tested_items(made.label))
+			}
+			Ok({ tests: $items, made })
+		}
+		_ => Err(NoExit)
+	}
+	exits = match (exit, after) {
+		(Exits(stored), Ok(made_after)) => [stored, made_after.made]
+		(Exits(stored), Err(_)) => [stored]
+		(NoExit, Ok(made_after)) => [made_after.made]
+		(NoExit, Err(_)) => []
+	}
+	if exits.is_empty() {
+		return Ok(lowered)
+	}
+	if exits.len() > 1 or lowered.branch != NoBranch {
+		return LoweringBasics.refusal(site, "a side exit beside another way out")
+	}
+	made_exit = exits.first() ?? crash "Lowering.fast_after: an exit"
+	done = LoweringBasics.inner_label(site, "fast_done")
+	tests = match after {
+		Ok(made_after) => made_after.tests
+		Err(_) => []
+	}
+	Ok({
+		..lowered,
+		statements: lowered.statements
+			.concat(tests)
+			.append(Emit.jmp(done))
+			.concat(made_exit.statements)
+			.append(Emit.mark(done)),
+		branch: Branch({ target: made_exit.target, state: made_exit.sent }),
+	})
+}
+
+## Whether an instruction can't lower any array's element kind, so a fast
+## copy's `Int32Items` hold past it: a load, a push, a store or step of a
+## slot, an operator (none runs the program's code), a read of an item or a
+## property, a jump, a write of an item of an `Int32Items` array, which
+## exits before it would lower the kind, and a call of `Math`'s or of
+## console.log. Any other call or method, or any other write (through
+## another name for a guarded array, perhaps), may.
+keeps_element_kinds : Bytecode.Op, LoweringBasics.State -> Bool
+keeps_element_kinds = |instruction, before|
+	match instruction {
+		SetIndex(_) =>
+			before.stack_kinds.len() >= 3 and LoweringBasics.kind_below(before, 2) == Int32Items
+		# `Math`'s functions and console.log only read what they are given.
+		CallMethod(
+			{ name: _, site: { count, written: _, at: _ } },
+		) if before.stack_kinds.len() > count =>
+			match LoweringBasics.kind_below(before, count) {
+				StaticMethod({ owner: "Math", name: _ }) | Log => True
+				_ => False
+			}
+		LoadLocal(_) | PushNumber(_) | PushText(_) | PushBoolean(_) => True
+		PushNull | PushUndefined | LoadBoxed(_) | PeekBoxed(_) | LoadBuiltin(_) => True
+		StoreLocal(_) | SetLocal(_) | UpdateLocal(_) | Pop | Duplicate => True
+		Binary(_, _) | Unary(_, _) | GetIndex(_) | GetProperty(_, _) | MethodLookup(_, _) => True
+		Jump(_) | Loop(_) | JumpIfFalse(_) | JumpIfSame(_) | ShortIfNullish(_) => True
+		SkipIfFalsy(_) | SkipIfTruthy(_) | SkipIfDefined(_) | SkipIfNotUndefined(_) => True
+		_ => False
+	}
+
+## An `Integer` of 32 bits, signed: what a guard proves of a slot.
+int32_integer : LoweringBasics.Kind
+int32_integer = Integer({ low: -2147483648, high: 2147483647 })
+
+## The value or number at `from` tested for a whole number of 32 bits, not
+## -0, and stored at `to` as the integer it is; a jump to `failed` when it
+## isn't one. The double made back from its 32-bit integer has its bits only
+## then: a value that is no number is a NaN to `cvttsd2si`, which gives
+## 0x80000000, and -0 comes back as 0.
+int32_tested_items : {
+	from : X86.Mem,
+	to : X86.Mem,
+	failed : Str,
+} -> List(Assembly.Statement)
+int32_tested_items = |{ from, to, failed }| [
+	Emit.load(Rax, from),
+	Emit.to_xmm(Xmm0, Rax),
+	Instruction(Cvttsd2si32({ to: Rcx, from: Xmm0 })),
+	Instruction(Cvtsi2sd32({ to: Xmm1, from: Rcx })),
+	Instruction(MovqFromXmm({ to: Rdx, from: Xmm1 })),
+	Emit.cmp(Rdx, Rax),
+	Emit.jcc(Ne, failed),
+	Instruction(Movsxd({ to: Rcx, from: Rcx })),
+	Emit.store(to, Rcx),
+]
+
+## A versioned loop's exit: each slot the loop writes copied back from its
+## fast slot, then the jump to where the loop leaves to. An `Integer` stays
+## one where the generic copy's way there (`waiting`) holds an `Integer` in
+## that slot; anywhere else it is made a double, so the two ways' kinds
+## meet with no slot demoted.
+exit_items : LoweringBasics.Site,
+{
+	state : LoweringBasics.State,
+	copies : List(LoweringBasics.SlotCopy),
+	demoted : List(U64),
+	target : U64,
+	waiting : Try(LoweringBasics.State, _),
+} -> LoweringBasics.Lowered
+exit_items = |site, { state, copies, demoted, target, waiting }| {
+	generic_integers = match waiting {
+		Ok(other) =>
+			copies
+				.map(|{ from: _, to }| to)
+				.keep_if(
+					|to|
+						match other.slots.get(to) {
+							Ok(Ready(Integer(_))) => !demoted.contains(to)
+							_ => False
+						},
+				)
+		Err(_) => []
+	}
+	copied = exit_copies_items({ state, copies, generic_integers })
+	{
+		statements: copied.statements.append(
+			JmpTo(LoweringBasics.place_label(site.context, target)),
+		),
+		falls: Ends,
+		branch: Branch({ target, state: copied.state }),
+		result: GivesNothing,
+	}
 }
 
 ## Whether an instruction may call a function of the program.
@@ -1913,11 +2749,14 @@ integer_literal = |site, { instruction, state, demoted, jump_joined }| {
 				},
 			).is_ok()
 		Ok(GetIndex(_)) => takes_integer_index(beneath)
-		Ok(Call(_)) | Ok(LoadLocal(_)) => integer_argument(site, state)
+		Ok(LoadLocal(slot)) =>
+			integer_argument(site, state)
+				or (!jump_joined and literal_on_left(site, { literal: kind, slot, state }))
+		Ok(Call(_)) => integer_argument(site, state)
 		Ok(PushNumber(_)) | Ok(MakeArray(_)) => integer_argument(site, state) or integer_item(site)
 		Ok(SetIndex(_)) =>
 			match kind_under(state, 1) {
-				Integers(_) => True
+				Integers(_) | Int32Items => True
 				_ => False
 			}
 		_ => False
@@ -1926,6 +2765,38 @@ integer_literal = |site, { instruction, state, demoted, jump_joined }| {
 		Ok({ whole: LoweringBasics.whole_of_literal(number), kind })
 	} else {
 		Err(NotInteger)
+	}
+}
+
+## Whether a literal pushed at the site is the left operand of `+ - * %`
+## or a bitwise operator whose right is the `Integer` the next instruction
+## loads from `slot`, and whose answer stays one (`2 * i`): the instruction
+## after that load is the operator, and no other way reaches it.
+literal_on_left : LoweringBasics.Site,
+{
+	literal : LoweringBasics.Kind,
+	slot : U64,
+	state : LoweringBasics.State,
+} -> Bool
+literal_on_left = |site, { literal, slot, state }| {
+	right = match state.slots.get(slot) {
+		Ok(Ready(Integer(range))) => Integer(range)
+		_ => return False
+	}
+	match site.code.ops.get(site.at + 2) {
+		Ok(Binary(operator, _)) if operator != Divide and !site.skipped.contains(site.at + 2) =>
+			integer_binary(
+				site,
+				{
+					operator,
+					left: literal,
+					right,
+					callee: Undefined,
+					step: 3,
+					joined: True,
+				},
+			).is_ok()
+		_ => False
 	}
 }
 
@@ -2059,7 +2930,7 @@ integer_storable = |site, { slot, demoted }|
 takes_integer_index : LoweringBasics.Kind -> Bool
 takes_integer_index = |receiver|
 	match receiver {
-		Array | Numbers | Integers(_) | Value => True
+		Array | Numbers | Integers(_) | Int32Items | Value => True
 		_ => False
 	}
 
@@ -2944,6 +3815,78 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 					"the property `${key}` of ${LoweringBasics.kind_phrase(kind)} written",
 				)
 			}
+		GetIndex(_) if LoweringBasics.kind_below(state, 1) == Int32Items => {
+			fast = site.context.versions.fast.get(site.at) ?? crash "Lowering: a fast copy's place"
+			exit = side_exit_items(
+				site,
+				{
+					state,
+					fast,
+					target: fast.generic,
+					piece: "read_exit",
+				},
+			)
+			done = LoweringBasics.inner_label(site, "done")
+			read = IndexLowering.int32_read_items({
+				index_kind: LoweringBasics.kind_below(state, 0),
+				receiver: top_place(1),
+				index: top_place(0),
+				exit: exit.label,
+			})
+			Ok({
+				statements: flip_items(site, exit.label)
+					.concat(read)
+					.append(Emit.jmp(done))
+					.concat(exit.statements)
+					.append(Emit.mark(done)),
+				falls: Falls(
+					LoweringBasics.with_top(LoweringBasics.without_top(state, 2), int32_integer),
+				),
+				branch: Branch({ target: exit.target, state: exit.sent }),
+				result: GivesNothing,
+			})
+		}
+		SetIndex(_) if LoweringBasics.kind_below(state, 2) == Int32Items => {
+			fast = site.context.versions.fast.get(site.at) ?? crash "Lowering: a fast copy's place"
+			exit = side_exit_items(
+				site,
+				{
+					state,
+					fast,
+					target: fast.generic,
+					piece: "write_exit",
+				},
+			)
+			done = LoweringBasics.inner_label(site, "done")
+			value = LoweringBasics.kind_below(state, 0)
+			int32 = match unconverted.last() {
+				Ok(Integer(range)) => range.low >= -2147483648 and range.high <= 2147483647
+				_ => False
+			}
+			written =
+				if LoweringBasics.is_value_kind(value) {
+					IndexLowering.int32_write_items({
+						index_kind: LoweringBasics.kind_below(state, 1),
+						receiver: top_place(2),
+						index: top_place(1),
+						value_place: top_place(0),
+						int32,
+						exit: exit.label,
+					}).concat(LoweringBasics.copy_items({ from: top_place(0), to: top_place(2) }))
+				} else {
+					[Emit.jmp(exit.label)]
+				}
+			Ok({
+				statements: flip_items(site, exit.label)
+					.concat(written)
+					.append(Emit.jmp(done))
+					.concat(exit.statements)
+					.append(Emit.mark(done)),
+				falls: Falls(LoweringBasics.with_top(LoweringBasics.without_top(state, 3), value)),
+				branch: Branch({ target: exit.target, state: exit.sent }),
+				result: GivesNothing,
+			})
+		}
 		GetIndex(_) if LoweringBasics.holds_numbers(LoweringBasics.kind_below(state, 1)) => {
 			read = IndexLowering.item_read_items(
 				site,
@@ -3746,8 +4689,22 @@ keeps_numbers = |source_lines| {
 		Ok(compiled) => compiled
 		Err(_) => crash "Lowering.keeps_numbers: a program that compiles"
 	}
-	plain = items_with_numbers(program, AnyItems) ?? crash "Lowering.keeps_numbers: it lowers"
-	match items_with_numbers(program, NumberItems) {
+	plain = items_with_numbers(
+		program,
+		{
+			arrays: AnyItems,
+			versions: plain_versions_of(program),
+			seed: Unseeded,
+		},
+	) ?? crash "Lowering.keeps_numbers: it lowers"
+	match items_with_numbers(
+		program,
+		{
+			arrays: NumberItems,
+			versions: plain_versions_of(program),
+			seed: Unseeded,
+		},
+	) {
 		Ok(items) => items.statements.len() != plain.statements.len()
 		Err(_) => False
 	}
@@ -3825,8 +4782,22 @@ keeps_integers = |source_lines| {
 		Ok(compiled) => compiled
 		Err(_) => crash "Lowering.keeps_integers: a program that compiles"
 	}
-	doubles = items_with_numbers(program, NumberItems) ?? crash "Lowering.keeps_integers: it lowers"
-	match items_with_numbers(program, IntegerItems) {
+	doubles = items_with_numbers(
+		program,
+		{
+			arrays: NumberItems,
+			versions: plain_versions_of(program),
+			seed: Unseeded,
+		},
+	) ?? crash "Lowering.keeps_integers: it lowers"
+	match items_with_numbers(
+		program,
+		{
+			arrays: IntegerItems,
+			versions: plain_versions_of(program),
+			seed: Unseeded,
+		},
+	) {
 		Ok(items) => items.statements.len() != doubles.statements.len()
 		Err(_) => False
 	}

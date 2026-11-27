@@ -62,10 +62,31 @@ Registers :: [].{
 		statements : List(Assembly.Statement),
 		frame_bytes : U64,
 		worth_renaming : Bool,
+		cold : Set(Str),
 	} -> List(Assembly.Statement)
-	promote_statements = |{ statements, frame_bytes, worth_renaming }| {
+	promote_statements = |{ statements, frame_bytes, worth_renaming, cold }| {
 		if !worth_renaming {
 			return statements
+		}
+		hot = hot_statements(statements, cold)
+		var $counted = Dict.empty()
+		for statement in hot {
+			match statement {
+				Instruction(instruction) =>
+					match plain_place(instruction) {
+						Ok(displacement) => {
+							$counted = $counted.insert(
+								displacement,
+								match $counted.get(displacement) {
+									Ok(count) => count + 1
+									Err(_) => 1
+								},
+							)
+						}
+						Err(NotPlain) => {}
+					}
+				_ => {}
+			}
 		}
 		var $counts = Dict.empty()
 		var $barred = []
@@ -106,10 +127,11 @@ Registers :: [].{
 		}
 		same = |one, other| X86.register_index(one) == X86.register_index(other)
 		free = spare_registers.drop_if(|spare| $named_spares.any(|named| same(named, spare)))
-		carried = loop_carried(statements)
+		carried = loop_carried(hot)
 		chosen =
 			$counts
 				.to_list()
+				.map(|(displacement, _)| (displacement, hot_count($counted, displacement)))
 				.keep_if(
 					|
 						(displacement, count),
@@ -219,6 +241,54 @@ Registers :: [].{
 	}
 }
 
+## The statements but those of the places in `cold` (a versioned loop's
+## generic copy, which runs only once a guard or a side exit sends it there),
+## each place's statements running from its label to the next place's.
+## Only these are counted, and only their loops' places are carried, so a
+## versioned loop's fast copy takes the registers its generic copy would
+## otherwise share. The renaming itself covers every statement.
+hot_statements : List(Assembly.Statement), Set(Str) -> List(Assembly.Statement)
+hot_statements = |statements, cold| {
+	if cold.is_empty() {
+		return statements
+	}
+	var $out = List.with_capacity(statements.len())
+	var $cold = False
+	for statement in statements {
+		match statement {
+			Mark(label) if is_place_mark(label) => {
+				$cold = cold.contains(label)
+			}
+			_ => {}
+		}
+		if !$cold {
+			$out = $out.append(statement)
+		}
+	}
+	$out
+}
+
+## How many plain moves name a place in the hot statements: none for a
+## place only cold code names.
+hot_count : Dict(I32, U64), I32 -> U64
+hot_count = |counted, displacement|
+	match counted.get(displacement) {
+		Ok(count) => count
+		Err(_) => 0
+	}
+
+## Whether a label is a bytecode instruction's own place, `code_<f>_<n>`,
+## with no piece after it.
+is_place_mark : Str -> Bool
+is_place_mark = |label| {
+	parts = label.split_on("_")
+	match parts {
+		["code", code_text, place_text] =>
+			U64.from_str(code_text).is_ok() and U64.from_str(place_text).is_ok()
+		_ => False
+	}
+}
+
 ## The places an innermost loop carries from one time round to the next:
 ## between a label and a jump back to it, with no other loop inside, a place
 ## whose first plain move there is a load, and which is also stored there.
@@ -305,7 +375,12 @@ is_frame_pointer = |register| X86.register_index(register) == X86.register_index
 promotes_to : List(Assembly.Statement), List(Assembly.Statement) -> Bool
 promotes_to = |statements, expected|
 	Assembly.assemble(
-		Registers.promote_statements({ statements, frame_bytes: 16, worth_renaming: True }),
+		Registers.promote_statements({
+			statements,
+			frame_bytes: 16,
+			worth_renaming: True,
+			cold: Set.empty(),
+		}),
 	)
 		== Assembly.assemble(expected)
 
@@ -494,6 +569,7 @@ expect {
 			statements: unlooped,
 			frame_bytes: 16,
 			worth_renaming: False,
+			cold: Set.empty(),
 		}),
 	)
 	promotes_to(body, body) and kept == Assembly.assemble(unlooped)

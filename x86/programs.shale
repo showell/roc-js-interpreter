@@ -1,4 +1,4 @@
--- budget: steps=132000000 arena_bytes=200000000
+-- budget: steps=180000000 arena_bytes=200000000 programs=1400
 -- x86/programs.shale: the x86-64 backend's programs, each held to node or to
 -- its refusal. From the repository's root:
 --
@@ -13,6 +13,10 @@
 --     code's growth can't creep unseen; a program whose first line is
 --     `// inlined: <sites> sites, <instructions> instructions` is held to
 --     its own count too;
+--   - the loops x86/roc/Versioning.roc places twice across x86/tests/, and
+--     the instructions their fast copies hold, must be VERSIONED exactly; a
+--     program whose first line is `// versioned: <loops> loops,
+--     <instructions> instructions` is held to its own count too;
 --   - each of them, and each race below, must have its post-passes run with
 --     the runtime's done once, when js-x86 was built (`js-x86 "<program>"
 --     posts` says `posts: beside`; x86/roc/RuntimePosts.roc), so a change
@@ -39,6 +43,12 @@
 -- pointer its trace skips frees a block still in use, and the output stops
 -- being node's. A program of TORTURE_SAMPLED runs with `gcsample` there
 -- instead: a collection each time 64 KiB more of the heap are taken.
+-- Each program is compiled once more in js-x86's `guardsflip` mode (FLIP,
+-- below), the side exits' torture tier: every side exit of a versioned
+-- loop's fast copy is also taken at every eighth of its tests, so the exits
+-- into the generic copy run, and the executable, run with `heapwalk`, must
+-- print node's lines too. A program whose flipped executable is its own,
+-- byte for byte (it has no side exit), isn't run again.
 -- Nothing is skipped: the run fails unless every program passes, and a
 -- folder with no program in it fails too.
 --
@@ -55,6 +65,8 @@ const REPORT = arg("corpus", "held") == "report"
 -- The sites and instructions inlined across x86/tests/: a commit that moves
 -- it says why.
 const INLINED = "inlined: 47 sites, 683 instructions"
+-- The loops versioned across x86/tests/: a commit that moves it says why.
+const VERSIONED = "versioned: 23 loops, 618 instructions"
 -- Every executable here runs with this first argument: it walks the heap at
 -- its exit and at a stop and checks every block's header, so a header an
 -- allocation wrote wrong stops the program, and its output can't be node's.
@@ -67,6 +79,10 @@ const TORTURE = "gcalways"
 -- minutes, and the SAT race's 270,000 at its small size, over 329 pages,
 -- run past the timeout.
 const SAMPLED = "gcsample"
+-- And each program compiled with its side exits taken often, held to node
+-- with HEAP_WALK; `flipped.count` counts those whose bytes differ.
+const FLIP = "guardsflip"
+const flipped = {count = 0}
 const TORTURE_SAMPLED = {"x86/tests/join.js", "x86/satrace/sat.js"}
 -- The heapstat lines of four corpus programs that make garbage, held
 -- exactly: what each allocates, collects and keeps live to its exit
@@ -126,6 +142,17 @@ function held_to_node(exe, dir, js_path, copy?)
   local t = executable_run(path, mode)
   if t.ended ~= "exit" or t.code ~= 0 then return "with " .. mode .. ", the executable ended " .. t.ended .. " " .. t.code .. ": " .. trim(t.out) end
   if t.out ~= n.out then return "with " .. mode .. ", it printed " .. json_write(t.out) .. ", node " .. json_write(n.out) end
+  local flip = driver_run(exe, text, FLIP)
+  if flip.code ~= 0 then return "js-x86 " .. FLIP .. " exited " .. flip.code .. ": " .. trim(flip.out) end
+  if flip.out ~= made.out then
+    flipped.count = flipped.count + 1
+    local flip_path = path .. "-" .. FLIP
+    replace(flip_path, bytes_of_hex(WHO, flip.out))
+    must(run({"chmod", "755", real(flip_path)}, {timeout_ms = 10000, whole = 4000}))
+    local f = executable_run(flip_path, HEAP_WALK)
+    if f.ended ~= "exit" or f.code ~= 0 then return "with " .. FLIP .. ", the executable ended " .. f.ended .. " " .. f.code .. ": " .. trim(f.out) end
+    if f.out ~= n.out then return "with " .. FLIP .. ", it printed " .. json_write(f.out) .. ", node " .. json_write(n.out) end
+  end
   return nil
 end
 
@@ -139,6 +166,19 @@ function inlined_count(exe, js_path)
   local counted = {sites = tonumber(m.groups[1]), instructions = tonumber(m.groups[2])}
   local held = re_find(lines(read(js_path))[1], "^// (inlined: .+)$")
   if held ~= nil and held.group ~= said then counted.why = "it inlined " .. json_write(said) .. ", its first line holds " .. json_write(held.group) end
+  return counted
+end
+
+-- What the driver says it versioned in the program at `js_path`: `{loops,
+-- instructions}`, and why it differs from the count the program's first
+-- line holds, or nil.
+function versioned_count(exe, js_path)
+  local said = trim(driver_run(exe, read(js_path), "versioned").out)
+  local m = re_find(said, "^versioned: ([0-9]+) loops, ([0-9]+) instructions$")
+  if m == nil then return {loops = 0, instructions = 0, why = "js-x86 versioned said " .. json_write(said)} end
+  local counted = {loops = tonumber(m.groups[1]), instructions = tonumber(m.groups[2])}
+  local held = re_find(lines(read(js_path))[1], "^// (versioned: .+)$")
+  if held ~= nil and held.group ~= said then counted.why = "it versioned " .. json_write(said) .. ", its first line holds " .. json_write(held.group) end
   return counted
 end
 
@@ -242,6 +282,8 @@ function main()
   local refused = js_files("x86/tests/refused")
   local sites = 0
   local instructions = 0
+  local loops = 0
+  local copied = 0
   for p in held do
     local why = held_to_node(exe, dir, p)
     if why ~= nil then push(wrong, p .. ": " .. why) end
@@ -251,10 +293,16 @@ function main()
     if posts ~= nil then push(wrong, p .. ": " .. posts) end
     sites = sites + counted.sites
     instructions = instructions + counted.instructions
+    local versions = versioned_count(exe, p)
+    if has_key(versions, "why") then push(wrong, p .. ": " .. versions.why) end
+    loops = loops + versions.loops
+    copied = copied + versions.instructions
     yield()
   end
   local inlined = "inlined: " .. sites .. " sites, " .. instructions .. " instructions"
   if inlined ~= INLINED then push(wrong, "x86/tests/: " .. inlined .. ", and INLINED holds " .. json_write(INLINED)) end
+  local versioned = "versioned: " .. loops .. " loops, " .. copied .. " instructions"
+  if versioned ~= VERSIONED then push(wrong, "x86/tests/: " .. versioned .. ", and VERSIONED holds " .. json_write(VERSIONED)) end
   for p in refused do
     local why = held_to_refusal(exe, dir, p)
     if why ~= nil then push(wrong, p .. ": " .. why) end
@@ -279,7 +327,9 @@ function main()
   local corpus = corpus_check(exe, dir)
   if #corpus.wrong > 0 and not REPORT then fail(WHO .. ": the corpus differs from " .. CORPUS .. ":\n" .. join(corpus.wrong, "\n")) end
   print("x86/programs: " .. inlined .. " across x86/tests/")
+  print("x86/programs: " .. versioned .. " across x86/tests/")
   print("x86/programs: " .. TORTURE .. " held every program to node too, " .. SAMPLED .. " in its place for " .. join(TORTURE_SAMPLED, ", "))
+  print("x86/programs: " .. FLIP .. " held the " .. flipped.count .. " programs with side exits to node too")
   print("x86/programs: " .. #held .. " programs and " .. #RACES .. " race at a small size printed what node prints, " .. #refused .. " came to their refusals, and " .. corpus.matched .. " of the corpus's " .. corpus.all .. " match node, held exactly to " .. CORPUS)
 end
 

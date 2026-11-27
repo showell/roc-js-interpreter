@@ -370,6 +370,87 @@ IndexLowering :: [].{
 		}
 	}
 
+	## `receiver[index]` of an array whose header says Int32 (the kind
+	## `Int32Items`, in a versioned loop's fast copy), in the receiver's
+	## place: the item made the `Integer` it is, or a jump to `exit`, the
+	## side exit, when the index is no whole number below the length.
+	int32_read_items : {
+		index_kind : LoweringBasics.Kind,
+		receiver : X86.Mem,
+		index : X86.Mem,
+		exit : Str,
+	} -> List(Assembly.Statement)
+	int32_read_items = |{ index_kind, receiver, index, exit }|
+		match item_address_items({
+			kinds: (Array, index_kind),
+			receiver,
+			index,
+			checks: IndexLowering.all_checks,
+			label: exit,
+		}) {
+			Ok(addressed) =>
+				addressed.concat([
+					Instruction(MovsdLoad({ to: Xmm0, from: item_place })),
+					Instruction(Cvttsd2si({ to: Rax, from: Xmm0 })),
+					Emit.store(receiver, Rax),
+				])
+			Err(Untested) => [Emit.jmp(exit)]
+		}
+
+	## `receiver[index] = ` the value at `value_place`, of an array whose
+	## header says Int32 (`Int32Items`): the item written in place, or a jump
+	## to `exit`, the side exit, when the index is no whole number below the
+	## length or the value no whole number of 32 bits, which would lower the
+	## kind. `int32` says the value is known to be one, so it isn't tested.
+	int32_write_items : {
+		index_kind : LoweringBasics.Kind,
+		receiver : X86.Mem,
+		index : X86.Mem,
+		value_place : X86.Mem,
+		int32 : Bool,
+		exit : Str,
+	} -> List(Assembly.Statement)
+	int32_write_items = |
+		{
+			index_kind,
+			receiver,
+			index,
+			value_place,
+			int32,
+			exit,
+		},
+	| {
+		# A whole number of 32 bits, not -0: the round trip through a 32-bit
+		# integer gives back its bits (`Heap.kind_kept_items`).
+		value_tested =
+			if int32 {
+				[]
+			} else {
+				[
+					Emit.load(Rax, value_place),
+					Emit.to_xmm(Xmm0, Rax),
+					Instruction(Cvttsd2si32({ to: Rcx, from: Xmm0 })),
+					Instruction(Cvtsi2sd32({ to: Xmm1, from: Rcx })),
+					Instruction(MovqFromXmm({ to: Rdx, from: Xmm1 })),
+					Emit.cmp(Rdx, Rax),
+					Emit.jcc(Ne, exit),
+				]
+			}
+		match item_address_items({
+			kinds: (Array, index_kind),
+			receiver,
+			index,
+			checks: IndexLowering.all_checks,
+			label: exit,
+		}) {
+			Ok(addressed) =>
+				value_tested
+					.concat(addressed)
+					.concat([Emit.load(Rax, value_place), Emit.store(item_place, Rax)])
+			Err(Untested) => [Emit.jmp(exit)]
+		}
+	}
+
 	## `receiver[index] = ` the value at `value_place`, the array changed in place, when the
 	## receiver is an array and the index a whole number below its length,
 	## else `slow_items`, the routine's call (an append among what it does).

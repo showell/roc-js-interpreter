@@ -45,6 +45,11 @@ LoweringBasics :: [].{
 		# `high` for good, kept as doubles (`Lowering`'s `INTEGER ARRAYS`): its
 		# items read as `Integer`s.
 		Integers({ low : I64, high : I64 }),
+		# An array, in a versioned loop's fast copy alone, whose header said
+		# Int32 when the fast copy last tested it, and that nothing since could
+		# have lowered (`Versioning`'s header): its items read as `Integer`s of
+		# 32 bits, and a store of one keeps the kind with no code.
+		Int32Items,
 		Object,
 		Value,
 		Closure(U64),
@@ -118,7 +123,56 @@ LoweringBasics :: [].{
 		# The places a class's table is expected to hold each key at, and the
 		# codes it may hold there (`MethodTables.method_tables`).
 		methods : LoweringBasics.MethodGuesses,
+		# The loops of this code placed twice (`Versioning`).
+		versions : LoweringBasics.Versions,
 		index : U64,
+	}
+
+	## The loops `Versioning` placed twice in one code: at each guard's place,
+	## what the guard tests and copies; at each exit's place, the fast copy's
+	## slots copied back to their own; at each place of a fast copy, where its
+	## side exits go (`Fast`). `flip` is js-x86's `guardsflip` mode: every
+	## side exit's test is also taken at every eighth test the program makes.
+	Versions : {
+		guards : Dict(U64, LoweringBasics.Guard),
+		exits : Dict(U64, List(LoweringBasics.SlotCopy)),
+		fast : Dict(U64, LoweringBasics.Fast),
+		flip : Bool,
+	}
+
+	## A versioned loop's guard: the slots it tests for whole numbers of 32
+	## bits (`checked`, each made an `Integer` in its fast slot), the slots it
+	## tests for arrays whose header says Int32 (`arrays`, each made
+	## `Int32Items` in its fast slot), the slots it copies as they are, and
+	## the place the generic copy starts at, where a failed test goes.
+	Guard : {
+		checked : List(LoweringBasics.SlotCopy),
+		arrays : List(LoweringBasics.SlotCopy),
+		copied : List(LoweringBasics.SlotCopy),
+		generic : U64,
+	}
+
+	## An instruction of a versioned loop's fast copy: the generic copy's
+	## place for the same instruction, where a side exit goes, the fast
+	## slots copied back to their own on the way (the slots the loop
+	## writes), and the fast slots that hold `Int32Items` while their tests
+	## hold.
+	Fast : {
+		generic : U64,
+		copies : List(LoweringBasics.SlotCopy),
+		arrays : List(U64),
+	}
+
+	## A slot's value moved to another slot.
+	SlotCopy : { from : U64, to : U64 }
+
+	## A code with no loop placed twice.
+	plain_versions : LoweringBasics.Versions
+	plain_versions = {
+		guards: Dict.empty(),
+		exits: Dict.empty(),
+		fast: Dict.empty(),
+		flip: False,
 	}
 
 	## For each key some class's table holds, the places among a table's
@@ -150,6 +204,7 @@ LoweringBasics :: [].{
 			Integer(_) => False
 			Number | Boolean | Undefined | Null => True
 			String | Array | Numbers | Integers(_) | Object | Value | Closure(_) => True
+			Int32Items => True
 			Function(_) | Console | Log | Method(_) => False
 			ErrorClass(_) | CollectionClass(_) | TimerFunction(_) => False
 			Static(_) | StaticMethod(_) => False
@@ -802,7 +857,7 @@ LoweringBasics :: [].{
 	kind_phrase = |kind| {
 		noun = LoweringBasics.kind_noun(kind)
 		match kind {
-			Array | Numbers | Integers(_) | Object | Undefined => "an ${noun}"
+			Array | Numbers | Integers(_) | Int32Items | Object | Undefined => "an ${noun}"
 			_ => "a ${noun}"
 		}
 	}
@@ -820,6 +875,7 @@ LoweringBasics :: [].{
 			Array => "array"
 			Numbers => "array of numbers"
 			Integers(_) => "array of whole numbers"
+			Int32Items => "array of whole numbers of 32 bits"
 			Object => "object"
 			Value => "value of a kind not known before it runs"
 			Method(name) => "method `${name}`"

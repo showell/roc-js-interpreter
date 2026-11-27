@@ -378,6 +378,14 @@ Heap :: [].{
 	mapping_size : I64
 	mapping_size = Heap.mapped_size + Heap.mapped_size // 2
 
+	## The mapping's last 8 bytes, which the mark stack never reaches (a heap
+	## of fewer than `mapped_size` bytes holds fewer than `mapped_size // 16`
+	## blocks): js-x86's `guardsflip` mode counts there the side exits'
+	## tests its programs make (Lowering's `flip_items`). No other program
+	## touches it.
+	spare_place : X86.Mem
+	spare_place = Emit.mem(R14, Heap.mapped_size // 2 - 8)
+
 	## The runtime's places past `r13` that the collector reads as roots:
 	## all of them before the output buffer (Runtime's `buffer_place`).
 	runtime_roots_size : I64
