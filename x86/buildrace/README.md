@@ -30,4 +30,6 @@ Everything runs niced, one program at a time. Each table prints the load average
 
 The Roc dev builds (`--opt=dev`) are about 2.3 MB each and run 10 to 25 times slower than the speed builds. Their size and speed suggest that the dev backend at RC1 and RC2 carries the program with an interpreter rather than compiling it to machine code, but nothing here checks that. So js-x86's real rival on build time is `--opt=speed`, which also makes an executable at full speed.
 
+Where js-x86's own time goes, phase by phase, and what was done about it, is x86/buildrace/PROFILE.md (x86/buildtime.shale measures it).
+
 Everything is written under `scratch=` (`build:scratch/buildrace`), in one folder for each compiler, named after what its `roc version` prints.
