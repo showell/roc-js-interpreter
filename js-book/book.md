@@ -16,13 +16,38 @@ The interpreter runs all 63 programs of the corpus in `js/tests/`, and the compi
 
 ### Who judges it
 
-Every program in the subset is real JavaScript, so node is a free oracle, and it judges both programs. `js/oracle.shale` runs each program in `js/tests/` through node 22 and through `js-vm`, and the two transcripts, exit codes included, must match byte for byte; `x86/programs.shale` holds each executable's output and exit code to node's the same way. A program outside the subset gets an error that names what it used: each program in `js/tests/refused/` names, on its first line, the message `js-vm` must end with. The corpus grew from 32 programs and 25 refusals on the first day (`278631d8`) to 61 and 76 (`js/README.md`, its status of 2026-11-24). Program 54, `54-big-daddy.js`, is a day in a small city that uses every feature of the subset, and it is also the playground's "all features" sample (`7d6a472f`, `cc904c2a`).
+Every program in the subset is real JavaScript, so node is a free oracle, and it judges both programs.
+
+Node judges both programs
+```dot
+digraph {
+  rankdir=LR;
+  node [shape=box, style=rounded];
+  prog [label="a corpus program"];
+  nodejs [label="node 22"];
+  vm [label="js-vm"];
+  x86 [label="js-x86's\nexecutable"];
+  same [label="the same output\nand exit code?"];
+  prog -> nodejs;
+  prog -> vm;
+  prog -> x86;
+  nodejs -> same;
+  vm -> same;
+  x86 -> same;
+}
+```
+
+`js/oracle.shale` runs each program in `js/tests/` through node 22 and through `js-vm`, and the two transcripts, exit codes included, must match byte for byte; `x86/programs.shale` holds each executable's output and exit code to node's the same way. A program outside the subset gets an error that names what it used: each program in `js/tests/refused/` names, on its first line, the message `js-vm` must end with. The corpus grew from 32 programs and 25 refusals on the first day (`278631d8`) to 63 and 79 by 2026-11-27 (`js/README.md`, its status line). Program 54, `54-big-daddy.js`, is a day in a small city that uses every feature of the subset, and it is also the playground's "all features" sample (`7d6a472f`, `cc904c2a`).
 
 ### The playground
 
 The interpreter also runs in a browser playground at [roc.lynrummy.com/js/](https://roc.lynrummy.com/js/), where a program draws on a canvas as it runs and a memory view shows its heap over time. Here is one of the playground's samples, a turtle drawing a spiral:
 
 {{file js/canvas/2-turtle-spiral.js}}
+
+```shot turtle-spiral
+The turtle spiral on the playground's canvas, once it has drawn (js-book/canvas_shots.mjs, 2026-11-27).
+```
 
 ### Where the numbers come from
 
@@ -62,7 +87,7 @@ At 20:39 UTC the compiler made its first executable, a hello world (`c3ff721`), 
 
 ### 2026-11-25: the compiler on the corpus
 
-By 01:21 UTC the compiler ran 45 of the corpus's 61 programs exactly as node does (`451306b`), and by 17:00, 47, with classes (`6ec8068`). The fib race began the same day, a long Fibonacci in limbs, compiled and timed against node (`b4eb82f`).
+By 01:21 UTC the compiler ran 45 of the 61 programs the corpus then held exactly as node does (`451306b`), and by 17:00, 47, with classes (`6ec8068`). The fib race began the same day, a long Fibonacci in limbs, compiled and timed against node (`b4eb82f`).
 
 ### 2026-11-26: method tables, and a third contestant
 
@@ -191,17 +216,17 @@ The two NaNs the processor makes lie below every tag, so a value is a number exa
 
 ### The runtime
 
-Every executable carries the runtime, about 21 KB of machine code (`let x = 1;` compiles to 21,611 bytes, 2026-11-27): the start, the allocator, buffered output, `console.log`'s writing of values as node writes them, the array methods, the Maps and Sets, and the timers. It is written in Roc too, as lists of `Assembly` statements, one instruction a line through the short builders of `Emit.roc`. Here is the allocator, from `Heap.roc`:
+Every executable carries the runtime, about 24 KB of machine code (`let x = 1;` compiled to 24,407 bytes on 2026-11-27, measured for this book with that day's js-x86, as `x86/README.md` records): the start, the allocator, buffered output, `console.log`'s writing of values as node writes them, the array methods, the Maps and Sets, and the timers. It is written in Roc too, as lists of `Assembly` statements, one instruction a line through the short builders of `Emit.roc`. Here is the allocator, from `Heap.roc`:
 
 {{function x86/roc/Heap.roc allocate_items}}
 
 Four registers belong to the runtime for the whole run: `r12` the stack's limit, `r13` the runtime's state, `r14` the heap's end and `r15` the heap's state, in a mapping of 3 GiB: a heap of 2 GiB, then the collector's mark stack. The heap is 64 KiB pages of one block size each, every block behind a header word of its kind and size (`x86/COLLECTOR.md`). The allocator pops its size's free list or bumps through a page, and past a threshold it collects first ({{chapter The garbage collector}}).
 
-`x86/fib.js`'s executable is 22,041 bytes (`x86/fib.shale`, 2026-11-27); milestone 2's fib(22), before the runtime, was 1,010 bytes (`0c5ea7e`).
+`x86/fib.js`'s executable was 24,837 bytes the same day; milestone 2's fib(22), before the runtime, was 1,010 bytes (`0c5ea7e`).
 
-### What it compiles
+### What it compiles, as of 2026-11-27
 
-`x86/programs.shale` compiles each of the 63 corpus programs in `js/tests/` and holds those whose executables print exactly what node prints to `x86/corpus.txt`: 51 of 63 (`x86/README.md`, "The corpus"). It also holds the 67 programs of `x86/tests/` to node and the 48 of `x86/tests/refused/` to their refusals (2026-11-27). The 12 left stop at these, by the first reason each meets:
+`x86/programs.shale` compiles each of the 63 corpus programs in `js/tests/` and holds those whose executables print exactly what node prints to `x86/corpus.txt`: 51 of 63 (`x86/README.md`, "The corpus"). It also holds the 68 programs of `x86/tests/` to node and the 48 of `x86/tests/refused/` to their refusals. The 12 left stop at these, by the first reason each meets:
 
 | programs | the first reason |
 |---|---|
@@ -217,7 +242,7 @@ The executables beat `node file.js` on small programs, and most of that win is n
 
 ### Where the numbers come from
 
-Every number in this chapter is from `x86/BENCH.md` (`68f420b`), which `shale x86/bench.shale` measures; the one from `x86/README.md` says so. The timings stay outside `check.shale`, since the box is too noisy to gate on. They are one sample from one day, 2026-11-25, on the 2-core development box with node v22.23.2, and the book quotes them as recorded there. They were taken before the in-line paths of {{chapter What the compiler leaves to an optimizer}} (`17cb2b0`, `d6ecebd`), and the four programs are unmeasured since.
+Every number in this chapter is from `x86/BENCH.md` (`68f420b`), which `shale x86/bench.shale` measures; the one from `x86/README.md` says so. The timings stay outside `check.shale`, since the box is too noisy to gate on. They are one sample from one day, 2026-11-25, on the 2-core development box with node v22.23.2, and the book quotes them as recorded there. They were taken before the in-line paths of {{chapter What the compiler leaves to an optimizer}} (`17cb2b0`, `d6ecebd`), the integer kind and the register passes, and the four programs are unmeasured since. A rerun on a quiet box will replace the table; until then it is the record of 2026-11-25 and says nothing of the compiler since.
 
 Each program in `x86/bench/` defines `work(n)`:
 
@@ -228,7 +253,7 @@ Each program in `x86/bench/` defines `work(n)`:
 
 The script checks that each executable prints exactly what node prints before it times anything, and each time is the median of 3 niced runs. **executable** is the compiled file's wall time, process start included. **node** is `node file.js`, start-up included. **warmed** runs `work(n)` in a loop inside one node process, throws away the first runs (200 at the small size, 3 at the large), and takes the median of the next 50 or 5; **first run** is that process's very first call. **vm** is the interpreter's release build, at the small sizes alone. The **ratio** is the executable's time over node warmed's, so above 1 means node is faster.
 
-### The table
+### The table, as of 2026-11-25
 
 All times are in ms (`x86/BENCH.md`). A ratio in brackets is at a small size, where the executable's time is mostly its process start, rounded to a whole millisecond.
 
@@ -244,6 +269,8 @@ All times are in ms (`x86/BENCH.md`). A ratio in brackets is at a small size, wh
 | collatz(300000) | 1,043 | 446 | 375.9 | 479.4 | 2.18 | - |
 
 A second run a minute later had the same shape and a fair spread: loops(300000) took 1,261 ms in the executable against 155.6 warmed (8.10), fib(35) took 219 against 165.5 (1.32), and collatz(10000)'s executable took 27 ms where the first run had taken 84. Runs on this box differ by 30% or more. Every ratio at a large size stayed on the same side of 1.
+
+The vm column's 112 ms for fib(22) is a wall time, process start included, the median of three niced runs. {{chapter Handing the machine on}} quotes 99 ms for the same program from `js/README.md`: the best of five CPU times, on a quiet box. The two measure different things and agree in size.
 
 ### Small programs: the win is start-up
 
@@ -278,7 +305,9 @@ These four programs are measured as they came. One program was tuned for: the fi
 
 Each one's whole output, more than 150,000 digits, is held to a stored sha256 of the answer. The rules are fixed: the algorithm stays the ordinary one, node runs the same source, and any trick in the compiler has to be one that would help other programs too.
 
-### Where it stands
+The ordinary algorithm is the slow one on purpose. Fast doubling, which takes F(2k) and F(2k + 1) from F(k) and F(k + 1), reaches F(740000) in about 20 steps of a few big multiplications each, where the race makes 740,000 big additions, and with a good multiplication it finishes in a fraction of a second. The race keeps the additions because its subject is the compiler: one hot loop of array reads, additions, a carry and array writes, the shape of code every program here leans on, run long enough to time well.
+
+### Where it stood on 2026-11-26
 
 One run each on 2026-11-26, at load 0.88 (`x86/race/README.md`, after `8989013`):
 
@@ -292,13 +321,13 @@ Runs on this box move by about a tenth, so the honest reading is that js-x86 and
 
 ### What the loop costs
 
-The race lives in one loop, `addInto`'s, one limb a time round. Counted with `objdump` on 2026-11-26 (`x86/race/README.md`), Roc's loop runs 46 to 51 instructions a limb and js-x86's 71, and 64 since the integer counter below. About 25 of the 76 js-x86 ran before fixes 18 and 19 come from the numbers being JavaScript doubles: moves between the general and the floating-point registers, conversions to whole numbers for indexing, and unboxing an array's address. Roc pays for its own representation in turn: its `U64` arithmetic is checked, three overflow branches a limb, and each list write tests the list's reference count first.
+The race lives in one loop, `addInto`'s, one limb a time round. Counted with `objdump` on 2026-11-26 (`x86/race/README.md`), Roc's loop runs 46 to 51 instructions a limb. js-x86's ran 76 at `c990f68`, 71 after the race README's fixes 18 and 19, and 64 since the integer counter below. Of those 76, about 25 came from the numbers being JavaScript doubles: moves between the general and the floating-point registers, conversions to whole numbers for indexing, and unboxing an array's address. Roc pays for its own representation in turn: its `U64` arithmetic is checked, three overflow branches a limb, and each list write tests the list's reference count first.
 
 What closed the gap were the fixes that `x86/race/README.md` numbers 1 to 19, every one a general rule with its own test. Among them: an array's length and items read in line, a comparison fused with its jump, a select of two numbers made with a conditional move, which ended the carry's mispredicted branch, and a loop's carried values kept in registers first.
 
 ### What remains
 
-The largest lead the race's README ranked, an integer loop counter, is in: `i` and `aLength` are integers, and the loop went from 71 instructions a limb to 64 (`x86/race/README.md`, "What is left", 1). Its other leads, constants kept for the loop and an array's address reused, are open. The bank ledger and fourteen races are where node still leads: in their last full-size runs it took 2.84 and 2.60 times less time than the compiled program (`x86/bank/README.md` and `x86/fourteen/README.md`, "Against Roc", 2026-11-26). Both are object and call heavy, where node's hidden classes and inlining pay. A fourth race, big daddy, is a fork of the corpus's program 54 (`x86/bigdaddy/README.md`); since the collector it runs at its full size, 10,000 rounds. The races and their numbers keep moving, so each race's README is the place to read where it stands.
+The largest lead the race's README ranked, an integer loop counter, is in: `i` and `aLength` are integers, and the loop went from 71 instructions a limb to 64 (`x86/race/README.md`, "What is left", 1). Its other leads, constants kept for the loop and an array's address reused, are open. The bank ledger and fourteen races are where node still leads: in their last full-size runs it took 2.84 and 2.60 times less time than the compiled program (`x86/bank/README.md` and `x86/fourteen/README.md`, "Against Roc", 2026-11-26). Both are object and call heavy, where node's hidden classes and inlining pay. A fourth race, big daddy, is a fork of the corpus's program 54 (`x86/bigdaddy/README.md`); since the collector it runs at its full size, 10,000 rounds. A fifth, the SAT race, is rocsat's CDCL solver written in the subset: in its first run, on 2026-11-27 and on a busy box, the executable took 95.24 s to node's 52.75 s and LLVM's Roc build's 36.12 s (`x86/satrace/README.md`, marked preliminary there). These are the races as of 2026-11-27; each race's README adds the runs made since.
 
 ## What the compiler leaves to an optimizer
 
