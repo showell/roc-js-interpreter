@@ -20,7 +20,7 @@ Both moved here from [roc-apps](https://github.com/showell/roc-apps) with their 
   - [roc-markdown](https://github.com/showell/roc-markdown), which the book builder imports;
   - [roc-alloc-trace](https://github.com/showell/roc-alloc-trace), which counts the allocations the controls hold (`js/controls.shale`).
 - **The Roc pin.** `roc-version` names the Roc nightly, installed at `~/tools/roc-<pin>/roc`. It moves in step with roc-apps' pin, since the book builder holds its Roc to roc-apps' `roc-version` exactly. A sandbox that can't reach Roc's releases takes the compiler from roc-apps' toolchain release, as roc-apps' `CLAUDE.md`, §2, says.
-- **Zig 0.16**, which `zig-version` names, links the playground's wasm (`js/build.shale`).
+- **clang**, the system's, compiles the playground's wasm host, `js/wasm/platform/host.c`, for `--target=wasm32-unknown-unknown`; Roc links the wasm itself (`js/build.shale`).
 - **node 22** runs the oracle and the page's check, and Chromium, found through `PLAYWRIGHT_BROWSERS_PATH`, runs the book's check and the page's shots.
 - **[Shale](https://github.com/showell/shale)** runs every script here. On our box Shale is the only shell, and the scripts reach the dev channel and the sibling checkouts through its mounts (`build:`, `repos:`).
 

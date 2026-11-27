@@ -1,7 +1,9 @@
 -- This script builds the JavaScript playground's page into the dev channel:
--- js/roc/JsApp.roc into a wasm32 archive with the pinned Roc on the dev
--- backend, linked by Zig (zig016:zig, held to the version zig-version names)
--- with the host js/wasm/host.zig into js.wasm, beside
+-- the host js/wasm/platform/host.c, compiled by clang
+-- (--target=wasm32-unknown-unknown) to an object,
+-- js/wasm/platform/targets/wasm32/host.wasm, then js/roc/JsApp.roc built by
+-- the pinned Roc on the dev backend, which links it with that object into
+-- js.wasm (the platform's `exports:` name the page's exports), beside
 -- the page's files from js/web/ and js_samples.js, which it writes from the
 -- canvas samples in js/canvas/ and the console samples in js/console/ (each
 -- sample's first line, a `// ` comment, is its title) and the featured
@@ -31,7 +33,8 @@
 -- budget: steps=20000000
 
 const WANT_ROC = "roc-pin: roc-js-interpreter's pinned nightly"
-const WANT_ZIG = "zig: the wasm host's linker"
+-- Where the platform's `inputs_dir` finds host.wasm (ignored by git).
+const HOST_DIR = "js/wasm/platform/targets/wasm32"
 const WANT_NODE = "js-page: page_check.mjs drives the built page under node"
 
 -- The console samples taken from the corpus, in the page's order.
@@ -128,29 +131,20 @@ function main()
   if exists(staging) then remove_tree(staging) end
   mkdir(staging)
   local out = real(staging)
-  local r = run({roc, "build", "JsApp.roc", "--target=wasm32", "--opt=dev", "--output=" .. out .. "/js.a"},
+  -- Bulk memory makes host.c's memcpy a memory.copy, not an import.
+  mkdir(HOST_DIR)
+  if exists(HOST_DIR .. "/host.wasm") then remove(HOST_DIR .. "/host.wasm") end
+  local h = must(run({"clang", "--target=wasm32-unknown-unknown", "-mbulk-memory", "-O2", "-std=c11", "-Wall", "-Wextra", "-Werror",
+    "-c", "js/wasm/platform/host.c", "-o", real(HOST_DIR) .. "/host.wasm"},
+    {timeout_ms = 120000, tail = 20}))
+  print("clang js/wasm/platform/host.c: " .. h.ms .. " ms")
+  local r = run({roc, "build", "JsApp.roc", "--target=wasm32", "--opt=dev", "--output=" .. out .. "/js.wasm"},
     {cwd = "js/roc", timeout_ms = 600000, tail = 40, nice = 19, want = WANT_ROC})
-  if contains(r.out, "✗") or contains(r.out, "●") or not exists(staging .. "/js.a") then
+  if r.code ~= 0 or contains(r.out, "✗") or contains(r.out, "●") or not exists(staging .. "/js.wasm") then
     print(trim(r.out))
     fail("js/build.shale: the Roc build of JsApp.roc failed")
   end
-  print("roc build JsApp.roc --target=wasm32 --opt=dev: " .. r.ms .. " ms")
-  local zig_pin = trim(read("zig-version"))
-  local zig_said = trim(must(run({real("zig016:zig"), "version"}, {timeout_ms = 30000, whole = 1000, want = WANT_ZIG})).out)
-  if zig_said ~= zig_pin then fail("js/build.shale: zig016:zig is " .. zig_said .. ", and zig-version names " .. zig_pin) end
-  mkdir("build:roc-apps/zig-cache")
-  mkdir("build:zig-global")
-  local z = run({real("zig016:zig"), "build-exe", "js/wasm/host.zig", out .. "/js.a",
-    "-target", "wasm32-freestanding", "-fno-entry", "-rdynamic", "-O", "ReleaseSmall",
-    "--stack", "16777216", "--name", "js", "-femit-bin=" .. out .. "/js.wasm",
-    "--cache-dir", real("build:roc-apps/zig-cache"), "--global-cache-dir", real("build:zig-global")},
-    {timeout_ms = 600000, tail = 40, nice = 19, want = WANT_ZIG})
-  if z.code ~= 0 or not exists(staging .. "/js.wasm") then
-    print(trim(z.out))
-    fail("js/build.shale: linking js.wasm failed")
-  end
-  print("zig build-exe js.wasm: " .. z.ms .. " ms")
-  remove(staging .. "/js.a")
+  print("roc build JsApp.roc --target=wasm32 --opt=dev: " .. r.ms .. " ms; js.wasm " .. stat(staging .. "/js.wasm").size .. " bytes")
   write_hashed(staging)
   local c = run({"node", "js/page_check.mjs", out, "js/tests", "js/canvas"}, {timeout_ms = 300000, tail = 40, want = WANT_NODE})
   print(trim(c.out))

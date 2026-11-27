@@ -11,6 +11,11 @@
 # `Host.emit!` goes back to `drop_bytes_for_host`. So the host needs no
 # knowledge of how Roc lays out a list or a box, only a list's three words
 # and a box's one.
+#
+# Roc links the app with host.wasm, host.c compiled by clang
+# (js/build.shale), which holds the page's exports, the effects and the
+# runtime functions Roc calls. A host function is a wasm export only when
+# `exports:` names it. The stack is 16 MiB.
 platform ""
 	requires {
 		[Model : model] for program : {
@@ -38,9 +43,12 @@ platform ""
 		"host_pointer": Host.pointer!,
 	}
 	targets: {
+		inputs_dir: "targets/",
 		wasm32: {
-			inputs: [app],
-			output: Archive,
+			inputs: ["host.wasm", app],
+			output: Shared,
+			exports: ["sourcePtr", "start", "frame", "click", "crashPtr", "crashLen"],
+			initial_stack_size: 16777216,
 		},
 	}
 

@@ -1,5 +1,5 @@
 ## This module is the page's effects, as the platform hands them to Roc. The
-## page's host (../host.zig) answers each by calling into the page's
+## page's host (host.c) answers each by calling into the page's
 ## JavaScript, js_runner.js, while the Roc call that asked is still running.
 ##
 ## A list handed to the host is the host's: it gives the list back to the

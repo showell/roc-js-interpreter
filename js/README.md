@@ -594,8 +594,9 @@ what its entry does; it runs nothing. The script holds one program's dump
 exactly, the loop whose body the book's Memory strategy chapter walks
 through, and `freeze=1` writes it anew.
 
-`js/build.shale` builds `JsApp.roc` into a wasm32 archive, links it with
-Zig 0.16 and `js/wasm/host.zig` into `js.wasm`, writes `js_samples.js` from
+`js/build.shale` compiles the host, `js/wasm/platform/host.c`, with clang
+to a wasm object, then builds `JsApp.roc`, which Roc links with that object
+into `js.wasm` (the platform's `exports:` name the page's exports), writes `js_samples.js` from
 `js/canvas/`, `js/console/` and the featured corpus programs, and replaces the page only after `js/page_check.mjs` passes.
 Every file but `index.html` is named by its bytes (`js_page.<hash>.js`,
 `js.<hash>.wasm`, the first 16 hex digits of its sha256), each file's

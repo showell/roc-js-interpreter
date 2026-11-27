@@ -1,5 +1,8 @@
 # Shale scripts keep their logs and answers here.
 .zig-cache/
 
+# js/build.shale compiles js/wasm/platform/host.c here, where Roc's link finds it.
+/js/wasm/platform/targets/
+
 # Editor swap files.
 .*.swp
