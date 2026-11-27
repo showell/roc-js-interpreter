@@ -1086,7 +1086,7 @@ The lesson in `js/README.md` is that a field added inline counts against the 256
 
 ## Why a compiler suits Roc
 
-In one respect the compiler is the simpler of the two programs for Roc. An interpreter has to perform the program's effects while it runs. A compiler reads a text and gives back bytes, one transformation from start to end, and the effects wait for the executable.
+In one respect the compiler is the simpler of the two programs for Roc. An interpreter has to perform the program's effects while it runs. A compiler reads a text and gives back bytes, one transformation from start to end, and the effects wait for the executable. That difference decides where the copy rule bites, and so where a change to either program is risky.
 
 ### The interpreter has effects of its own
 
@@ -1100,7 +1100,14 @@ The compiler's whole work is `executable_of`, from the program's text to the exe
 
 {{function x86/roc/JsToX86.roc executable_of}}
 
-Its type, `Str -> Try(List(U8), Str)`, has Roc's thin arrow: a pure function. Each stage it calls, through `lowering_of`, is pure too: `Parser.program_of`, `Compile.program`, `Lowering.program_lowering`, `Assembly.assemble` and `Elf.executable`. Across the 25,708 lines of `x86/roc/`, seven definitions carry the `!` of an effect: `main!` and `write_program!` in each of the two drivers, `JsToX86.roc` and `Hello.roc`, which print the bytes, and three more in `JsToX86.roc` that print what a developer asks for: `write_inlined!` the count of inlined calls, `write_stopped!` a compile stopped at one phase, for timing it, and `write_labels!` each label's offset, for reading the code back (counted for this chapter on 2026-11-27).
+Its type, `Str -> Try(List(U8), Str)`, has Roc's thin arrow: a pure function. Each stage it calls, through `lowering_of`, is pure too: `Parser.program_of`, `Compile.program`, `Lowering.program_lowering`, `Assembly.assemble` and `Elf.executable`. Across the 25,708 lines of `x86/roc/`, seven definitions carry the `!` of an effect (counted for this chapter on 2026-11-27):
+
+| definitions | where | what they print |
+|---|---|---|
+| `main!` and `write_program!` | each of the two drivers, `JsToX86.roc` and `Hello.roc` | the bytes |
+| `write_inlined!` | `JsToX86.roc` | the count of inlined calls |
+| `write_stopped!` | `JsToX86.roc` | a compile stopped at one phase, for timing it |
+| `write_labels!` | `JsToX86.roc` | each label's offset, for reading the code back |
 
 Who does the program's effects
 ```dot
@@ -1122,7 +1129,7 @@ digraph {
 }
 ```
 
-### The ultimate delegation
+### The processor performs the effects
 
 The program's effects still happen, later, and the processor does them. `console.log` ends in the runtime's `runtime_write`, which fills the output buffer, and the buffer goes out by a `syscall` instruction for `write`. The timers become `runtime_run_timers`, a loop in the executable over a virtual clock. The compiler writes each effect down as instructions, and the processor and the kernel perform them when the executable runs.
 
@@ -1138,7 +1145,7 @@ The work moved, and some of it moved into the runtime. A routine that the interp
 
 ## Dev and release builds disagree
 
-Roc has two backends. The dev backend (`--opt=dev`) compiles in about a second and emits code that is mostly stack moves. The release build (`--opt=speed`) goes through LLVM, compiles slowly, and runs the VM's fib(22) about nine times faster: 99 ms of CPU against about 860 (`js/README.md`, 2026-11-24). Three findings about the pair have lasted.
+Roc has two backends. The dev backend (`--opt=dev`) compiles in about a second and emits code that is mostly stack moves. The release build (`--opt=speed`) goes through LLVM, compiles slowly, and runs the VM's fib(22) about nine times faster: 99 ms of CPU against about 860 (`js/README.md`, 2026-11-24). Three findings about the pair have lasted, and each tells a reader which build answers which question.
 
 ### A dev timing says little
 
@@ -1159,9 +1166,25 @@ At a helper's boundary the dev build keeps a call that owns its arguments, where
 
 `js/controls/` holds nine small programs, each a loop that does one kind of write. `js/controls.shale` runs each at 1,000 and 10,000 passes and holds what one more pass allocates, exactly, in both builds: `expected.txt` for release and `expected-dev.txt` for dev, where each line explains its allocation. Counts are deterministic, so a change that moves one shows on the dev ladder in seconds, and most trials end there. Times are taken on the release build, once a round, from one shared build (`tools/roc_build.shale` keys each build by its inputs), as roc-apps' `CLAUDE.md` (section 9) and `js/README.md` say.
 
+One round of a change
+```dot
+digraph {
+  rankdir=LR;
+  node [shape=box, style=rounded];
+  change [label="a change"];
+  dev [label="the dev ladder\ncounts, in seconds"];
+  release [label="one shared\nrelease build"];
+  time [label="the timing"];
+  change -> dev;
+  dev -> change [label="a count moved"];
+  dev -> release [label="counts held"];
+  release -> time;
+}
+```
+
 ## Build times
 
-This chapter is about two kinds of build: Roc building the two programs, and js-x86 building a JavaScript program.
+A build's time sets the pace of every change, and RC1's release builds were the slowest step in the project's loop. This chapter is about two kinds of build: Roc building the two programs, and js-x86 building a JavaScript program.
 
 ### Roc building the interpreter
 
@@ -1225,26 +1248,36 @@ A check is trusted once it has been seen to fail. Each check below holds the cod
 
 `js/canvas.shale` holds each of the 9 canvas samples to its log of effects for scripted frames, keys and clicks, and a log moves only by an explicit freeze.
 
-### page_check
+### The page check
 
 `js/page_check.mjs` drives the page's own JavaScript under node. It holds the wasm to node on every corpus program and refusal, holds the samples to their golden logs, and checks the memory view. The page is replaced only after it passes.
 
 ### Planted faults
 
-The interpreter's record lists five plants, each reverted:
+A planted fault is a deliberate bug, committed to show that a check catches it, then reverted. The interpreter's record lists five:
 
-- a line width of 72 instead of 80 turned one program red (`278631d8`);
-- the event queue left out of the roots turned 52 red, and `filter`'s item left off the stack turned 53 red (`b623437d`);
-- a wrong expected count turned 00-loop red by name (`80b5e681`);
-- a memory view with its collection marks taken out turned page_check red (`668c52ca`).
+| the fault planted | what turned red | commit |
+|---|---|---|
+| a line width of 72 instead of 80 | one program | `278631d8` |
+| the event queue left out of the roots | program 52 | `b623437d` |
+| `filter`'s item left off the stack | program 53 | `b623437d` |
+| a wrong expected count | 00-loop, by name | `80b5e681` |
+| a memory view with its collection marks taken out | page_check | `668c52ca` |
 
-The compiler's commits list their own, each reverted too: a wrong expected byte of `lea`'s encoding and a wrong hello-world text (`c3ff721`), `<` lowered with the wrong condition (`0c5ea7e`), each rule of the inliner's budget (`22361e1`), and three faults in the heap's headers and pages (`a328636`). `tools/machine_size.shale`'s header records one more: the machine's size held at 247 went red naming 248.
+`tools/machine_size.shale`'s header records one more: the machine's size held at 247 went red naming 248. The compiler's commits list their own, each reverted too:
+
+| the fault planted | commit |
+|---|---|
+| a wrong expected byte of `lea`'s encoding, and a wrong hello-world text | `c3ff721` |
+| `<` lowered with the wrong condition | `0c5ea7e` |
+| each rule of the inliner's budget | `22361e1` |
+| three faults in the heap's headers and pages | `a328636` |
 
 ## Limitations
 
 The subset covers a part of JavaScript on purpose, and it will never cover every corner of the language. A program that steps outside it is refused with a message naming what it used; it never gets a wrong answer.
 
-The limits fall in three groups: the runtime is small on purpose, the language is fairly complete, and a few limits come from the tools.
+This chapter is the list a reader starts from before extending either program. The limits fall in four groups: the runtime, small on purpose; the language, fairly complete; the compiler, which runs less of it; and a few that come from the tools.
 
 ### Runtime
 
@@ -1279,7 +1312,7 @@ The compiler runs the same subset less completely, and says where. A program it 
 - A recursion goes deeper than node's: node throws between 9,000 and 10,000 calls of a one-line recursion, the executable between 80,000 and 90,000, so a program between the two runs here and throws in node.
 - The heap is 2 GiB; past it the program stops with a line saying the heap is full.
 
-### Other
+### The tools
 
 - `js-vm` takes the program as one command-line argument, limited to 128 KiB (`js/README.md`, "Pitfalls").
 - `onCollect` and the other canvas builtins are this project's own, so logs of effects judge them in place of node.
