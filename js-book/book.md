@@ -12,7 +12,7 @@ This book is for a reader who knows programming and is new to this codebase, and
 
 The subset is real JavaScript: numbers, strings, arrays, objects, closures, `let` and `const`, `try` and `finally`, `switch`, destructuring, optional chains, spread, Maps and Sets, and the timers. Classes run too, as syntax sugar the parser writes as plain functions (`0b6d8deb`). `this` outside a class's code, `new` on a program's own function and prototypes stay outside it, and `js/README.md` says why: each would make every call carry a receiver or every property read walk a prototype chain.
 
-The interpreter runs all 61 programs of the corpus in `js/tests/`, and the compiler 49 of them (`x86/README.md`, "The corpus", 2026-11-26).
+The interpreter runs all 63 programs of the corpus in `js/tests/`, and the compiler 51 of them (`x86/README.md`, "The corpus", 2026-11-27).
 
 ### Who judges it
 
@@ -201,7 +201,7 @@ Four registers belong to the runtime for the whole run: `r12` the stack's limit,
 
 ### What it compiles
 
-`x86/programs.shale` compiles each of the 61 corpus programs in `js/tests/` and holds those whose executables print exactly what node prints to `x86/corpus.txt`: 49 of 61 (`x86/README.md`, "The corpus"). It also holds the 64 programs of `x86/tests/` to node and the 45 of `x86/tests/refused/` to their refusals (2026-11-27). The 12 left stop at these, by the first reason each meets:
+`x86/programs.shale` compiles each of the 63 corpus programs in `js/tests/` and holds those whose executables print exactly what node prints to `x86/corpus.txt`: 51 of 63 (`x86/README.md`, "The corpus"). It also holds the 67 programs of `x86/tests/` to node and the 48 of `x86/tests/refused/` to their refusals (2026-11-27). The 12 left stop at these, by the first reason each meets:
 
 | programs | the first reason |
 |---|---|
@@ -756,7 +756,7 @@ Many compilers hand their last step to a C compiler or to LLVM. This one hands i
 
 With the effects gone, the machine record and its lending go too. The lowering's state is the kinds of one function's slots, made afresh for each function on each pass, and the passes are a plain loop over values that ends when the kinds settle. The one large value that grows is the code itself. `Assembly.roc` builds the bytes by appending to one list and patches the placeholders with `set` while that list has one owner, so both passes write it in place (the module's own comment; unchecked by an allocation count). The copy rule of {{chapter Roc's copy rule}} still holds, and in the compiler it governs one list in one place.
 
-A pure function is also plain to test. Each of the encoder's 108 `expect`s holds one instruction's bytes, `rsp` and `r12` as a base and the displacements at the edges of 8 and 32 bits among them, and each was read back through `objdump` during development (`x86/README.md`). An `expect` of a pure function needs a value in and a value out, and the host stays out of it.
+A pure function is also plain to test. Each of the encoder's 119 `expect`s holds one instruction's bytes, `rsp` and `r12` as a base and the displacements at the edges of 8 and 32 bits among them, and each was read back through `objdump` during development (`x86/README.md`). An `expect` of a pure function needs a value in and a value out, and the host stays out of it.
 
 The work moved, and some of it moved into the runtime. A routine that the interpreter writes as a Roc function, such as `console.log`'s layout of an array in columns, is in the compiler a list of x86-64 instructions, written one a line in Roc (`x86/roc/Inspect.roc`, 1,185 lines).
 
@@ -850,11 +850,11 @@ A check is trusted once it has been seen to fail. Each check below holds the cod
 
 ### The oracle against node
 
-`js/oracle.shale`, a tier of the default `check.shale`, holds `js-vm`'s transcript and exit code on every corpus program to node's, 61 of them, and every refusal to its message. Every program runs, and the run fails if any one fails. It also runs with `collect=every`, which collects after every instruction that allocates, and programs 51 to 53 hold values through each kind of root while collections run.
+`js/oracle.shale`, a tier of the default `check.shale`, holds `js-vm`'s transcript and exit code on every corpus program to node's, 63 of them, and every refusal to its message. Every program runs, and the run fails if any one fails. It also runs with `collect=every`, which collects after every instruction that allocates, and programs 51 to 53 hold values through each kind of root while collections run.
 
 ### The compiler's checks
 
-`x86/programs.shale`, also a tier of `check.shale`, compiles each program in `x86/tests/` and holds what its executable prints, and its exit code, to node's; each program in `x86/tests/refused/` names the refusal `js-x86` must print or the line its executable must stop with. Then it holds the corpus to `x86/corpus.txt`, the list of programs whose executables match node, so a program that starts or stops matching fails the gate until the list moves. It holds the count of calls the inliner puts in line across `x86/tests/` exactly (its `INLINED`), and runs every executable with `heapwalk`, which checks every block's header at the exit (`x86/COLLECTOR.md`). `x86/hello.shale` runs the backend's 123 expects, the encoder's 108 among them, each holding one instruction's bytes, and `x86/fib.shale` the compiler's 213 (each script's `EXPECTS`, held exactly).
+`x86/programs.shale`, also a tier of `check.shale`, compiles each program in `x86/tests/` and holds what its executable prints, and its exit code, to node's; each program in `x86/tests/refused/` names the refusal `js-x86` must print or the line its executable must stop with. Then it holds the corpus to `x86/corpus.txt`, the list of programs whose executables match node, so a program that starts or stops matching fails the gate until the list moves. It holds the count of calls the inliner puts in line across `x86/tests/` exactly (its `INLINED`), and runs every executable with `heapwalk`, which checks every block's header at the exit (`x86/COLLECTOR.md`). `x86/hello.shale` runs the backend's 134 expects, the encoder's 119 among them, each holding one instruction's bytes, and `x86/fib.shale` the compiler's 225 (each script's `EXPECTS`, held exactly).
 
 ### Controls held exactly
 
