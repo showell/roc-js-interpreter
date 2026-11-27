@@ -407,7 +407,7 @@ direct_registers : X86.Instruction -> List(X86.Register)
 direct_registers = |instruction|
 	match instruction {
 		MovRegReg({ to, from }) | Alu({ operation: _, to, from }) | Imul({ to, from }) => [to, from]
-		Bsr({ to, from }) => [to, from]
+		Bsr({ to, from }) | Movsxd({ to, from }) | Mov32({ to, from }) => [to, from]
 		Cmov({ condition: _, to, from }) => [to, from]
 		MovRegImm({ to, value: _ }) | AluImm({ operation: _, to, value: _ }) => [to]
 		MovRegMem({ to, from: _ }) | Lea({ to, from: _ }) | MovzxByteLoad({ to, from: _ }) => [to]
@@ -417,10 +417,10 @@ direct_registers = |instruction|
 		| MovqFromXmm({ to, from: _ }) => [to]
 		Cvtsi2sd({ to: _, from }) | MovqToXmm({ to: _, from }) => [from]
 		Div(register) | Div32(register) | Idiv(register) | ImulWide(register) => [register]
-		Neg(register) => [register]
+		Neg(register) | Not(register) => [register]
 		Push(register) | Pop(register) | CallReg(register) => [register]
 		Test({ left, right }) => [left, right]
-		Shift({ operation: _, reg, count: _ }) => [reg]
+		Shift({ operation: _, reg, count: _ }) | ShiftCl({ operation: _, reg }) => [reg]
 		_ => []
 	}
 

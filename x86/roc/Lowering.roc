@@ -1943,6 +1943,12 @@ integer_binary = |
 	match operator {
 		Divide if !joined and floor_call_at(site, { step, callee }) =>
 			LoweringBasics.integer_floor_quotient(left, right)
+		_ if LoweringBasics.is_bitwise(operator) =>
+			if LoweringBasics.takes_bitwise(left) and LoweringBasics.takes_bitwise(right) {
+				Ok(LoweringBasics.bitwise_kind({ operator, left, right }))
+			} else {
+				Err(NotInteger)
+			}
 		_ => LoweringBasics.integer_arithmetic({ operator, left, right })
 	}
 
@@ -2070,6 +2076,13 @@ integers_kept = |site, { instruction, state, demoted, joined }| {
 		PushNull | PushUndefined | LoadBoxed(_) | UpdateLocal(_) => keeping(0, [])
 		Pop | Duplicate => keeping(0, [])
 		StoreLocal(slot) | SetLocal(slot) => keeping(1, [integer_storable(site, { slot, demoted })])
+		# A bitwise operator takes its operands' `Integer`s as they are, and
+		# fuses with no jump.
+		Binary(operator, _) if LoweringBasics.is_bitwise(operator) and depth >= 2 => {
+			takes = [below(1), below(0)].all(LoweringBasics.takes_bitwise)
+			keeping(2, [takes, takes])
+		}
+		Unary(BitNot, _) if depth >= 1 => keeping(1, [True])
 		Binary(operator, _) if jumps_next and !joined =>
 			if is_integer_test(operator) and integers_on_top(state) {
 				List.repeat(False, depth - 2).concat([True, True])
@@ -3265,7 +3278,10 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 			]
 			Ok(LoweringBasics.falling(items, state))
 		}
+		Unary(BitNot, _) => OperatorLowering.bitwise_not_items(site, state)
 		Unary(operator, _) => OperatorLowering.unary_items(site, { state, operator })
+		Binary(operator, _) if LoweringBasics.is_bitwise(operator) =>
+			OperatorLowering.bitwise_items(site, { state, operator, checked })
 		Binary(operator, _) =>
 			match LoweringBasics.integer_arithmetic({
 				operator,

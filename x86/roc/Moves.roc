@@ -185,10 +185,16 @@ register_accesses = |instruction|
 			reads: both(both(general_unit(Rax), general_unit(Rdx)), general_unit(register)),
 			writes: both(general_unit(Rax), general_unit(Rdx)),
 		})
-		Shift({ operation: _, reg, count: _ }) => Ok({
+		Shift({ operation: _, reg, count: _ }) | Not(reg) => Ok({
 			reads: general_unit(reg),
 			writes: general_unit(reg),
 		})
+		ShiftCl({ operation: _, reg }) => Ok({
+			reads: both(general_unit(reg), general_unit(Rcx)),
+			writes: general_unit(reg),
+		})
+		Movsxd({ to, from }) | Mov32({ to, from }) =>
+			Ok({ reads: general_unit(from), writes: general_unit(to) })
 		Test({ left, right }) => Ok({
 			reads: both(general_unit(left), general_unit(right)),
 			writes: 0,

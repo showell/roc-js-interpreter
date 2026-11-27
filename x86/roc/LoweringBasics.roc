@@ -288,6 +288,59 @@ LoweringBasics :: [].{
 			_ => Err(NotInteger)
 		}
 
+	## Whether an operator is a bitwise one: `&`, `|`, `^`, `<<`, `>>` or
+	## `>>>`.
+	is_bitwise : Ast.BinaryOperator -> Bool
+	is_bitwise = |operator|
+		match operator {
+			BitAnd | BitOr | BitExclusiveOr => True
+			ShiftLeft | ShiftRight | ShiftRightUnsigned => True
+			_ => False
+		}
+
+	## Whether a bitwise operator takes an operand of this kind: an `Integer`
+	## as it is, a number or a value made its 32-bit integer as it runs (a
+	## value that isn't a number stops the program). Any other kind is a
+	## coercion, refused.
+	takes_bitwise : LoweringBasics.Kind -> Bool
+	takes_bitwise = |kind|
+		match kind {
+			Integer(_) | Number | Value => True
+			_ => False
+		}
+
+	## The `Integer` a bitwise operator gives, whatever its operands' kinds:
+	## a signed 32-bit integer, or an unsigned one for `>>>`, its range
+	## narrowed where the operands' ranges say (x86/README.md, "The bitwise
+	## operators"). An operand's range counts only when it lies within 32
+	## bits, signed (or unsigned, for `>>>`'s first): any other wraps.
+	bitwise_kind : {
+		operator : Ast.BinaryOperator,
+		left : LoweringBasics.Kind,
+		right : LoweringBasics.Kind,
+	} -> LoweringBasics.Kind
+	bitwise_kind = |{ operator, left, right }| {
+		one = signed_range(left)
+		other = signed_range(right)
+		count = shift_count_of(right)
+		range = match operator {
+			BitAnd => anded_range(one, other)
+			BitOr | BitExclusiveOr => united_range(one, other)
+			ShiftLeft => left_shifted_range(one, count)
+			ShiftRight => right_shifted_range(one, count)
+			_ => unsigned_shifted_range(unsigned_range(left), count)
+		}
+		Integer(range)
+	}
+
+	## The `Integer` `~` gives: the operand's 32 bits turned over, so a range
+	## within 32 bits, signed, is its mirror less 1.
+	bitwise_not_kind : LoweringBasics.Kind -> LoweringBasics.Kind
+	bitwise_not_kind = |kind| {
+		range = signed_range(kind)
+		Integer({ low: -1 - range.high, high: -1 - range.low })
+	}
+
 	## The `Integer` a slot holding `kind` holds after `++` or `--` steps it
 	## by `delta`.
 	integer_stepped : LoweringBasics.Kind, F64 -> Try(LoweringBasics.Kind, [NotInteger])
@@ -866,6 +919,121 @@ integer_remainder = |dividend, divisor| {
 	}
 }
 
+## A range of integers, as an `Integer` holds one.
+WordRange : { low : I64, high : I64 }
+
+## Every signed 32-bit integer.
+every_signed : WordRange
+every_signed = { low: -2147483648, high: 2147483647 }
+
+## Every unsigned 32-bit integer.
+every_unsigned : WordRange
+every_unsigned = { low: 0, high: 4294967295 }
+
+## The signed 32-bit integers an operand of this kind is made: its own
+## range when it is an `Integer` within them, else any.
+signed_range : LoweringBasics.Kind -> WordRange
+signed_range = |kind|
+	match kind {
+		Integer(range) if range.low >= every_signed.low and range.high <= every_signed.high => range
+		_ => every_signed
+	}
+
+## The unsigned 32-bit integers `>>>`'s first operand of this kind is made:
+## its own range when it is an `Integer` within them, else any.
+unsigned_range : LoweringBasics.Kind -> WordRange
+unsigned_range = |kind|
+	match kind {
+		Integer(range) if range.low >= 0 and range.high <= every_unsigned.high => range
+		_ => every_unsigned
+	}
+
+## A shift's count, 0 to 31, when its operand is one known integer.
+shift_count_of : LoweringBasics.Kind -> Try(U8, [Unknown])
+shift_count_of = |kind|
+	match kind {
+		Integer({ low, high }) if low == high => Ok(I64.bitwise_and(low, 31).to_u8_wrap())
+		_ => Err(Unknown)
+	}
+
+## `&` of two ranges: at most a side that can't be negative, whose bits the
+## answer is among.
+anded_range : WordRange, WordRange -> WordRange
+anded_range = |one, other|
+	if one.low >= 0 and other.low >= 0 {
+		{ low: 0, high: I64.min(one.high, other.high) }
+	} else if one.low >= 0 {
+		{ low: 0, high: one.high }
+	} else if other.low >= 0 {
+		{ low: 0, high: other.high }
+	} else {
+		every_signed
+	}
+
+## `|` or `^` of two ranges: two sides that can't be negative give an answer
+## among the bits of the larger one's highest.
+united_range : WordRange, WordRange -> WordRange
+united_range = |one, other|
+	if one.low >= 0 and other.low >= 0 {
+		{ low: 0, high: ones_through(I64.max(one.high, other.high)) }
+	} else {
+		every_signed
+	}
+
+## The least `2^k - 1` at least `most`, at least 0: every bit up to
+## `most`'s highest set.
+ones_through : I64 -> I64
+ones_through = |most| {
+	var $ones = 0
+	while $ones < most {
+		$ones = $ones * 2 + 1
+	}
+	$ones
+}
+
+## `<<` of a range by a known count: each end shifted, when both stay
+## within 32 bits, signed; any other gives any.
+left_shifted_range : WordRange, Try(U8, [Unknown]) -> WordRange
+left_shifted_range = |range, count|
+	match count {
+		Ok(by) => {
+			low = range.low.shl_wrap(by)
+			high = range.high.shl_wrap(by)
+			if low >= every_signed.low and high <= every_signed.high {
+				{ low, high }
+			} else {
+				every_signed
+			}
+		}
+		Err(Unknown) => every_signed
+	}
+
+## `>>` of a range: each end shifted by a known count (rounding down, as
+## the arithmetic shift does); by any count, the range with 0, or -1 for one
+## all below it, taken in.
+right_shifted_range : WordRange, Try(U8, [Unknown]) -> WordRange
+right_shifted_range = |range, count|
+	match count {
+		Ok(by) => { low: range.low.shr_wrap(by), high: range.high.shr_wrap(by) }
+		Err(Unknown) => {
+			low: I64.min(range.low, 0),
+			high: if range.high >= 0 {
+				range.high
+			} else {
+				-1
+			},
+		}
+	}
+
+## `>>>` of an unsigned range: each end shifted by a known count; by any
+## count, from 0 to its most.
+unsigned_shifted_range : WordRange, Try(U8, [Unknown]) -> WordRange
+unsigned_shifted_range = |range, count|
+	match count {
+		Ok(by) => { low: range.low.shr_wrap(by), high: range.high.shr_wrap(by) }
+		Err(Unknown) => { low: 0, high: range.high }
+	}
+
 ## `dividend` over `divisor`, at least 1, rounded down.
 floor_of_quotient : I64, I64 -> I64
 floor_of_quotient = |dividend, divisor| {
@@ -955,6 +1123,50 @@ expect {
 		and quotient((-9, -5), (2, 3)) == between(-5, -2)
 		and quotient((0, 10), (0, 4)) == Err(NotInteger)
 		and quotient((0, 10), (-3, -1)) == Err(NotInteger)
+}
+
+# A bitwise operator's answer is a 32-bit integer whatever its operands, its
+# range narrowed by theirs: `x & 255` is 0 to 255 of any `x`, `>>> 0` 0 to
+# 2^32 - 1, `>> k` shrinks a range by 2^k, `|` of two that can't be negative
+# fills the larger one's bits, and an operand past 32 bits narrows nothing.
+expect {
+	given = |(low, high)| Integer({ low, high })
+	whole = |low, high| Integer({ low, high })
+	ranged = |operator| |left, right|
+		LoweringBasics.bitwise_kind({
+			operator,
+			left: given(left),
+			right: given(right),
+		})
+	numbered = |operator| |right|
+		LoweringBasics.bitwise_kind({
+			operator,
+			left: Number,
+			right: given(right),
+		})
+	anded = ranged(BitAnd)
+	unsigned = ranged(ShiftRightUnsigned)
+	signed = ranged(ShiftRight)
+	shifted = ranged(ShiftLeft)
+	every = whole(-2147483648, 2147483647)
+	numbered(BitAnd)((255, 255)) == whole(0, 255)
+		and anded((0, 1000), (0, 15)) == whole(0, 15)
+		and anded((0, 4294967295), (255, 255)) == whole(0, 255)
+		and ranged(BitOr)((0, 5), (0, 9)) == whole(0, 15)
+		and ranged(BitExclusiveOr)((0, 6), (1, 1)) == whole(0, 7)
+		and ranged(BitOr)((-1, 5), (1, 1)) == every
+		and numbered(ShiftRightUnsigned)((0, 0)) == whole(0, 4294967295)
+		and numbered(ShiftRightUnsigned)((28, 28)) == whole(0, 15)
+		and unsigned((0, 1000), (0, 31)) == whole(0, 1000)
+		and signed((-1000, 1000), (3, 3)) == whole(-125, 125)
+		and signed((-1000, 1000), (35, 35)) == whole(-125, 125)
+		and signed((-9, -3), (0, 31)) == whole(-9, -1)
+		and numbered(ShiftRight)((16, 16)) == whole(-32768, 32767)
+		and shifted((0, 255), (8, 8)) == whole(0, 65280)
+		and shifted((0, 255), (24, 24)) == every
+		and shifted((0, 4294967296), (1, 1)) == every
+		and LoweringBasics.bitwise_not_kind(whole(0, 255)) == whole(-256, -1)
+		and LoweringBasics.bitwise_not_kind(Value) == every
 }
 
 # A literal is an `Integer` when it is whole, within ±2^53 and not -0; a

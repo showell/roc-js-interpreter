@@ -253,6 +253,9 @@ IndexLowering :: [].{
 			SetLocal(slot) => stored(slot, pushed(0, Other))
 			Pop | JumpIfFalse(_) => pushed(0, Other)
 			Binary(operator, _) if is_whole_step(operator) and both_whole => pushed(1, Whole)
+			# A bitwise operator's answer is a 32-bit integer, whatever it
+			# was given.
+			Binary(operator, _) if LoweringBasics.is_bitwise(operator) => pushed(1, Whole)
 			Binary(
 				operator,
 				_,

@@ -141,6 +141,12 @@ Runtime :: [].{
 	remainder : Str
 	remainder = "runtime_remainder"
 
+	## The routine that gives the bitwise operators' ToInt32 of `rdi`, a
+	## number, in `rax`, sign-extended to 64 bits, and stops for any other
+	## value. It changes `rcx`, `rdx`, `r8` and `xmm0`.
+	word_of : Str
+	word_of = "runtime_word_of"
+
 	## The routine that gives a `for ... of`'s next item: of the array `rdi`
 	## at the place `rsi` (a number), the item in `rax` and 1 in `rdx`, or 0
 	## in `rdx` past the end.
@@ -1870,7 +1876,15 @@ container_items = {
 ## `runtime_remainder`, by `idiv`: the remainder has the dividend's sign,
 ## and a zero one is -0 when the dividend is negative; `% 0` is NaN, and so
 ## is the remainder of an infinity or a NaN (its exponent's bits all set).
-## `runtime_next_item`, for `for ... of`.
+## `runtime_next_item`, for `for ... of`. `runtime_word_of`, for the
+## bitwise operators: a number below 2^63 in size is truncated by
+## `cvttsd2si`, whose low 32 bits are its ToInt32; NaN, an infinity and
+## anything larger give `cvttsd2si`'s -2^63, the one value `cmp rax, 1`
+## overflows on. Of those, NaN and the infinities (the exponent's bits all
+## set) give 0, and a finite number of 2^63 or more in size is its 53 bits
+## of mantissa shifted up by its exponent less 1075, at least 11: by 32 or
+## more its low 32 bits are 0, and by less they are the mantissa's shifted,
+## negated for a negative number.
 loop_items : List(Assembly.Statement)
 loop_items = {
 	remainder = [Emit.mark(Runtime.remainder)]
@@ -1981,5 +1995,45 @@ loop_items = {
 			Emit.zero(Rcx),
 			Emit.ret,
 		])
-	[remainder, next_item].join()
+	word_of = [Emit.mark(Runtime.word_of)]
+		.concat(RuntimeBuilders.unless_number_items({ reg: Rdi, label: Runtime.not_a_number_stop }))
+		.concat([
+			Emit.to_xmm(Xmm0, Rdi),
+			Instruction(Cvttsd2si({ to: Rax, from: Xmm0 })),
+			Emit.cmp_imm(Rax, 1),
+			Emit.jcc(O, "runtime_word_of_large"),
+			Instruction(Movsxd({ to: Rax, from: Rax })),
+			Emit.ret,
+			Emit.mark("runtime_word_of_large"),
+			Emit.mov(Rcx, Rdi),
+			Emit.shr(Rcx, 52),
+			Emit.bit_and_imm(Rcx, 0x7FF),
+			Emit.cmp_imm(Rcx, 0x7FF),
+			Emit.jcc(E, "runtime_word_of_zero"),
+			Emit.minus_imm(Rcx, 1075),
+			Emit.cmp_imm(Rcx, 32),
+			Emit.jcc(Ae, "runtime_word_of_zero"),
+			Emit.mov(Rdx, Rdi),
+			Emit.shl(Rdx, 12),
+			Emit.shr(Rdx, 12),
+			Emit.imm(R8, 0x10000000000000),
+			Instruction(
+				Alu({
+					operation: Or,
+					to: Rdx,
+					from: R8,
+				}),
+			),
+			Instruction(ShiftCl({ operation: Shl, reg: Rdx })),
+			Emit.test(Rdi, Rdi),
+			Emit.jcc(Ns, "runtime_word_of_positive"),
+			Instruction(Neg(Rdx)),
+			Emit.mark("runtime_word_of_positive"),
+			Instruction(Movsxd({ to: Rax, from: Rdx })),
+			Emit.ret,
+			Emit.mark("runtime_word_of_zero"),
+			Emit.zero(Rax),
+			Emit.ret,
+		])
+	[remainder, next_item, word_of].join()
 }

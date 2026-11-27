@@ -132,6 +132,19 @@ X86 :: [].{
 				count : U8,
 			},
 		),
+		# The register shifted by `cl`, which the processor takes modulo 64
+		# (`shl r64, cl`): the bitwise operators' shifts by a count known only
+		# as the program runs, its count made modulo 32 first.
+		ShiftCl({ operation : X86.ShiftOperation, reg : X86.Register }),
+		# `from`'s low 32 bits, sign-extended into `to` (`movsxd r64, r32`):
+		# a bitwise operator's answer made the signed 32-bit integer it is.
+		Movsxd({ to : X86.Register, from : X86.Register }),
+		# `from`'s low 32 bits, zero-extended into `to` (`mov r32, r32`, which
+		# clears the upper half as every write of a 32-bit register does):
+		# `>>>`'s operand made the unsigned 32-bit integer it is.
+		Mov32({ to : X86.Register, from : X86.Register }),
+		# Every bit of the register turned over (`not r64`): `~`.
+		Not(X86.Register),
 		Push(X86.Register),
 		Pop(X86.Register),
 		Jmp(I32),
@@ -357,20 +370,47 @@ X86 :: [].{
 				}),
 			)
 			Shift({ operation, reg, count }) => {
-				digit = match operation {
-					Shl => 4
-					Shr => 5
-					Sar => 7
-				}
 				append_encoded(
 					out,
 					{ ..integer_layout({
 						opcode: [0xC1],
-						reg: digit,
+						reg: shift_digit(operation),
 						operand: Direct(register_number(reg)),
 					}), immediate: Imm8(count.to_i64()) },
 				)
 			}
+			ShiftCl({ operation, reg }) => append_encoded(
+				out,
+				integer_layout({
+					opcode: [0xD3],
+					reg: shift_digit(operation),
+					operand: Direct(register_number(reg)),
+				}),
+			)
+			Movsxd({ to, from }) => append_encoded(
+				out,
+				integer_layout({
+					opcode: [0x63],
+					reg: register_number(to),
+					operand: Direct(register_number(from)),
+				}),
+			)
+			Mov32({ to, from }) => append_encoded(
+				out,
+				{ ..integer_layout({
+					opcode: [0x89],
+					reg: register_number(from),
+					operand: Direct(register_number(to)),
+				}), wide: Narrow },
+			)
+			Not(reg) => append_encoded(
+				out,
+				integer_layout({
+					opcode: [0xF7],
+					reg: 2,
+					operand: Direct(register_number(reg)),
+				}),
+			)
 			Push(reg) => append_short(out, { opcode: 0x50, reg })
 			Pop(reg) => append_short(out, { opcode: 0x58, reg })
 			Jmp(offset) => X86.append_little_endian(
@@ -743,6 +783,17 @@ X86 :: [].{
 			count: 48,
 		}),
 	) == "48 c1 e9 30"
+	expect hex_of(ShiftCl({ operation: Shl, reg: Rax })) == "48 d3 e0"
+	expect hex_of(ShiftCl({ operation: Sar, reg: Rax })) == "48 d3 f8"
+	expect hex_of(ShiftCl({ operation: Shr, reg: R10 })) == "49 d3 ea"
+	expect hex_of(Movsxd({ to: Rax, from: Rax })) == "48 63 c0"
+	expect hex_of(Movsxd({ to: R9, from: Rcx })) == "4c 63 c9"
+	expect hex_of(Movsxd({ to: Rdx, from: R11 })) == "49 63 d3"
+	expect hex_of(Mov32({ to: Rax, from: Rax })) == "89 c0"
+	expect hex_of(Mov32({ to: Rcx, from: Rdx })) == "89 d1"
+	expect hex_of(Mov32({ to: R9, from: R10 })) == "45 89 d1"
+	expect hex_of(Not(Rax)) == "48 f7 d0"
+	expect hex_of(Not(R11)) == "49 f7 d3"
 	expect hex_of(MovzxByteLoad({ to: Rax, from: at_base(Rsi, 0) })) == "48 0f b6 06"
 	expect hex_of(MovzxByteLoad({ to: R9, from: at_base(Rdi, 8) })) == "4c 0f b6 4f 08"
 	expect hex_of(
@@ -832,6 +883,15 @@ X86 :: [].{
 	expect hex_of(MovqFromXmm({ to: Rax, from: Xmm0 })) == "66 48 0f 7e c0"
 	expect hex_of(MovqFromXmm({ to: R9, from: Xmm10 })) == "66 4d 0f 7e d1"
 }
+
+## A shift's /digit, the ModRM reg field that names it.
+shift_digit : X86.ShiftOperation -> U8
+shift_digit = |operation|
+	match operation {
+		Shl => 4
+		Shr => 5
+		Sar => 7
+	}
 
 ## Whether an instruction's general register operands are 64 bits wide
 ## (REX.W), as every integer instruction here is, or not, as the SSE2

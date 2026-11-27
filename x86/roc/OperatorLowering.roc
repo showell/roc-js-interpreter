@@ -46,6 +46,7 @@
 ## size, and x86/tests/remainder-constant.js holds the whole of it to node.
 import js.Ast
 import js.Bytecode
+import js.ValueRules
 import Assembly
 import Boxing
 import Emit
@@ -370,6 +371,110 @@ OperatorLowering :: [].{
 				)
 			}
 		}
+	}
+
+	## A bitwise operator on the two values on top (x86/README.md, "The
+	## bitwise operators"), its answer in the first's place: each operand
+	## made its 32-bit integer in its own place (`word_items`), then the
+	## operator on the low 32 bits of `rax` and `rcx` (or an immediate, for a
+	## side known before the program runs), the answer sign-extended from 32
+	## bits (`movsxd`), or for `>>>` its operand zero-extended first
+	## (`mov eax, eax`). A shift's count is made modulo 32 (`and ecx, 31`),
+	## since the processor's 64-bit shifts take it modulo 64. The answer is
+	## an `Integer` of `LoweringBasics.bitwise_kind`'s range, or a double in a
+	## program with a `try`, where no `Integer` is made.
+	bitwise_items : LoweringBasics.Site,
+	{
+		state : LoweringBasics.State,
+		operator : Ast.BinaryOperator,
+		checked : IndexLowering.Checked,
+	} -> Try(LoweringBasics.Lowered, [Refused(Str)])
+	bitwise_items = |site, { state, operator, checked }| {
+		depth = state.stack_kinds.len()
+		left = LoweringBasics.stack_place(site.code, depth - 2)
+		right = LoweringBasics.stack_place(site.code, depth - 1)
+		kinds = (LoweringBasics.kind_below(state, 1), LoweringBasics.kind_below(state, 0))
+		if !LoweringBasics.takes_bitwise(kinds.0) or !LoweringBasics.takes_bitwise(kinds.1) {
+			first = LoweringBasics.kind_phrase(kinds.0)
+			second = LoweringBasics.kind_phrase(kinds.1)
+			return LoweringBasics.refusal(
+				site,
+				"`${bitwise_symbol(operator)}` of ${first} and ${second} is not compiled yet",
+			)
+		}
+		origin = |down|
+			if checked.origins.len() == depth {
+				checked.origins.get(depth - 1 - down) ?? Other
+			} else {
+				Other
+			}
+		side = |{ kind, down, place, piece }| {
+			constant = word_constant(kind, origin(down))
+			{ constant, made: word_items(site, { kind, place, constant, piece }) }
+		}
+		one = side({
+			kind: kinds.0,
+			down: 1,
+			place: left,
+			piece: "left_word",
+		})
+		other = side({
+			kind: kinds.1,
+			down: 0,
+			place: right,
+			piece: "right_word",
+		})
+		loaded = match one.constant {
+			Ok(word) => [Emit.imm(Rax, word)]
+			Err(Unknown) => [Emit.load(Rax, left)]
+		}
+		# `&` with a side whose 64 bits are an integer of 0 to 2^31 - 1 clears
+		# every bit from 31 up, so its answer needs no sign-extending.
+		masked = is_low_word(kinds.0, one.constant) or is_low_word(kinds.1, other.constant)
+		operated = word_operation_items({ operator, count: other.constant, right, masked })
+		kind = LoweringBasics.bitwise_kind({ operator, left: kinds.0, right: kinds.1 })
+		statements = one.made
+			.concat(other.made)
+			.concat(loaded)
+			.concat(operated)
+			.concat(word_stored_items(site, left))
+		after = LoweringBasics.with_top(LoweringBasics.without_top(state, 2), word_kind(site, kind))
+		Ok(LoweringBasics.falling(statements, after))
+	}
+
+	## `~` of the value on top, in its place: the operand made its 32-bit
+	## integer (`word_items`), its bits turned over, and the answer
+	## sign-extended from 32 bits, an `Integer` of
+	## `LoweringBasics.bitwise_not_kind`'s range (a double where a `try` is).
+	bitwise_not_items : LoweringBasics.Site,
+	LoweringBasics.State -> Try(
+		LoweringBasics.Lowered,
+		[Refused(Str)],
+	)
+	bitwise_not_items = |site, state| {
+		top = LoweringBasics.stack_place(site.code, state.stack_kinds.len() - 1)
+		kind = LoweringBasics.kind_below(state, 0)
+		if !LoweringBasics.takes_bitwise(kind) {
+			phrase = LoweringBasics.kind_phrase(kind)
+			return LoweringBasics.refusal(site, "`~` of ${phrase} is not compiled yet")
+		}
+		made = word_items(
+			site,
+			{
+				kind,
+				place: top,
+				constant: Err(Unknown),
+				piece: "word",
+			},
+		)
+		turned = [
+			Emit.load(Rax, top),
+			Instruction(Not(Rax)),
+			Instruction(Movsxd({ to: Rax, from: Rax })),
+		]
+		answer = word_kind(site, LoweringBasics.bitwise_not_kind(kind))
+		after = LoweringBasics.with_top(LoweringBasics.without_top(state, 1), answer)
+		Ok(LoweringBasics.falling(made.concat(turned).concat(word_stored_items(site, top)), after))
 	}
 
 	## An ordering of the two values on top that may be numbers, followed by a
@@ -1198,6 +1303,149 @@ OperatorLowering :: [].{
 		})
 	}
 }
+
+## A bitwise operator's symbol, for its refusal.
+bitwise_symbol : Ast.BinaryOperator -> Str
+bitwise_symbol = |operator|
+	match operator {
+		BitAnd => "&"
+		BitOr => "|"
+		BitExclusiveOr => "^"
+		ShiftLeft => "<<"
+		ShiftRight => ">>"
+		_ => ">>>"
+	}
+
+## A bitwise operand's 32-bit integer, sign-extended, when it is known
+## before the program runs: an `Integer` of one value, or a number literal
+## (`origin`, IndexLowering's), made so by the interpreter's own rule
+## (`ValueRules.word_of`, ECMAScript's ToInt32).
+word_constant : LoweringBasics.Kind, IndexLowering.Origin -> Try(I64, [Unknown])
+word_constant = |kind, origin|
+	match (kind, origin) {
+		(Integer({ low, high }), _) if low == high => Ok(low.to_i32_wrap().to_i64())
+		(Number, Literal(number)) => Ok(ValueRules.word_of(number).to_i32_wrap().to_i64())
+		_ => Err(Unknown)
+	}
+
+## The statements that make a bitwise operand at `place` its 32-bit integer
+## in place, as 64 bits whose low 32 are its ToInt32: none for a constant
+## or an `Integer`, whose bits are its integer already; for a number, a
+## `cvttsd2si` in line, which `runtime_word_of` stands in for when it gives
+## -2^63 (NaN, an infinity, or 2^63 or more in size: `cmp rax, 1`
+## overflows on it alone); for a value, `runtime_word_of`, which stops the
+## program unless it is a number.
+word_items : LoweringBasics.Site,
+{
+	kind : LoweringBasics.Kind,
+	place : X86.Mem,
+	constant : Try(I64, [Unknown]),
+	piece : Str,
+} -> List(Assembly.Statement)
+word_items = |site, { kind, place, constant, piece }| {
+	called = [Emit.load(Rdi, place), Emit.call(Runtime.word_of)]
+	match (kind, constant) {
+		(_, Ok(_)) | (Integer(_), _) => []
+		(Number, _) => {
+			done = LoweringBasics.inner_label(site, piece)
+			[
+				Instruction(MovsdLoad({ to: Xmm0, from: place })),
+				Instruction(Cvttsd2si({ to: Rax, from: Xmm0 })),
+				Emit.cmp_imm(Rax, 1),
+				Emit.jcc(No, done),
+			]
+				.concat(called)
+				.concat([Emit.mark(done), Emit.store(place, Rax)])
+		}
+		_ => called.append(Emit.store(place, Rax))
+	}
+}
+
+## A bitwise operator on `rax`'s low 32 bits and the second operand's (an
+## immediate when `count` knows it, else `rcx`, loaded from `right`), its
+## answer sign-extended in `rax`, or zero-extended for `>>>`.
+word_operation_items : {
+	operator : Ast.BinaryOperator,
+	count : Try(I64, [Unknown]),
+	right : X86.Mem,
+	masked : Bool,
+} -> List(Assembly.Statement)
+word_operation_items = |{ operator, count, right, masked }| {
+	extended = Instruction(Movsxd({ to: Rax, from: Rax }))
+	combined = |operation|
+		match count {
+			Ok(word) => [
+				Instruction(AluImm({ operation, to: Rax, value: word.to_i32_wrap() })),
+				extended,
+			]
+			Err(Unknown) => [
+				Emit.load(Rcx, right),
+				Instruction(Alu({ operation, to: Rax, from: Rcx })),
+				extended,
+			]
+		}
+	shifted = |operation|
+		match count {
+			Ok(word) if I64.bitwise_and(word, 31) == 0 => []
+			Ok(word) => [
+				Instruction(
+					Shift({
+						operation,
+						reg: Rax,
+						count: I64.bitwise_and(word, 31).to_u8_wrap(),
+					}),
+				),
+			]
+			Err(Unknown) => [
+				Emit.load(Rcx, right),
+				Emit.bit_and_imm(Rcx, 31),
+				Instruction(ShiftCl({ operation, reg: Rax })),
+			]
+		}
+	match operator {
+		BitAnd if masked => combined(And).drop_last(1)
+		BitAnd => combined(And)
+		BitOr => combined(Or)
+		BitExclusiveOr => combined(Xor)
+		ShiftLeft => shifted(Shl).append(extended)
+		ShiftRight => [extended].concat(shifted(Sar))
+		_ => [Instruction(Mov32({ to: Rax, from: Rax }))].concat(shifted(Shr))
+	}
+}
+
+## Whether a bitwise operand's 64 bits, as `rax` or `rcx` holds them, are
+## an integer of 0 to 2^31 - 1: a constant so, or an `Integer` whose range
+## lies there. (A number made its 32-bit integer in line may hold any 64.)
+is_low_word : LoweringBasics.Kind, Try(I64, [Unknown]) -> Bool
+is_low_word = |kind, constant|
+	match (kind, constant) {
+		(_, Ok(word)) => word >= 0
+		(Integer({ low, high }), _) => low >= 0 and high <= 2147483647
+		_ => False
+	}
+
+## A bitwise operator's answer in `rax` stored at `place`: as the integer it
+## is, or made a double where a `try` is (`word_kind`).
+word_stored_items : LoweringBasics.Site, X86.Mem -> List(Assembly.Statement)
+word_stored_items = |site, place|
+	if site.context.trying {
+		[
+			Instruction(Cvtsi2sd({ to: Xmm0, from: Rax })),
+			Instruction(MovsdStore({ to: place, from: Xmm0 })),
+		]
+	} else {
+		[Emit.store(place, Rax)]
+	}
+
+## A bitwise operator's answer's kind: its `Integer`, or a number in a
+## program with a `try`, where a throw lands with every value a value.
+word_kind : LoweringBasics.Site, LoweringBasics.Kind -> LoweringBasics.Kind
+word_kind = |site, kind|
+	if site.context.trying {
+		Number
+	} else {
+		kind
+	}
 
 ## An operator's statements for two values that may be numbers: `fast_items`,
 ## in line, when both are numbers (a known number's tag isn't tested), else

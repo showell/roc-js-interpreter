@@ -49,3 +49,5 @@
 59-class-extends.js
 60-many-instances.js
 61-classes-tour.js
+62-bitwise.js
+63-bitwise-kernel.js
