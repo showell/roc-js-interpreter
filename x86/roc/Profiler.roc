@@ -10,10 +10,11 @@
 ##
 ## Without the argument it does nothing: the start's test of the argument
 ## is the only cost. A sample outside the code is not counted. The handler
-## changes registers freely, since the kernel restores them all at
-## `rt_sigreturn`, and touches neither the heap nor the runtime's state.
+## changes registers freely, since the kernel restores them all when the
+## signal returns, and touches neither the heap nor the runtime's state.
 import Assembly
 import Emit
+import X86
 
 Profiler :: [].{
 
@@ -70,7 +71,8 @@ Profiler :: [].{
 		Emit.syscall,
 		Emit.test(Rax, Rax),
 		Emit.jcc(S, "runtime_profile_off"),
-		# rt_sigaction(SIGPROF, {handler, SA_SIGINFO | SA_RESTORER | SA_RESTART, restorer, no mask}, 0, 8)
+		# rt_sigaction(SIGPROF, the action, 0, 8): the handler, SA_SIGINFO,
+		# SA_RESTORER and SA_RESTART, the return, and no mask.
 		Emit.minus_imm(Rsp, 32),
 		Emit.address_of(Rax, "runtime_profile_sample"),
 		Emit.store(Emit.mem(Rsp, 0), Rax),
@@ -114,19 +116,9 @@ Profiler :: [].{
 		Emit.cmp(Rax, Rcx),
 		Emit.jcc(Ae, "runtime_profile_sampled"),
 		Emit.imm(Rcx, counts_address),
-		Instruction(
-			MovRegMem({
-				to: Rdx,
-				from: Based({ base: Rcx, index: Scaled({ reg: Rax, scale: Times8 }), displacement: 0 }),
-			}),
-		),
+		Instruction(MovRegMem({ to: Rdx, from: count_place })),
 		Emit.plus_imm(Rdx, 1),
-		Instruction(
-			MovMemReg({
-				to: Based({ base: Rcx, index: Scaled({ reg: Rax, scale: Times8 }), displacement: 0 }),
-				from: Rdx,
-			}),
-		),
+		Instruction(MovMemReg({ to: count_place, from: Rdx })),
 		Emit.mark("runtime_profile_sampled"),
 		Emit.ret,
 		Emit.mark("runtime_profile_return"),
@@ -136,6 +128,14 @@ Profiler :: [].{
 		Data("x86.prof".to_utf8().append(0)),
 	]
 }
+
+## The count of the code byte in `rax`, the counts at `rcx`.
+count_place : X86.Mem
+count_place = Based({
+	base: Rcx,
+	index: Scaled({ reg: Rax, scale: Times8 }),
+	displacement: 0,
+})
 
 ## A word of at most 8 bytes as the little-endian bits a load of it gives,
 ## the bytes past it zero (a string's terminating NUL).

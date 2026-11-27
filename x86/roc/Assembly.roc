@@ -54,7 +54,10 @@ Assembly :: [].{
 
 	## The code for `items` with each label's place in it, for reading the
 	## code back (js-x86's `labels`), or `assemble`'s refusals.
-	laid_out : List(Assembly.Statement) -> Try({ bytes : List(U8), marks : Dict(Str, U64) }, [UnknownLabel(Str), DuplicateLabel(Str)])
+	laid_out : List(Assembly.Statement) -> Try(
+		{ bytes : List(U8), marks : Dict(Str, U64) },
+		[UnknownLabel(Str), DuplicateLabel(Str)],
+	)
 	laid_out = |items| {
 		var $bytes = []
 		var $marks = Dict.empty()

@@ -886,10 +886,15 @@ OperatorLowering :: [].{
 				]
 			}
 		}
-		answered = match operator {
-			StrictEqual => [Emit.imm(Rcx, Boxing.true_bits), Emit.cmp(Rax, Rcx), Emit.jcc(Ne, label)]
-			_ => [Emit.imm(Rcx, Boxing.true_bits), Emit.cmp(Rax, Rcx), Emit.jcc(E, label)]
+		unequal = match operator {
+			StrictEqual => Ne
+			_ => E
 		}
+		answered = [
+			Emit.imm(Rcx, Boxing.true_bits),
+			Emit.cmp(Rax, Rcx),
+			Emit.jcc(unequal, label),
+		]
 		called = [
 			Emit.load(Rdi, left),
 			Emit.load(Rsi, right),
