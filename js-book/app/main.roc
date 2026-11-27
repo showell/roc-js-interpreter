@@ -1,6 +1,6 @@
-## This app builds the JavaScript book, A JavaScript Interpreter in Roc, on
-## the book platform with roc-apps' book builder, from the roc-apps checkout
-## beside this one. Its folder is the roc-js-interpreter checkout's root, so an include quotes the interpreter's code in js/ by its
+## This app builds the JavaScript book, JavaScript in Roc: A Compiler and an
+## Interpreter, on the book platform with roc-apps' book builder, from the
+## roc-apps checkout beside this one. Its folder is the roc-js-interpreter checkout's root, so an include quotes the interpreter's code in js/ by its
 ## path in the repository. Its pre-step, book.shale, draws the diagrams with
 ## Graphviz into `js-book/build/prepared/`, and this app reads the drawings
 ## through the platform, and a missing one stops the build, named. The
@@ -17,6 +17,7 @@ import bb.Builder
 import bb.Diagrams
 import bb.Fences
 import bb.Includes
+import bb.Pages
 import sc.SyntaxColor
 
 main! : Str => Try(Str, Str)
@@ -61,7 +62,34 @@ settings = {
 	manuscript: manuscript_path,
 	negatives: Lint({ words: "js-book/negative_words.txt", table: "js-book/negatives.txt" }),
 	colorer: colored_code,
+	look: { ..Builder.default_settings.look, dividers: parts },
 }
+
+## The book's four parts, each named above its first chapter in the contents.
+## A part's title lives here alone.
+parts : List(Pages.Divider)
+parts = [
+	{
+		before: "The front end",
+		level: Part,
+		title: "Part I: Shared machinery",
+	},
+	{
+		before: "The compiler to x86-64",
+		level: Part,
+		title: "Part II: The compiler",
+	},
+	{
+		before: "The VM and its machine",
+		level: Part,
+		title: "Part III: The interpreter",
+	},
+	{
+		before: "Why a compiler suits Roc",
+		level: Part,
+		title: "Part IV: What Roc taught",
+	},
+]
 
 ## Roc, JavaScript and Shale colored by roc-syntax-color, and any other
 ## language left as escaped text.

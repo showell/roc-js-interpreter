@@ -7,7 +7,7 @@ A subset of JavaScript run by a bytecode VM written in Roc, a web playground whe
 It has three parts, each with its own README or manuscript:
 
 - [js/](js/README.md): the interpreter, its playground and its tests. Its README says what the subset holds, how the VM and its collector work, and how each part is tested.
-- [js-book/](js-book/book.md): the book *A JavaScript Interpreter in Roc*, built with roc-apps' book builder. It tells how the interpreter came to be and what it taught us about Roc.
+- [js-book/](js-book/book.md): the book *JavaScript in Roc: A Compiler and an Interpreter*, built with roc-apps' book builder. It tells how the compiler and the interpreter work, how they came to be and what they taught us about Roc.
 - [x86/](x86/README.md): the start of a compiler from the subset to static Linux x86-64 executables, every byte written by Roc. It compiles numbers, booleans, strings, arrays and plain objects (NaN-boxed, on a heap with no collector yet), loops, recursive functions, closures, `switch` and exceptions so far, 17 of the corpus's 61 programs, and its fib beats node's wall-clock time.
 
 Both moved here from [roc-apps](https://github.com/showell/roc-apps) with their history, so a commit message older than the move may name a file of roc-apps that this repository doesn't have.
