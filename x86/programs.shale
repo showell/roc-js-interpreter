@@ -1,4 +1,4 @@
--- budget: steps=132000000
+-- budget: steps=132000000 arena_bytes=200000000
 -- x86/programs.shale: the x86-64 backend's programs, each held to node or to
 -- its refusal. From the repository's root:
 --
@@ -18,6 +18,10 @@
 --     without writing an executable, or `// stops: <text>`, a line the
 --     executable it writes prints as it exits 1 (a number console.log can't
 --     write yet), where node would print the number;
+--   - each race of RACES (a program outside x86/tests/, too long a run at
+--     its own size) is compiled and run at a small size, a copy with its
+--     `const` line set written under the build mount, and held to node's
+--     run of the copy the same way;
 --   - each program of the interpreter's corpus, js/tests/, is compiled and
 --     run the same way, and the ones that print what node prints must be
 --     exactly those x86/corpus.txt lists, one a line: a program that stops
@@ -56,6 +60,12 @@ const TORTURE = "gcalways"
 -- allocations, over a heap of 335 pages, takes minutes. Each is still held
 -- to node with HEAP_WALK, and collects there as its heap grows.
 const TORTURE_SKIPPED = {"x86/tests/join.js"}
+-- The races held here, each at a small size: its file, and the `const` line
+-- the copy sets. The SAT race's small workload restarts and reduces once
+-- (hole7), so its executable runs every part of the solver, in about 2 s.
+const RACES = {
+  {path = "x86/satrace/sat.js", name = "WORKLOAD", value = "\"small\""},
+}
 
 function js_files(dir)
   local out = {}
@@ -73,15 +83,23 @@ function executable_path(dir, js_path)
   return dir .. "/" .. re_replace(re_replace(js_path, "^x86/", ""), "[/.]", "-")
 end
 
--- Why the program at `js_path` failed, or nil.
-function held_to_node(exe, dir, js_path)
+-- Why the program at `js_path` failed, or nil. `copy`, when given, is the
+-- `{path, text}` of the copy to compile and to run under node in its place
+-- (a race's, at its small size).
+function held_to_node(exe, dir, js_path, copy?)
   local path = executable_path(dir, js_path)
-  local made = driver_run(exe, read(js_path))
+  local text = nil
+  local node_path = js_path
+  if copy == nil then text = read(js_path) else
+    text = copy.text
+    node_path = copy.path
+  end
+  local made = driver_run(exe, text)
   if made.code ~= 0 then return "js-x86 exited " .. made.code .. ": " .. trim(made.out) end
   replace(path, bytes_of_hex(WHO, made.out))
   must(run({"chmod", "755", real(path)}, {timeout_ms = 10000, whole = 4000}))
   local r = executable_run(path, HEAP_WALK)
-  local n = node_run(js_path)
+  local n = node_run(node_path)
   if n.code ~= 0 then return "node exited " .. n.code .. ": " .. trim(n.out) end
   if r.ended ~= "exit" or r.code ~= 0 then return "the executable ended " .. r.ended .. " " .. r.code .. ": " .. trim(r.out) end
   if r.out ~= n.out then return "it printed " .. json_write(r.out) .. ", node " .. json_write(n.out) end
@@ -209,12 +227,25 @@ function main()
     if why ~= nil then push(wrong, p .. ": " .. why) end
     yield()
   end
-  if #wrong > 0 then fail(WHO .. ": " .. #wrong .. " of " .. (#held + #refused) .. " programs failed:\n" .. join(wrong, "\n")) end
+  for race in RACES do
+    local pattern = "\nconst " .. race.name .. " = [^;\n]+;"
+    local text = read(race.path)
+    if re_find(text, pattern) == nil then
+      push(wrong, race.path .. ": no line `const " .. race.name .. " = ...;` to set")
+    else
+      local copy = {path = executable_path(dir, race.path) .. "-small.js", text = re_replace(text, pattern, "\nconst " .. race.name .. " = " .. race.value .. ";")}
+      replace(copy.path, copy.text)
+      local why = held_to_node(exe, dir, race.path, copy)
+      if why ~= nil then push(wrong, race.path .. " (" .. race.name .. " " .. race.value .. "): " .. why) end
+    end
+    yield()
+  end
+  if #wrong > 0 then fail(WHO .. ": " .. #wrong .. " of " .. (#held + #refused + #RACES) .. " programs failed:\n" .. join(wrong, "\n")) end
   local corpus = corpus_check(exe, dir)
   if #corpus.wrong > 0 and not REPORT then fail(WHO .. ": the corpus differs from " .. CORPUS .. ":\n" .. join(corpus.wrong, "\n")) end
   print("x86/programs: " .. inlined .. " across x86/tests/")
   print("x86/programs: " .. TORTURE .. " held every program but " .. join(TORTURE_SKIPPED, ", ") .. " to node too")
-  print("x86/programs: " .. #held .. " programs printed what node prints, " .. #refused .. " came to their refusals, and " .. corpus.matched .. " of the corpus's " .. corpus.all .. " match node, held exactly to " .. CORPUS)
+  print("x86/programs: " .. #held .. " programs and " .. #RACES .. " race at a small size printed what node prints, " .. #refused .. " came to their refusals, and " .. corpus.matched .. " of the corpus's " .. corpus.all .. " match node, held exactly to " .. CORPUS)
 end
 
 main()
