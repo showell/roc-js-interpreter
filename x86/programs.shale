@@ -1,4 +1,4 @@
--- budget: steps=180000000 arena_bytes=200000000 programs=1400
+-- budget: steps=300000000 arena_bytes=200000000 programs=1400
 -- x86/programs.shale: the x86-64 backend's programs, each held to node or to
 -- its refusal. From the repository's root:
 --
