@@ -439,6 +439,23 @@ Runtime :: [].{
 	collection_method : Str
 	collection_method = "runtime_collection_method"
 
+	## The routines a call site's guarded fast path calls, the Map's or the
+	## Set's record at `rdi` untagged and the key in `rsi`: `get`'s value
+	## (`undefined` for none), `has`'s and `delete`'s boolean, and `put`,
+	## which gives the key the value `rdx` in a Map and adds the key to a
+	## Set, answering nothing.
+	collection_get : Str
+	collection_get = "runtime_collection_get"
+
+	collection_has : Str
+	collection_has = "runtime_collection_has"
+
+	collection_delete : Str
+	collection_delete = "runtime_collection_delete"
+
+	collection_put : Str
+	collection_put = "runtime_collection_put"
+
 	## The routine that gives what a `for ... of` walks of `rdi`: an array,
 	## a Map, a Set or an iterator as it is, a string as its characters.
 	iter_start : Str
