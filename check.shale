@@ -22,7 +22,8 @@
 --   - js/dump.shale, which holds the bytecode dumper's output for one
 --     program exactly, and tools/machine_size.shale, which holds the VM's
 --     machine to its size inline exactly (past 256 bytes every instruction
---     calls memcpy);
+--     calls memcpy), and tools/roc_build_cache_test.shale, which holds the
+--     shared build cache's prune to never removing a build in use;
 --   - js/oracle.shale, which grades the bytecode VM against node on every
 --     program in js/tests/, and js/canvas.shale, which holds each canvas
 --     sample in js/canvas/ to its golden log of effects;
@@ -170,6 +171,7 @@ function all()
   script_check("js/canvas.shale", "the canvas samples against their logs")
   script_check("js/dump.shale", "the bytecode dumper's output for one program")
   script_check("tools/machine_size.shale", "the VM's machine held to its size inline")
+  script_check("tools/roc_build_cache_test.shale", "the shared build cache's prune never removing a build in use")
   script_check("x86/hello.shale", "the x86-64 backend's expects and its hello-world executable")
   script_check("x86/fib.shale", "the compiler's expects and fib, compiled and held to node", {"timing=0"})
   script_check("x86/programs.shale", "the compiled programs held to node, and the refused to their refusals")

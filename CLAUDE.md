@@ -20,7 +20,8 @@ Shale for every shell step. This file adds only what is particular here.
   moves with roc-apps' pin, in step, since the book is built by roc-apps'
   book builder, which holds its Roc to roc-apps' `roc-version`.
 - **Some tools are copies of roc-apps', on purpose:** the prelude's
-  `pinned_roc`, `built_roc` and `check_roc_version`, `tools/roc_build.shale`,
+  `pinned_roc`, `built_roc` and `check_roc_version`, `tools/roc_build.shale`
+  with `tools/roc_build_cache.shale` and its test,
   `tools/alloc_ladder.shale`, `tools/alloc_trace.shale` and
   `tools/chromium.mjs`. Each header names its twin; a fix to one is a fix to
   look at in the other.
