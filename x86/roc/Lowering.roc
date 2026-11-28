@@ -117,6 +117,7 @@ import BuiltinLowering
 import Emit
 import FrameValues
 import KnownFunctions
+import LoopInvariants
 import LoweringBasics
 import FieldSlots
 import Heap
@@ -814,8 +815,8 @@ field_read_items : LoweringBasics.Site,
 } -> List(Assembly.Statement)
 field_read_items = |site, { kind, key, receiver, slow_items }|
 	match (kind, site.context.field_slots.get(key)) {
-		(Object, Ok(slots)) | (Value, Ok(slots)) =>
-			FieldSlots.slot_read_items(
+		(Object, Ok(slots)) | (Value, Ok(slots)) => {
+			guarded = FieldSlots.slot_read_items(
 				site,
 				{
 					slots,
@@ -825,6 +826,21 @@ field_read_items = |site, { kind, key, receiver, slow_items }|
 					slow_items,
 				},
 			)
+			# A loop that keeps the field holds its value's address.
+			match LoweringBasics.field_below(site, { depth: site.origins.len(), down: 0, key }) {
+				Ok(value_address) =>
+					LoopInvariants.field_read_items(
+						site,
+						{
+							value_address,
+							receiver,
+							done: LoweringBasics.inner_label(site, "field_done"),
+							guarded,
+						},
+					)
+				Err(NotHoisted) => guarded
+			}
+		}
 		_ => slow_items
 	}
 
@@ -840,8 +856,8 @@ field_write_items : LoweringBasics.Site,
 } -> List(Assembly.Statement)
 field_write_items = |site, { kind, key, receiver, value_place, slow_items }|
 	match (kind, site.context.field_slots.get(key)) {
-		(Object, Ok(slots)) | (Value, Ok(slots)) =>
-			FieldSlots.slot_write_items(
+		(Object, Ok(slots)) | (Value, Ok(slots)) => {
+			guarded = FieldSlots.slot_write_items(
 				site,
 				{
 					slots,
@@ -852,6 +868,21 @@ field_write_items = |site, { kind, key, receiver, value_place, slow_items }|
 					slow_items,
 				},
 			)
+			# A loop that keeps the field holds its value's address.
+			match LoweringBasics.field_below(site, { depth: site.origins.len(), down: 1, key }) {
+				Ok(value_address) =>
+					LoopInvariants.field_write_items(
+						site,
+						{
+							value_address,
+							value_place,
+							done: LoweringBasics.inner_label(site, "field_done"),
+							guarded,
+						},
+					)
+				Err(NotHoisted) => guarded
+			}
+		}
 		_ => slow_items
 	}
 
@@ -1190,7 +1221,20 @@ code_walk : LoweringBasics.Context,
 	[Refused(Str)],
 )
 code_walk = |context, { heads, doubted, demoted }| {
-	code = context.program.codes.get(context.index) ?? crash "Lowering.code_walk: a code's index"
+	original = context.program.codes.get(context.index) ?? crash "Lowering.code_walk: a code"
+	# The loops whose arrays' facts are kept hoisted (LoopInvariants), their
+	# slots past the frame's; none in a program with a `try`, whose handler
+	# may land inside a loop.
+	planned =
+		if context.trying {
+			{ plans: [], frame_size: original.frame_size }
+		} else {
+			LoopInvariants.plans(
+				original,
+				{ excluded: generic_places(context), field_slots: context.field_slots },
+			)
+		}
+	code = { ..original, frame_size: planned.frame_size }
 	entered = entry_doubles(context, { code, demoted })
 	start = start_state(context, { code, entered })?
 	skipped = context.skipped
@@ -1213,6 +1257,10 @@ code_walk = |context, { heads, doubted, demoted }| {
 	var $arrivals = Dict.empty()
 	# The slots each loop's head took to hold no fraction.
 	var $assumed = Dict.empty()
+	# Where each stack place came from, and the planned loops whose facts
+	# were loaded at their way in (LoopInvariants).
+	var $origins = []
+	var $active = []
 	for at in 0..<code.ops.len() {
 		fell = match $flowing {
 			Stopped => False
@@ -1254,10 +1302,32 @@ code_walk = |context, { heads, doubted, demoted }| {
 			(Stopped, Ok(waiting)) => Arrives(waiting)
 			(Stopped, Err(_)) => Unreached
 		}
+		# A planned loop's facts, loaded on the way in alone, before its head.
+		match (planned.plans.find_first(|plan| plan.head == at), arriving) {
+			(Ok(plan), Arrives(reached)) if fell and !$pending.contains(at) => {
+				kept = LoopInvariants.kept_at_entry(plan.kept, reached)
+				if LoopInvariants.is_kept(kept) {
+					head_site = {
+						context,
+						code,
+						at,
+						skipped,
+						origins: [],
+						kept: { arrays: [], fields: [] },
+					}
+					$body = $body.concat(
+						LoopInvariants.preheader_items(head_site, { kept, piece: "in" }),
+					)
+					$active = $active.append({ ..plan, kept })
+				}
+			}
+			_ => {}
+		}
 		$body = $body.append(Mark(LoweringBasics.place_label(context, at)))
 		match arriving {
 			Unreached => {
 				$flowing = Stopped
+				$origins = []
 			}
 			Arrives(reached) => {
 				state = match heads.get(at) {
@@ -1272,8 +1342,21 @@ code_walk = |context, { heads, doubted, demoted }| {
 				}
 				$seen = $seen.insert(at, state)
 				instruction = code.ops.get(at) ?? crash "Lowering.code_walk: an instruction"
-				site = { context, code, at, skipped }
 				depth_here = state.stack_kinds.len()
+				origins_here =
+					if meets or $origins.len() != depth_here {
+						List.repeat(Unknown, depth_here)
+					} else {
+						$origins
+					}
+				site = {
+					context,
+					code,
+					at,
+					skipped,
+					origins: origins_here,
+					kept: LoopInvariants.kept_at($active, at),
+				}
 				head_alone = looped_to.contains(at) and fell and !$pending.contains(at)
 				checked =
 					if !meets {
@@ -1481,6 +1564,13 @@ code_walk = |context, { heads, doubted, demoted }| {
 					}
 					Ends => Stopped
 				}
+				$origins = match lowered.falls {
+					Falls(next) => LoopInvariants.origins_after(
+						origins_here,
+						{ instruction, after: next.stack_kinds.len() },
+					)
+					Ends => []
+				}
 				match lowered.branch {
 					NoBranch => {}
 					Branch({ target, state: sent }) =>
@@ -1621,6 +1711,26 @@ functions_trimmed = |{ functions, trying }|
 				FrameValues.trim_frame_statements({ statements, outside })
 			},
 	)
+
+## The facts a loop keeps hoisted (LoopInvariants) of the array `down`
+## places below the stack's top, when the walk knows that place holds an
+## array.
+hoisted_receiver : LoweringBasics.Site,
+{
+	state : LoweringBasics.State,
+	down : U64,
+} -> Try(LoweringBasics.HoistedArray, [NotHoisted])
+hoisted_receiver = |site, { state, down }|
+	if LoopInvariants.is_array_kind(LoweringBasics.kind_below(state, down)) {
+		LoweringBasics.hoisted_below(site, { depth: state.stack_kinds.len(), down })
+	} else {
+		Err(NotHoisted)
+	}
+
+## The places of a versioned loop's generic copy: each fast place's twin,
+## where its side exits go, past anything placed before its head.
+generic_places : LoweringBasics.Context -> List(U64)
+generic_places = |context| context.versions.fast.to_list().map(|(_, fast)| fast.generic)
 
 ## The labels of a versioned loop's generic copy's places: each fast place's
 ## twin, where its side exits go. Registers counts only the rest.
@@ -3641,6 +3751,7 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 										kind: array_kind(kind),
 										place: top_place(0),
 										integer: LoweringBasics.is_integer(given),
+										hoisted: hoisted_receiver(site, { state, down: 0 }),
 										slow_items: called,
 									},
 								)
@@ -3784,13 +3895,15 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 			match LoweringBasics.kind_below(state, 1) {
 				Object | Value | Null | Undefined => {
 					value = LoweringBasics.kind_below(state, 0)
+					# The runtime's write may add a key, so a loop's kept facts are
+					# loaded again after it (LoopInvariants).
 					called = [
 						Emit.load(Rdi, top_place(1)),
 						Emit.address_of(Rsi, LoweringBasics.text_label(site, key)),
 						Emit.load(Rdx, top_place(0)),
 						Emit.imm(R8, ObjectTable.key_hash(key)),
 						Emit.call(ObjectTable.set_property_hashed),
-					]
+					].concat(LoopInvariants.refresh_items(site))
 					written = field_write_items(
 						site,
 						{
@@ -3831,6 +3944,7 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 				index_kind: LoweringBasics.kind_below(state, 0),
 				receiver: top_place(1),
 				index: top_place(0),
+				hoisted: hoisted_receiver(site, { state, down: 1 }),
 				exit: exit.label,
 			})
 			Ok({
@@ -3895,6 +4009,7 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 					receiver: top_place(1),
 					index: top_place(0),
 					checks: IndexLowering.checks_for(checked, instruction),
+					hoisted: hoisted_receiver(site, { state, down: 1 }),
 					slow_items: [Emit.jmp(Runtime.numbers_read_not_compiled)],
 				},
 			)
@@ -3927,6 +4042,7 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 									receiver: top_place(1),
 									index: top_place(0),
 									checks: IndexLowering.all_checks,
+									hoisted: hoisted_receiver(site, { state, down: 1 }),
 									slow_items: called,
 								},
 							),
@@ -3944,12 +4060,16 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 				Array | Numbers | Integers(_) | Object | Value | Null | Undefined => {
 					value = LoweringBasics.kind_below(state, 0)
 					written = LoweringBasics.kind_below(state, 2)
-					called = index_double_items(site, { state, down: 1 }).concat([
-						Emit.load(Rdi, top_place(2)),
-						Emit.load(Rsi, top_place(1)),
-						Emit.load(Rdx, top_place(0)),
-						Emit.call(Runtime.set_index),
-					])
+					# The runtime's write may append or add a key, so a loop's kept
+					# facts are loaded again after it (LoopInvariants).
+					called = index_double_items(site, { state, down: 1 })
+						.concat([
+							Emit.load(Rdi, top_place(2)),
+							Emit.load(Rsi, top_place(1)),
+							Emit.load(Rdx, top_place(0)),
+							Emit.call(Runtime.set_index),
+						])
+						.concat(LoopInvariants.refresh_items(site))
 					Ok(
 						LoweringBasics.falling(
 							IndexLowering.item_write_items(
@@ -3963,6 +4083,7 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 									index: top_place(1),
 									value_place: top_place(0),
 									stored: item_stored({ array: written, stored: value }),
+									hoisted: hoisted_receiver(site, { state, down: 2 }),
 									checks: if LoweringBasics.holds_numbers(written) {
 										IndexLowering.checks_for(checked, instruction)
 									} else {

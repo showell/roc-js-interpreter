@@ -435,6 +435,92 @@ LoweringBasics :: [].{
 		code : Bytecode.Code,
 		at : U64,
 		skipped : List(U64),
+		# Where each stack place, from the bottom, came from, and the facts
+		# the loops around this instruction keep (LoopInvariants).
+		origins : List(LoweringBasics.StackOrigin),
+		kept : LoweringBasics.Kept,
+	}
+
+	## Where a stack place's value came from: a slot, by `LoadLocal`, or not
+	## known.
+	StackOrigin : [Slot(U64), Unknown]
+
+	## What the loops around an instruction keep of their arrays and objects
+	## (LoopInvariants), each true at every instruction of the loop.
+	Kept : { arrays : List(LoweringBasics.KeptArray), fields : List(LoweringBasics.KeptField) }
+
+	## An array a loop keeps: its slot, and the slots holding its untagged
+	## record's address, its length and its items' address.
+	KeptArray : {
+		slot : U64,
+		record : U64,
+		length : U64,
+		items : U64,
+	}
+
+	## A field a loop keeps: the object's slot, the key, the places its
+	## entries are expected to hold it at (FieldSlots), and the slot holding
+	## the address of its value there, or 0 when the guard missed.
+	KeptField : {
+		slot : U64,
+		key : Str,
+		guesses : List(U64),
+		value_address : U64,
+	}
+
+	## A kept array's places.
+	HoistedArray : {
+		record : X86.Mem,
+		length : X86.Mem,
+		items_address : X86.Mem,
+	}
+
+	## The slot the stack place `down` below the top, `depth` deep, came from.
+	origin_below : LoweringBasics.Site, { depth : U64, down : U64 } -> Try(U64, [NotHoisted])
+	origin_below = |site, { depth, down }| {
+		if depth <= down or site.origins.len() != depth {
+			return Err(NotHoisted)
+		}
+		match site.origins.get(depth - 1 - down) {
+			Ok(Slot(slot)) => Ok(slot)
+			_ => Err(NotHoisted)
+		}
+	}
+
+	## The places of the array `down` places below the stack's top, `depth`
+	## deep, when a loop keeps it.
+	hoisted_below : LoweringBasics.Site,
+	{ depth : U64, down : U64 } -> Try(
+		LoweringBasics.HoistedArray,
+		[NotHoisted],
+	)
+	hoisted_below = |site, { depth, down }| {
+		slot = LoweringBasics.origin_below(site, { depth, down })?
+		match site.kept.arrays.find_first(|kept| kept.slot == slot) {
+			Ok(kept) =>
+				Ok({
+					record: LoweringBasics.slot_place(kept.record),
+					length: LoweringBasics.slot_place(kept.length),
+					items_address: LoweringBasics.slot_place(kept.items),
+				})
+			Err(_) => Err(NotHoisted)
+		}
+	}
+
+	## The place holding the address of `key`'s value in the object `down`
+	## places below the stack's top, or 0, when a loop keeps that field.
+	field_below : LoweringBasics.Site,
+	{
+		depth : U64,
+		down : U64,
+		key : Str,
+	} -> Try(X86.Mem, [NotHoisted])
+	field_below = |site, { depth, down, key }| {
+		slot = LoweringBasics.origin_below(site, { depth, down })?
+		match site.kept.fields.find_first(|kept| kept.slot == slot and kept.key == key) {
+			Ok(kept) => Ok(LoweringBasics.slot_place(kept.value_address))
+			Err(_) => Err(NotHoisted)
+		}
 	}
 
 	## What an instruction lowers to: its machine code, the state after it when
