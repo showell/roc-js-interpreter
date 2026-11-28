@@ -1,6 +1,6 @@
 // The lazy sweep at the heap's real threshold (x86/COLLECTOR.md, "Lazy
-// sweep, as built"): about 60 MB of garbage, so the collector runs several
-// times without the torture tier, each time leaving most pages to be swept
+// sweep, as built"): enough garbage that the collector runs 15 times
+// without the torture tier (its heapstat line), each time leaving most pages to be swept
 // when their class next needs a block. Long-lived records, a Map past its
 // hashed index's threshold and strings of every class live through it; each
 // is checked as it is read back. The torture tier runs it sampled
