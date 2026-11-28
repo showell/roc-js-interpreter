@@ -87,6 +87,17 @@ Two readings, at master f724c41. **The counts** are exact: `shale x86/cost.shale
 
 None of the three is built in this lane. Each is a runtime change, general to every program; the race isn't changed toward any of them.
 
+**Item 1 is built** (branch x86-hashmap, on master fb5a2d0; x86/roc/Collections.roc's header has the design). The counter at 300 rounds (`shale x86/cost.shale counted=1 races=bigdaddy,sat`), before and after:
+
+| race | instructions run | in `runtime_collection_find*` | in `runtime_text_equal*` | predicted cycles |
+|---|---|---|---|---|
+| big daddy 300, before | 6,917,983,458 | 2,183,454,265 (31.6%) | 1,061,646,250 (15.3%) | 2,008,241,218 |
+| big daddy 300, after | 4,085,933,251 (-40.9%) | 158,120,639 (3.9%) | 79,750,094 (2.0%) | 1,186,109,055 (-40.9%) |
+| SAT small, before | 4,071,184,918 | 1,348,498,506 (33.1%) | 525,207 | 1,172,325,468 |
+| SAT small, after | 2,723,707,216 (-33.1%) | 1,394,953 (0.05%) | 525,087 | 823,841,432 (-29.7%) |
+
+The hashing itself costs big daddy 123 million instructions (3.0%: `runtime_text_hash`'s byte loop, mostly) and keeping the indexes up to date 47 million (1.2%). **The threshold** below which a Map or Set is still searched in order was measured, not guessed: at 4 entries used big daddy runs 4,083,338,752 instructions, at 8 4,085,933,251 and at 16 4,112,743,836 (SAT small 2,723,705,551, 2,723,707,216 and 2,723,713,264). 4 and 8 are within 0.07%, so it is 8, the objects' threshold, which makes no index for the smaller Maps. The sweep (item 2) is now the largest cost: `runtime_gc_sweep_zero` is 11.3% of what is left.
+
 ## Candidates for Steve (not made)
 
 - **A per-stage timing under node** wasn't done, for want of time on a busy box; it would show which stage dominates. A guess from reading the code: the census (200 lines of text built, split and parsed, every checksum's `String(value)` walked a character at a time) and the two sorts dominate, and the sieve (3,000 booleans) and the clerk (four lookups) are too small to measure. If so, the clerk could do its lookups over every resident, and the sieve could grow on its own.

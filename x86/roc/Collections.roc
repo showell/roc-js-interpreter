@@ -11,6 +11,39 @@
 ## in its own routines, and `RuntimeCode` puts the two together. The walks
 ## stay here with the Maps and Sets they read: Runtime calls them by label
 ## alone, which needs no import.
+##
+## **A key is found by its hash once a Map or a Set has used
+## `Collections.threshold` entries**, as an object's key is past 8 keys
+## (ObjectTable's header, whose rules these follow). The record is what it
+## is (8), its size (8), the entries used (16), their room (24) and their
+## address (32), then the index's address (40, 0 for none) and the count of
+## entries the index covers (48), then room for its first four entries.
+## The entries stay in the order first set, which every walk reads; the
+## index only finds them.
+##
+## - **A key is canonical** before it is stored or looked up
+##   (`canonical_key`): -0 is 0 and every NaN one NaN, so SameValueZero is
+##   the same bits, or two strings of the same bytes. Every number is a
+##   double here (an `Integer` is made one before any call), so a whole
+##   number has one form however it was made.
+## - **The hash** (`runtime_collection_hash`) is a string's bytes' FNV-1a
+##   (`runtime_text_hash`) and any other key's bits mixed, so an object is
+##   found by its identity.
+## - **The index** is a Table block: its mask (its slots less one, a power
+##   of two), the count of its slots taken, then its slots, an entry's
+##   place plus one, or 0 for none, probed linearly. It is brought up to
+##   date when a key is looked up, never when one is set: the entries past
+##   those it covers are put in it then.
+## - **A deleted entry keeps its slot**, its key `Boxing.gone_bits`, which
+##   no key matches, so it is a tombstone a probe passes; `clear` deletes
+##   every entry so. A new index leaves the deleted entries out.
+## - **An index that would be more than half full**, its tombstones and the
+##   entries it doesn't cover yet counted, is replaced by one of four slots
+##   for each entry not deleted, and at least half as many slots as entries
+##   used (32 at least), so a Map whose keys come and go keeps a small
+##   index and still makes a new one only after many more entries; the old
+##   one is left for the collector, which traces the record whole and the
+##   index not at all (`Heap.trace_from`).
 import Assembly
 import Boxing
 import Emit
@@ -18,6 +51,7 @@ import Heap
 import ObjectTable
 import Runtime
 import RuntimeBuilders
+import X86
 
 Collections :: [].{
 
@@ -40,24 +74,56 @@ Collections :: [].{
 			Emit.restore(Rbp),
 			Emit.ret,
 		]
-		# -0 in `rsi` made 0, as a Map's key is.
-		unsigned_zero = |label| [
-			Emit.imm(Rcx, (0x8000000000000000).to_i64_wrap()),
-			Emit.cmp(Rsi, Rcx),
-			Emit.jcc(Ne, label),
+		# The key in `rsi` made its one SameValueZero form, as every key is
+		# stored and looked up: -0 is 0 and every NaN is `canonical_not_a_number`, so
+		# two numbers are the same key exactly when their bits are. It changes
+		# `rax` and `rcx`.
+		canonical_key = |label| [
+			Emit.mov(Rcx, Rsi),
+			Emit.shr(Rcx, Boxing.tag_shift),
+			Emit.cmp_imm(Rcx, Boxing.first_tag),
+			Emit.jcc(Ae, "${label}_done"),
+			Emit.imm(Rax, 0x7FFFFFFFFFFFFFFF),
+			Emit.mov(Rcx, Rsi),
+			bitwise_and(Rcx, Rax),
+			Emit.jcc(E, "${label}_zero"),
+			Emit.imm(Rax, 0x7FF0000000000000),
+			Emit.cmp(Rcx, Rax),
+			Emit.jcc(Be, "${label}_done"),
+			Emit.imm(Rsi, canonical_not_a_number),
+			Emit.jmp("${label}_done"),
+			Emit.mark("${label}_zero"),
 			Emit.zero(Rsi),
-			Emit.mark(label),
+			Emit.mark("${label}_done"),
 		]
+		# The statements that jump to `label` unless the keys in `rdi` and
+		# `rsi`, whose bits differ, are both strings of the same bytes; they
+		# change `rax`, `rcx`, `rdx`, `r8`, `rdi` and `rsi`.
+		same_text = |label|
+			RuntimeBuilders.unless_string_items({ reg: Rdi, label })
+				.concat(RuntimeBuilders.unless_string_items({ reg: Rsi, label }))
+				.concat(RuntimeBuilders.unboxed_items(Rdi))
+				.concat(RuntimeBuilders.unboxed_items(Rsi))
+				.concat([
+					Emit.call("runtime_text_equal"),
+					Emit.test(Rax, Rax),
+					Emit.jcc(E, label),
+				])
 		# The address of the entry of the key `rsi` in the Map or Set at `rdi`,
-		# or 0, keys compared as SameValueZero: the same bits, two strings of
-		# the same bytes, or two NaNs. Its frame: the record (8), the key (16)
-		# and the place (24).
+		# or 0, keys compared as SameValueZero: once the key is canonical, the
+		# same bits or two strings of the same bytes. Fewer than
+		# `Collections.threshold` entries used are searched in order; from
+		# there, by the index (the module's header). Its frame: the record
+		# (8), the key (16), the place or the slot (24) and the entry (32).
 		find =
-			framed({ label: "runtime_collection_find", size: 32 })
-				.concat(unsigned_zero("runtime_collection_find_key"))
+			framed({ label: "runtime_collection_find", size: 48 })
+				.concat(canonical_key("runtime_collection_find_key"))
 				.concat([
 					Emit.store(RuntimeBuilders.local(8), Rdi),
 					Emit.store(RuntimeBuilders.local(16), Rsi),
+					Emit.load(R10, Emit.mem(Rdi, 16)),
+					Emit.cmp_imm(R10, Collections.threshold),
+					Emit.jcc(Ae, "runtime_collection_find_hashed"),
 					Emit.zero(Rax),
 					Emit.store(RuntimeBuilders.local(24), Rax),
 					Emit.mark("runtime_collection_find_next"),
@@ -74,41 +140,9 @@ Collections :: [].{
 					Emit.cmp(Rdi, Rsi),
 					Emit.jcc(E, "runtime_collection_find_found"),
 				])
-				.concat(RuntimeBuilders.tag_load_items(Rdi))
+				.concat(same_text("runtime_collection_find_step"))
 				.concat([
-					Emit.cmp_imm(Rcx, Boxing.string_tag),
-					Emit.jcc(Ne, "runtime_collection_find_number"),
-				])
-				.concat(
-					RuntimeBuilders.unless_string_items({
-						reg: Rsi,
-						label: "runtime_collection_find_step",
-					}),
-				)
-				.concat(RuntimeBuilders.unboxed_items(Rdi))
-				.concat(RuntimeBuilders.unboxed_items(Rsi))
-				.concat([
-					Emit.call("runtime_text_equal"),
-					Emit.test(Rax, Rax),
-					Emit.jcc(Ne, "runtime_collection_find_found"),
-					Emit.jmp("runtime_collection_find_step"),
-					Emit.mark("runtime_collection_find_number"),
-					Emit.cmp_imm(Rcx, Boxing.first_tag),
-					Emit.jcc(Ae, "runtime_collection_find_step"),
-				])
-				.concat(
-					RuntimeBuilders.unless_number_items({
-						reg: Rsi,
-						label: "runtime_collection_find_step",
-					}),
-				)
-				.concat([
-					Emit.to_xmm(Xmm0, Rdi),
-					Instruction(Ucomisd({ left: Xmm0, right: Xmm0 })),
-					Emit.jcc(Np, "runtime_collection_find_step"),
-					Emit.to_xmm(Xmm0, Rsi),
-					Instruction(Ucomisd({ left: Xmm0, right: Xmm0 })),
-					Emit.jcc(P, "runtime_collection_find_found"),
+					Emit.jmp("runtime_collection_find_found"),
 					Emit.mark("runtime_collection_find_step"),
 					Emit.load(Rcx, RuntimeBuilders.local(24)),
 					Emit.plus_imm(Rcx, 1),
@@ -121,17 +155,185 @@ Collections :: [].{
 					Emit.load(R8, Emit.mem(R10, 32)),
 					Emit.plus(Rax, R8),
 					Emit.jmp("runtime_collection_find_leave"),
+					# By the index: the key's slot, then the next, until an
+					# empty slot or the key's entry.
+					Emit.mark("runtime_collection_find_hashed"),
+					Emit.call("runtime_collection_index"),
+					Emit.mov(Rdx, Rsi),
+					Emit.call("runtime_collection_hash"),
+					Emit.load(R11, Emit.mem(Rdi, index_place)),
+					Emit.load(Rcx, Emit.mem(R11, 0)),
+					bitwise_and(Rax, Rcx),
+					Emit.store(RuntimeBuilders.local(24), Rax),
+					Emit.mark("runtime_collection_find_probe"),
+					Emit.load(R10, RuntimeBuilders.local(8)),
+					Emit.load(R11, Emit.mem(R10, index_place)),
+					Emit.load(Rcx, RuntimeBuilders.local(24)),
+					Emit.load(Rax, index_slot(Rcx)),
+					Emit.test(Rax, Rax),
+					Emit.jcc(E, "runtime_collection_find_none"),
+					Emit.shl(Rax, 4),
+					Emit.load(R8, Emit.mem(R10, 32)),
+					Emit.plus(Rax, R8),
+					Emit.minus_imm(Rax, 16),
+					Emit.store(RuntimeBuilders.local(32), Rax),
+					Emit.load(Rdi, Emit.mem(Rax, 0)),
+					Emit.load(Rsi, RuntimeBuilders.local(16)),
+					Emit.cmp(Rdi, Rsi),
+					Emit.jcc(E, "runtime_collection_find_hit"),
+				])
+				.concat(same_text("runtime_collection_find_probe_step"))
+				.concat([
+					Emit.mark("runtime_collection_find_hit"),
+					Emit.load(Rax, RuntimeBuilders.local(32)),
+					Emit.jmp("runtime_collection_find_leave"),
+					Emit.mark("runtime_collection_find_probe_step"),
+					Emit.load(R10, RuntimeBuilders.local(8)),
+					Emit.load(R11, Emit.mem(R10, index_place)),
+					Emit.load(R8, Emit.mem(R11, 0)),
+					Emit.load(Rcx, RuntimeBuilders.local(24)),
+					Emit.plus_imm(Rcx, 1),
+					bitwise_and(Rcx, R8),
+					Emit.store(RuntimeBuilders.local(24), Rcx),
+					Emit.jmp("runtime_collection_find_probe"),
 					Emit.mark("runtime_collection_find_none"),
 					Emit.zero(Rax),
 					Emit.mark("runtime_collection_find_leave"),
 				])
 				.concat(leave)
+		# `runtime_collection_index`: the index of the Map or Set `rdi`, of
+		# `r10` entries used, made, grown or brought up to date (the module's
+		# header), keeping `rdi`, `rsi` and `r10`; it changes `rax`, `rcx`,
+		# `rdx`, `r8`, `r9` and `r11`.
+		index =
+			[
+				Emit.mark("runtime_collection_index"),
+				Emit.load(R11, Emit.mem(Rdi, index_place)),
+				Emit.test(R11, R11),
+				Emit.jcc(E, "runtime_collection_index_new"),
+				# Half full at most: twice the slots taken, with the entries not
+				# yet covered, no more than the mask.
+				Emit.load(Rcx, Emit.mem(R11, 0)),
+				Emit.load(Rdx, Emit.mem(R11, 8)),
+				Emit.plus(Rdx, R10),
+				Emit.load(R8, Emit.mem(Rdi, covered_place)),
+				Emit.minus(Rdx, R8),
+				Emit.plus(Rdx, Rdx),
+				Emit.cmp(Rdx, Rcx),
+				Emit.jcc(Be, "runtime_collection_index_kept"),
+				# A new index: four slots for each entry not deleted, and at least
+				# half as many as the entries used, so that a Map whose keys come
+				# and go makes a new one only after a share of its entries used
+				# more, each of which it reads (32 at least).
+				Emit.mark("runtime_collection_index_new"),
+				Emit.imm(Rcx, 32),
+				Emit.load(Rdx, Emit.mem(Rdi, 8)),
+				Emit.shl(Rdx, 2),
+				Emit.mov(R8, R10),
+				Emit.shr(R8, 1),
+				Emit.cmp(Rdx, R8),
+				Emit.jcc(Ae, "runtime_collection_index_size"),
+				Emit.mov(Rdx, R8),
+				Emit.mark("runtime_collection_index_size"),
+				Emit.cmp(Rcx, Rdx),
+				Emit.jcc(Ae, "runtime_collection_index_sized"),
+				Emit.plus(Rcx, Rcx),
+				Emit.jmp("runtime_collection_index_size"),
+				Emit.mark("runtime_collection_index_sized"),
+				Emit.save(Rdi),
+				Emit.save(Rcx),
+				Emit.mov(Rdi, Rcx),
+				Emit.shl(Rdi, 3),
+				Emit.plus_imm(Rdi, 16),
+				Emit.call(Heap.allocate(Table)),
+				Emit.restore(Rcx),
+				Emit.restore(Rdi),
+				# A new table's count of slots taken and its slots are all 0, as
+				# the allocator gives them.
+				Emit.minus_imm(Rcx, 1),
+				Emit.store(Emit.mem(Rax, 0), Rcx),
+				Emit.store(Emit.mem(Rdi, index_place), Rax),
+				Emit.zero(Rdx),
+				Emit.store(Emit.mem(Rdi, covered_place), Rdx),
+				Emit.mark("runtime_collection_index_kept"),
+				Emit.load(R11, Emit.mem(Rdi, index_place)),
+				Emit.load(R9, Emit.mem(Rdi, covered_place)),
+				# Each entry from `r9`, the first not covered, to the last; a
+				# deleted one is left out, since no key finds it.
+				Emit.mark("runtime_collection_index_fill"),
+				Emit.cmp(R9, R10),
+				Emit.jcc(Ae, "runtime_collection_index_filled"),
+				Emit.load(Rdx, Emit.mem(Rdi, 32)),
+				Emit.mov(R8, R9),
+				Emit.shl(R8, 4),
+				Emit.plus(Rdx, R8),
+				Emit.load(Rdx, Emit.mem(Rdx, 0)),
+				Emit.imm(Rax, Boxing.gone_bits),
+				Emit.cmp(Rdx, Rax),
+				Emit.jcc(E, "runtime_collection_index_next"),
+				Emit.call("runtime_collection_hash"),
+				Emit.load(Rcx, Emit.mem(R11, 0)),
+				bitwise_and(Rax, Rcx),
+				Emit.mark("runtime_collection_index_probe"),
+				Emit.load(R8, index_slot(Rax)),
+				Emit.test(R8, R8),
+				Emit.jcc(E, "runtime_collection_index_put"),
+				Emit.plus_imm(Rax, 1),
+				bitwise_and(Rax, Rcx),
+				Emit.jmp("runtime_collection_index_probe"),
+				Emit.mark("runtime_collection_index_put"),
+				Emit.mov(R8, R9),
+				Emit.plus_imm(R8, 1),
+				Emit.store(index_slot(Rax), R8),
+				Emit.load(R8, Emit.mem(R11, 8)),
+				Emit.plus_imm(R8, 1),
+				Emit.store(Emit.mem(R11, 8), R8),
+				Emit.mark("runtime_collection_index_next"),
+				Emit.plus_imm(R9, 1),
+				Emit.jmp("runtime_collection_index_fill"),
+				Emit.mark("runtime_collection_index_filled"),
+				Emit.store(Emit.mem(Rdi, covered_place), R10),
+				Emit.ret,
+			]
+		# `runtime_collection_hash`: the hash of the canonical key `rdx` in
+		# `rax`, keeping every other register. A string's is its bytes'
+		# (`runtime_text_hash`), so two strings of the same bytes share it;
+		# any other key's is its bits', folded, multiplied and folded again,
+		# so the bits a double's exponent and first digits hold reach the
+		# low bits a mask keeps.
+		hash = [
+			Emit.mark("runtime_collection_hash"),
+			Emit.mov(Rax, Rdx),
+			Emit.shr(Rax, Boxing.tag_shift),
+			Emit.cmp_imm(Rax, Boxing.string_tag),
+			Emit.jcc(Ne, "runtime_collection_hash_bits"),
+			Emit.save(Rdx),
+		]
+			.concat(RuntimeBuilders.unboxed_items(Rdx))
+			.concat([
+				Emit.call("runtime_text_hash"),
+				Emit.restore(Rdx),
+				Emit.ret,
+				Emit.mark("runtime_collection_hash_bits"),
+				Emit.save(Rcx),
+				Emit.mov(Rax, Rdx),
+				Emit.mov(Rcx, Rdx),
+				Emit.shr(Rcx, 32),
+				fold_rcx,
+				Emit.imm(Rcx, bits_multiplier),
+				Instruction(Imul({ to: Rax, from: Rcx })),
+				Emit.mov(Rcx, Rax),
+				Emit.shr(Rcx, 32),
+				fold_rcx,
+				Emit.restore(Rcx),
+				Emit.ret,
+			])
 		# The key `rsi` given the value `rdx` in the Map or Set at `rdi`: its
 		# entry's value when it has one, else a new entry after the last, the
 		# entries copied to twice the room when they fill it.
 		put =
 			[Emit.mark("runtime_collection_put")]
-				.concat(unsigned_zero("runtime_collection_put_key"))
+				.concat(canonical_key("runtime_collection_put_key"))
 				.concat([
 					# A Set's value is its key.
 					Emit.load(Rcx, Emit.mem(Rdi, 0)),
@@ -200,17 +402,16 @@ Collections :: [].{
 				.concat([
 					Emit.save(Rdi),
 					Emit.save(Rsi),
-					Emit.imm(Rdi, 40 + 4 * 16),
+					Emit.imm(Rdi, record_size + 4 * 16),
 					Emit.call(Heap.allocate(Collection)),
 					Emit.restore(Rsi),
 					Emit.restore(Rdi),
+					# The size, the entries used, the index and the count it
+					# covers are 0, as the allocator gives them.
 					Emit.store(Emit.mem(Rax, 0), Rdi),
-					Emit.zero(Rcx),
-					Emit.store(Emit.mem(Rax, 8), Rcx),
-					Emit.store(Emit.mem(Rax, 16), Rcx),
 					Emit.imm(Rcx, 4),
 					Emit.store(Emit.mem(Rax, 24), Rcx),
-					Emit.lea(Rcx, Emit.mem(Rax, 40)),
+					Emit.lea(Rcx, Emit.mem(Rax, record_size)),
 					Emit.store(Emit.mem(Rax, 32), Rcx),
 					Emit.store(RuntimeBuilders.local(8), Rax),
 					Emit.mov(Rdi, Rsi),
@@ -662,6 +863,8 @@ Collections :: [].{
 				.concat(RuntimeBuilders.stopping_items("runtime_text_collection_method"))
 		[
 			find,
+			index,
+			hash,
 			put,
 			new_collection,
 			next,
@@ -672,4 +875,54 @@ Collections :: [].{
 			method,
 		].join()
 	}
+
+	## The count of entries used from which a Map's or a Set's keys are found
+	## by its index; below it they are searched in order.
+	threshold : I64
+	threshold = 8
 }
+
+## The place in a Map's or a Set's record of its index's address (0 for
+## none), and of the count of entries the index covers, from the first.
+index_place : I64
+index_place = 40
+
+covered_place : I64
+covered_place = 48
+
+## The bytes of a Map's or a Set's record before the room for its first
+## entries.
+record_size : I64
+record_size = 56
+
+## The one NaN a key is stored and looked up as.
+canonical_not_a_number : I64
+canonical_not_a_number = 0x7FF8000000000000
+
+## The odd constant a key that is no string is multiplied by in its hash:
+## 2^64 over the golden ratio.
+bits_multiplier : I64
+bits_multiplier = (0x9E3779B97F4A7C15).to_i64_wrap()
+
+## `to` made `to` and `from`, bit by bit: a key's slot kept to an index's
+## mask, or a number's sign cleared.
+bitwise_and : X86.Register, X86.Register -> Assembly.Statement
+bitwise_and = |to, from| Instruction(Alu({ operation: And, to, from }))
+
+## `rax` made `rax` xor `rcx`, a step of a hash's folding.
+fold_rcx : Assembly.Statement
+fold_rcx = Instruction(
+	Alu({
+		operation: Xor,
+		to: Rax,
+		from: Rcx,
+	}),
+)
+
+## Slot `reg` of the index at `r11`.
+index_slot : X86.Register -> X86.Mem
+index_slot = |reg| Based({
+	base: R11,
+	index: Scaled({ reg, scale: Times8 }),
+	displacement: 16,
+})

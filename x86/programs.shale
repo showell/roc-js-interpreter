@@ -91,7 +91,7 @@ const TORTURE_SAMPLED = {"x86/tests/join.js", "x86/satrace/sat.js"}
 const HEAP_HELD = {
   ["33-string-append.js"] = "heap: 55 allocations, 0 collections, 4 pages at most; live at the exit: 13 blocks, 296 bytes asked, 464 bytes in blocks, 3 pages",
   ["55-garbage.js"] = "heap: 9073 allocations, 0 collections, 17 pages at most; live at the exit: 74 blocks, 4424 bytes asked, 5824 bytes in blocks, 6 pages",
-  ["57-map-set-churn.js"] = "heap: 40500 allocations, 0 collections, 52 pages at most; live at the exit: 51 blocks, 266504 bytes asked, 400896 bytes in blocks, 15 pages",
+  ["57-map-set-churn.js"] = "heap: 50691 allocations, 0 collections, 62 pages at most; live at the exit: 56 blocks, 334024 bytes asked, 535552 bytes in blocks, 17 pages",
   ["60-many-instances.js"] = "heap: 14160 allocations, 0 collections, 28 pages at most; live at the exit: 191 blocks, 16008 bytes asked, 23840 bytes in blocks, 11 pages",
 }
 -- The races held here, each at a small size: its file, and the `const` line

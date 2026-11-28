@@ -49,7 +49,8 @@ Boxing :: [].{
 	## The payload is a record's address whose first 8 bytes say which:
 	## 0 a Map, 1 a Set (then their size, the entries used, their room and
 	## the entries' address: 16 bytes each, a key and a value, a Set's value
-	## its key, a deleted entry's key `Boxing.gone_bits`), 2 an iterator
+	## its key, a deleted entry's key `Boxing.gone_bits`; then its index,
+	## Collections.roc's header), 2 an iterator
 	## (then what it walks, its place there and what it gives: 0 keys, 1
 	## values, 2 entries).
 	collection_tag : I64

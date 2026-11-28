@@ -106,7 +106,8 @@ Heap :: [].{
 		Object,
 		# An object's entries, 16 bytes each: a key's address and a value.
 		Entries,
-		# An object's hash table: its mask, then places; no pointer.
+		# An object's or a Map's or a Set's hash table: its mask, then places;
+		# no pointer.
 		Table,
 		# A closure record: two distances, the count of captures, then each
 		# capture's cell's address.
@@ -114,7 +115,8 @@ Heap :: [].{
 		# A captured variable's cell: one value.
 		Cell,
 		# A Map's or a Set's record: what it is, its size, the entries used,
-		# their room and their address, then room for its first entries.
+		# their room and their address, its table's address and the count the
+		# table covers, then room for its first entries.
 		Collection,
 		# A Map's or a Set's entries, 16 bytes each: a key and a value.
 		CollectionEntries,
