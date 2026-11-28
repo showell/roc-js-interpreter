@@ -58,4 +58,4 @@ Master 6949841 is lane 3 of milestone 6 (guarded arrays and side exits in versio
 ## What is not here
 
 - **The cost tier and the counter are not timings.** `x86/cost.shale` reads llvm-mca's prediction of the bytes, and js-x86's `counted` mode counts the instructions run; both read the same on any box, and x86/COST.md holds their tables.
-- **Later commits have not been timed yet:** lane 4's FrameValues (merged as fb5a2d0) and big daddy at 15,000 rounds among them. Until a quiet-box run of them, the rows above are the latest.
+- **Later commits:** the 2026-11-28 section times lane 4's FrameValues, the hashed Map and Set, cheaper allocation and big daddy at 15,000 rounds. Commits after e5babdd have not been timed.
