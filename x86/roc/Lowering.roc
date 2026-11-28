@@ -3610,7 +3610,7 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 			kind = LoweringBasics.kind_below(state, 0)
 			# A known array's or string's length is an `Integer`: it can't pass
 			# 2^32 in a heap of 2 GiB.
-			known = kind == String or kind == Array or LoweringBasics.holds_numbers(kind)
+			known = IndexLowering.is_length_known(kind)
 			given = match key {
 				"length" if known =>
 					if site.context.trying {

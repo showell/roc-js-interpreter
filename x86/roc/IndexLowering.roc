@@ -32,7 +32,9 @@
 ## boxed variable's value or a copy; a load of a slot; a store or set of a
 ## slot, which forgets that slot; `Pop` and `JumpIfFalse`; `+ - * /` and the
 ## orderings of two known numbers; and an item read or write of an array of
-## numbers, whose slow way stops or appends), so a call, a method (`push`,
+## numbers, whose slow way stops or appends; and a known array's or string's
+## `length`, so a counter tested against `a.length` keeps the slot it was
+## loaded from, which the ordering narrows), so a call, a method (`push`,
 ## `pop`, `splice`) and any instruction that makes code run are among those
 ## that forget it. A length only grows between, so an index below it stays
 ## below it.
@@ -236,6 +238,10 @@ IndexLowering :: [].{
 			}
 		}
 		both_whole = numbers_on_top(before) and is_whole(0) and is_whole(1)
+		length_known = match before.stack_kinds.last() {
+			Ok(receiver) => IndexLowering.is_length_known(receiver)
+			Err(_) => False
+		}
 		# A slot set from a place that holds no fraction holds none.
 		stored = |slot, kept| {
 			forgotten = without_slot(kept, slot)
@@ -278,9 +284,18 @@ IndexLowering :: [].{
 				}
 			}
 			SetIndex(_) if is_numbers(2) => pushed(1, Other)
+			# A known array's or string's length is read in line, or by a
+			# routine that runs no code of the program's and changes nothing.
+			GetProperty("length", _) if length_known => pushed(1, Other)
 			_ => IndexLowering.nothing_proved(depth)
 		}
 	}
+
+	## Whether a receiver of this kind has a length known to be one: a known
+	## array's or string's, an `Integer` of 0 to 2^32 (Lowering's
+	## `GetProperty`), which reading changes nothing.
+	is_length_known : LoweringBasics.Kind -> Bool
+	is_length_known = |kind| kind == String or kind == Array or LoweringBasics.holds_numbers(kind)
 
 	## `length` of the value at `place`, in its place: an array's or a
 	## string's length (the first 8 bytes of either), kept as an integer
