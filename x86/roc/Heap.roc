@@ -312,11 +312,12 @@ Heap :: [].{
 	## chosen here, so the usual way is in line: the bytes counted against
 	## the threshold, then the class's free list popped or its page bumped,
 	## the bytes asked zeroed, and the header and the count of allocations
-	## written, as the shared path writes them. A block past the threshold (always, in the torture tier,
-	## whose threshold is 0), or a class whose page is full or that has none,
-	## calls the shared path, which counts it from the start; so does a block
-	## too big for a page of blocks. `label` starts their labels' names. They
-	## change `rax` and `rdi` alone, as the call does, and may collect.
+	## written, as the shared path writes them. A block past the threshold
+	## (always, in the torture tier, whose threshold is 0), or a class whose
+	## page is full or that has none, calls the shared path, which counts it
+	## from the start; so does a block too big for a page of blocks. `label`
+	## starts their labels' names. They change `rax` and `rdi` alone, as the
+	## call does, and may collect.
 	allocate_known_items : {
 		kind : Heap.BlockKind,
 		size : I64,
@@ -365,7 +366,7 @@ Heap :: [].{
 				Emit.mark(header),
 				Emit.zero(Rax),
 			]
-				.concat(zeroed_words_items({ base: Rdi, words: asked // 8 }))
+				.concat(zeroed_words_items(asked // 8))
 				.concat([
 					Emit.load(Rax, Heap.allocations_place),
 					Emit.plus_imm(Rax, 1),
@@ -583,12 +584,12 @@ class_of = |asked| {
 }
 
 ## The stores of `rax`, which holds 0, to the first `words` words past the
-## header of the block whose header is at `base`.
-zeroed_words_items : { base : X86.Register, words : I64 } -> List(Assembly.Statement)
-zeroed_words_items = |{ base, words }| {
+## header of the block whose header is at `rdi`.
+zeroed_words_items : I64 -> List(Assembly.Statement)
+zeroed_words_items = |words| {
 	var $out = []
 	for word in 0..<words {
-		$out = $out.append(Emit.store(Emit.mem(base, 8 + 8 * word), Rax))
+		$out = $out.append(Emit.store(Emit.mem(Rdi, 8 + 8 * word), Rax))
 	}
 	$out
 }
@@ -868,10 +869,11 @@ unmark_item = Instruction(
 	}),
 )
 
-## The page number of the address in `from`, in `to`. It changes `rax`.
-page_number_items : { to : X86.Register, from : X86.Register } -> List(Assembly.Statement)
-page_number_items = |{ to, from }| [
-	Emit.mov(to, from),
+## The page number of the address in `rsi`, in `to`: the free lists' and
+## the runs' checks hold their block or run there. It changes `rax`.
+page_number_items : X86.Register -> List(Assembly.Statement)
+page_number_items = |to| [
+	Emit.mov(to, Rsi),
 	Emit.load(Rax, first_page_place),
 	Emit.minus(to, Rax),
 	Emit.shr(to, page_bits),
@@ -1576,7 +1578,13 @@ lazy_sweep_items = {
 			Emit.load(R11, Emit.mem(R8, 0)),
 			Emit.test(R11, Rdx),
 			Emit.jcc(E, "runtime_gc_lazy_free"),
-			Instruction(Alu({ operation: Xor, to: R11, from: Rdx })),
+			Instruction(
+				Alu({
+					operation: Xor,
+					to: R11,
+					from: Rdx,
+				}),
+			),
 			Emit.store(Emit.mem(R8, 0), R11),
 			Emit.jmp("runtime_gc_lazy_step"),
 			# Dead, or free already: its header 0, and first on the list.
@@ -1831,7 +1839,13 @@ walk_items = [
 		Emit.jcc(E, "runtime_heap_bad"),
 		Emit.minus_imm(Rsi, 1),
 		Emit.store(walk_marks_left_place, Rsi),
-		Instruction(Alu({ operation: Xor, to: Rax, from: Rdi })),
+		Instruction(
+			Alu({
+				operation: Xor,
+				to: Rax,
+				from: Rdi,
+			}),
+		),
 		Emit.jmp("runtime_heap_walk_check"),
 		Emit.mark("runtime_heap_walk_unmarked"),
 		Emit.load(Rsi, walk_unswept_place),
@@ -1938,7 +1952,8 @@ walk_items = [
 
 ## `runtime_heap_lists`: each class's free list (its offset in `r10`), every
 ## block on it below the next free page, its header 0, in a page of its
-## class that is swept (its count 0), at a multiple of its size, and the lists' blocks, counted in `r9`,
+## class that is swept (its count 0), at a multiple of its size, and the
+## lists' blocks, counted in `r9`,
 ## as many as the free blocks the walk saw (never more, so a list that
 ## loops stops); then each run of free pages, at a page's start, of at least
 ## a page, each page marked 0 in the table, and their pages as many as the
@@ -1968,7 +1983,7 @@ lists_check_items = [
 		Emit.test(Rax, Rax),
 		Emit.jcc(Ne, "runtime_heap_bad"),
 	],
-	page_number_items({ to: Rcx, from: Rsi }),
+	page_number_items(Rcx),
 	[
 		Emit.byte_load(Rdx, table_entry(Rcx)),
 		Emit.shl(Rdx, class_shift),
@@ -2012,7 +2027,7 @@ lists_check_items = [
 		Emit.cmp(R9, Rax),
 		Emit.jcc(A, "runtime_heap_bad"),
 	],
-	page_number_items({ to: Rdx, from: Rsi }),
+	page_number_items(Rdx),
 	[
 		Emit.mark("runtime_heap_lists_page"),
 		Emit.byte_load(Rax, table_entry(Rdx)),
