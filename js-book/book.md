@@ -160,7 +160,7 @@ digraph {
 | stage | what it does |
 |---|---|
 | the front end, shared | `JsToX86.roc` imports `Parser` and `Compile` from `js/roc/` as a package, so the compiler starts from the same `Bytecode` the interpreter runs ({{chapter The front end}}) |
-| `Lowering.roc` | turns each function's bytecode into `Assembly` statements, one instruction's machine code after another; `OperatorLowering`, `BuiltinLowering`, `CallLowering` and `IndexLowering` each take a family of instructions, and `Inlining` and four later passes are in {{chapter What the compiler leaves to an optimizer}} |
+| `Lowering.roc` | turns each function's bytecode into `Assembly` statements, one instruction's machine code after another; `OperatorLowering`, `BuiltinLowering`, `CallLowering` and `IndexLowering` each take a family of instructions, and `Inlining` and five later passes are in {{chapter What the compiler leaves to an optimizer}} |
 | `Assembly.roc` | lays the statements out as bytes; a jump or a call that names a label gets a placeholder, patched once every label's place is known: backpatching, as in a one-pass assembler |
 | `Elf.roc` | wraps the code as an executable: an ELF header, one program header and one segment, read and execute, mapped at 0x400000 |
 | `x86/executables.shale` | Roc's default platform writes text alone to stdout, so `js-x86` prints the executable as hex, and this script turns each pair of digits back into its byte |
@@ -185,7 +185,7 @@ The two NaNs the processor makes lie below every tag, so a value is a number exa
 
 ### The runtime
 
-Every executable carries the runtime, about 24 KB of machine code: the start, the allocator, buffered output, `console.log`'s writing of values as node writes them, the array methods, the Maps and Sets, and the timers. It is written in Roc too, as lists of `Assembly` statements, one instruction a line through the short builders of `Emit.roc`. Here is the allocator, from `Heap.roc`:
+Every executable carries the runtime, about 28 KB of machine code and its tables: the start, the allocator, buffered output, `console.log`'s writing of values as node writes them, the array methods, the Maps and Sets, and the timers. It is written in Roc too, as lists of `Assembly` statements, one instruction a line through the short builders of `Emit.roc`. Here is the allocator, from `Heap.roc`:
 
 {{function x86/roc/Heap.roc allocate_items}}
 
@@ -198,15 +198,18 @@ Four registers belong to the runtime for the whole run:
 | `r14` | the heap's end |
 | `r15` | the heap's state |
 
-They live in a mapping of 3 GiB: a heap of 2 GiB, then the collector's mark stack. The heap is 64 KiB pages of one block size each, every block behind a header word of its kind and size (`x86/COLLECTOR.md`). The allocator pops its size's free list or bumps through a page, and past a threshold it collects first.
+They live in a mapping of 3 GiB: a heap of 2 GiB, then the collector's mark stack. The heap is 64 KiB pages of one block size each, every block behind a header word of its kind and size (`x86/COLLECTOR.md`). The allocator pops its size's free list or bumps through a page, and past a threshold it collects first. Since 2026-11-28 a block whose size the runtime knows when it is built, such as a new object or a small array, is allocated in line, and the 256 strings of one byte lie in the read-only segment, made once, so a walk of a string's characters hands out those (`276d088`; `x86/COLLECTOR.md`, "Cheaper allocation").
 
 The runtime dominates a small program's size:
 
 | executable | size |
 |---|---|
 | `let x = 1;`, 2026-11-27 | 24,407 bytes (`x86/README.md`) |
-| `x86/fib.js`, the same day | 24,837 bytes |
+| `let x = 1;`, 2026-11-28 | 28,441 bytes |
+| `x86/fib.js`, the same day | 28,779 bytes |
 | fib(22) at milestone 2 of `x86/README.md`, before the runtime | 1,010 bytes (`0c5ea7e`) |
+
+The two sizes of 2026-11-28 were measured for this chapter, with js-x86's dev build at `a47987a`.
 
 ### The compiled programs' collector
 
@@ -219,11 +222,11 @@ Every executable carries a garbage collector in its runtime, a mark and sweep de
 | the sweep | clears each marked block's bit, links each unmarked one onto its size's free list, and frees each page whose blocks all died |
 | the trigger | the heap past twice the bytes the last collection kept, and at least 8 MiB |
 
-A root may be a number that only looks like an address, so the collector leaves every block where it was allocated, and such a root costs at most some garbage kept alive. The headers and pages came first (`a328636`), then the mark, the sweep and a torture tier that collects at every allocation (`460b606`). A floor of 8 MiB held big daddy at 8.8 MB, about a twelfth of node's peak on the same run; floors from 2 to 64 MiB kept its CPU time within 8% (`x86/COLLECTOR.md`, "Lane 3").
+A root may be a number that only looks like an address, so the collector leaves every block where it was allocated, and such a root costs at most some garbage kept alive. The headers and pages came first (`a328636`), then the mark, the sweep and a torture tier that collects at every allocation (`460b606`). A floor of 8 MiB held big daddy at 8.8 MB, about a twelfth of node's peak on the same run; floors from 2 to 64 MiB kept its CPU time within 8% (`x86/COLLECTOR.md`, "Lane 3"). At big daddy's full size, 15,000 rounds, the run made 735,302,387 allocations and 7,499 collections, and the heap stayed within 135 pages, 8.8 MB, however long it ran (`x86/bigdaddy/README.md`, "At full size").
 
 ### What it compiles, as of 2026-11-27
 
-`x86/programs.shale` compiles each of the 63 corpus programs in `js/tests/` and holds those whose executables print exactly what node prints to `x86/corpus.txt`: 51 of 63 (`x86/README.md`, "The corpus"). It also holds the 68 programs of `x86/tests/` to node and the 48 of `x86/tests/refused/` to their refusals. The 12 left stop at these, by the first reason each meets:
+`x86/programs.shale` compiles each of the 63 corpus programs in `js/tests/` and holds those whose executables print exactly what node prints to `x86/corpus.txt`: 51 of 63 (`x86/README.md`, "The corpus"). It also holds the 80 programs of `x86/tests/` to node and the 50 of `x86/tests/refused/` to their refusals (counted on 2026-11-28). The 12 left stop at these, by the first reason each meets:
 
 | programs | the first reason |
 |---|---|
@@ -243,14 +246,17 @@ The compiler's whole work is `executable_of`, from the program's text to the exe
 
 {{function x86/roc/JsToX86.roc executable_of}}
 
-Its type, `Str -> Try(List(U8), Str)`, has Roc's thin arrow: a pure function. Each stage it calls, through `lowering_of`, is pure too: `Parser.program_of`, `Compile.program`, `Lowering.program_lowering`, `Assembly.assemble` and `Elf.executable`. Across the 25,708 lines of `x86/roc/`, seven definitions carry the `!` of an effect (counted for this chapter on 2026-11-27):
+Its type, `Str -> Try(List(U8), Str)`, has Roc's thin arrow: a pure function. Each stage it calls, through `lowering_of`, is pure too: `Parser.program_of`, `Compile.program`, `Lowering.program_lowering`, `Assembly.assemble` and `Elf.executable`. Across the 32,104 lines of `x86/roc/`, eleven definitions carry the `!` of an effect (counted for this chapter on 2026-11-28):
 
 | definitions | where | what they print |
 |---|---|---|
 | `main!` and `write_program!` | each of the two drivers, `JsToX86.roc` and `Hello.roc` | the bytes |
 | `write_inlined!` | `JsToX86.roc` | the count of inlined calls |
+| `write_versioned!` | `JsToX86.roc` | the count of loops the compiler placed twice |
+| `write_posts!` | `JsToX86.roc` | how the passes over the runtime ran |
 | `write_stopped!` | `JsToX86.roc` | a compile stopped at one phase, for timing it |
 | `write_labels!` | `JsToX86.roc` | each label's offset, for reading the code back |
+| `write_counted!` and `write_count_map!` | `JsToX86.roc` | an executable that counts the instructions it runs, and its map ({{chapter What the compiler leaves to an optimizer}}) |
 
 Who does the program's effects
 ```dot
@@ -280,7 +286,7 @@ Many compilers hand their last step to a C compiler or to LLVM. This one hands i
 
 ### A pure function is plain to test
 
-Each of the encoder's 119 `expect`s holds one instruction's bytes, `rsp` and `r12` as a base and the displacements at the edges of 8 and 32 bits among them, and each was read back through `objdump` during development (`x86/README.md`). An `expect` of a pure function needs a value in and a value out, and the host stays out of it.
+Each of the encoder's 122 `expect`s holds one instruction's bytes, `rsp` and `r12` as a base and the displacements at the edges of 8 and 32 bits among them (`X86.roc`, counted on 2026-11-28), and the 119 that `x86/README.md` counts were each read back through `objdump` during development. An `expect` of a pure function needs a value in and a value out, and the host stays out of it.
 
 The work moved, and some of it moved into the runtime. A routine that the interpreter writes as a Roc function, such as `console.log`'s layout of an array in columns, is in the compiler a list of x86-64 instructions, written one a line in Roc (`x86/roc/Inspect.roc`, 1,185 lines).
 
@@ -376,15 +382,15 @@ The ordinary algorithm is the slow one on purpose. Fast doubling, which takes F(
 
 ### Where it stood on 2026-11-26
 
-One run each on 2026-11-26, at load 0.88 (`x86/race/README.md`, after `8989013`):
+The median of three runs each on 2026-11-26, at master `62cb716` and a load of 0.3 to 1.0 (`x86/RACES.md`):
 
 | contestant | time | |
 |---|---|---|
-| js-x86 | 55.75 s | 0.74 of node's time |
-| Roc, LLVM | 56.42 s | js-x86 takes 0.99 of it |
-| node | 75.80 s | |
+| js-x86 | 50.37 s | 0.63 of node's time |
+| Roc, LLVM | 51.66 s | js-x86 takes 0.98 of it |
+| node | 79.73 s | |
 
-Runs on this box move by about a tenth, so the honest reading is that js-x86 and LLVM's Roc are even, and both beat node by about a quarter.
+Runs on this box move by about a tenth, so the honest reading is that js-x86 and LLVM's Roc are even, and both beat node by about a third. An earlier single run that day, at a load of 0.88, read 55.75 s, 56.42 s and 75.80 s (`x86/race/README.md`, after `8989013`).
 
 ### What the loop costs
 
@@ -403,16 +409,17 @@ What closed the gap were the fixes that `x86/race/README.md` numbers 1 to 19, ev
 
 ### What remains
 
-The largest lead the race's README ranked, an integer loop counter, is in: it is the 64 above. Its other leads, constants kept for the loop and an array's address reused, are open. The other races stood so against node, as of 2026-11-27:
+The largest lead the race's README ranked, an integer loop counter, is in: it is the 64 above. Its other leads, constants kept for the loop and an array's address reused, are open. `x86/RACES.md` keeps every race's latest verdict, each the median of three runs on a quiet box, timed from outside:
 
-| race | js-x86's time over node's | source |
-|---|---|---|
-| fib | 0.74 | above |
-| bank ledger | 2.84 | `x86/bank/README.md`, "Against Roc" |
-| fourteen | 2.60 | `x86/fourteen/README.md`, "Against Roc" |
-| SAT, preliminary | 1.81 | `x86/satrace/README.md` |
+| race | js-x86's time over node's | over Roc's | run |
+|---|---|---|---|
+| fib, F(740000) | 0.63 | 0.98 | 2026-11-26, `62cb716` |
+| bank ledger, 110 million transfers | 1.69 | 0.86 | 2026-11-26, `62cb716` |
+| fourteen, 21,000 rounds | 1.40 | 1.72 | 2026-11-26, `2f6f510` |
+| SAT, the race workload | 1.95 | 2.52, rocsat | 2026-11-28, `e5babdd` |
+| big daddy, 15,000 rounds | 1.56 | - | 2026-11-28, `e5babdd` |
 
-The bank and fourteen races are object and call heavy, where node's hidden classes and inlining pay. The SAT race is rocsat's CDCL solver written in the subset, and its one run was on a busy box. A fifth race, big daddy, is a fork of the corpus's program 54 (`x86/bigdaddy/README.md`), which runs at its full size, 10,000 rounds, since the collector. Each race's README adds the runs made since.
+The bank and fourteen races are object and call heavy, where node's hidden classes and inlining pay. The SAT race is rocsat's CDCL solver written in the subset; its ratio was 2.29 the day before, and {{chapter What the compiler leaves to an optimizer}} says what moved it. Big daddy is a fork of the corpus's program 54 (`x86/bigdaddy/README.md`). It has run at its full size, 15,000 rounds, since the collector (`05a7757`), and its executable prints node's output byte for byte there. Each race's README has the runs that led to these.
 
 ## What the compiler leaves to an optimizer
 
@@ -431,15 +438,33 @@ Each optimization the compiler makes is a standard technique (`x86/roc/Lowering.
 | for what is unknown, the commonest cases are tested in line, and the runtime's routine is called only when the test fails: `+` and the comparisons of two numbers, a number's tag test, and an array's `length`, item read and item write | `OperatorLowering.roc`, `IndexLowering.roc`; `17cb2b0`, `d6ecebd` | an inline cache (Deutsch and Schiffman, 1984, for Smalltalk-80) |
 | a small leaf function called inside a loop is put in line in the bytecode, within a budget of instructions | `Inlining.roc` | inlining, a textbook optimization |
 | after the lowering, a looping function's four busiest frame places live in registers | `Registers.roc` | register allocation by usage counts (Freiburghouse, 1974), the plainest kind, short of graph coloring (Chaitin, 1982) |
+| a load of a frame place that a register already holds becomes a move from that register, and a dead store, one that every later path stores over or leaves unread, is dropped | `FrameValues.roc`; `x86/COST.md`, "Lane 4, as built" | value numbering (Cocke and Schwartz, 1970) and dead-store elimination by backward liveness |
 | three passes take out loads of what a register already holds, dead register moves, and jumps to jumps | `Forwarding.roc`, `Moves.roc`, `Jumps.roc` | peephole optimization (McKeeman, 1965) and jump threading |
 
 ### The plain parts
 
-Everything else is done the plainest way. Each function's frame is fixed: every slot, and every place on the bytecode's stack, has its own address below `rbp`, and an instruction loads its operands from there into `rax` or `xmm0`, works, and stores the result back, or uses the register Registers gave the place. Each bytecode instruction becomes its own machine code, in order, and a call stays a call but for the inlined leaves. Registers renames at most four places a function, chosen by how often plain moves name them; a search of `x86/roc/` on 2026-11-27 finds zero mentions of constant folding.
+Everything else is done the plainest way. Each function's frame is fixed: every slot, and every place on the bytecode's stack, has its own address below `rbp`, and an instruction loads its operands from there into `rax` or `xmm0`, works, and stores the result back, or uses the register Registers gave the place; FrameValues then thins that traffic, as its row above says, in every program but one with a `try`. Each bytecode instruction becomes its own machine code, in order, and a call stays a call but for the inlined leaves. Registers renames at most four places a function, chosen by how often plain moves name them; a search of `x86/roc/` on 2026-11-28 finds zero mentions of constant folding.
 
 ### Where an optimizer would pay
 
 An optimizer would pay most on loops. The loops program has the widest gap, 6 to 8 times. `x86/BENCH.md` offers an unmeasured guess: a tight loop over a local array is where V8's registers and small integers help most, and where the executable's trips through memory cost most. A second guess, also unmeasured, is that loops and collatz both use `%`, which the executable lowers to `idiv`, one of the processor's slower instructions. The README's milestone 6, type specialization for long numeric loops, is aimed at the first. In the fib race the cost was measured, by reading the machine code: eleven calls into the runtime for each limb, since an array's items are of unknown kind, which the in-line paths cut (`x86/race/README.md`).
+
+### Counting in place of timing
+
+The races run on a shared two-core machine, where every timing moves with the load, and the virtual machine hides the processor's own counters from `perf` (`x86/COST.md`, "What the box has"). So the executable counts for itself. js-x86's `counted` mode (`x86/roc/Counter.roc`, `87d3a96`) writes a second executable with one `inc` of a counter at the start of every block of the code, the runtime's included, and `shale x86/cost.shale counted=1` multiplies each block's count by its instructions (`b4bb941`). The answer is the exact number of instructions the run executed, by place and by function, and it reads the same on a busy box as on a quiet one: run twice, each race's counts matched byte for byte (`x86/COST.md`, "The counter"). A count is blind to cache misses, so it compares two builds of one race, and the stopwatch still gives the verdict.
+
+Three changes of 2026-11-27 and 2026-11-28 were judged by the count first, each race at its small size:
+
+| change | race | instructions run, before | after | source |
+|---|---|---|---|---|
+| FrameValues, with a change to which places Registers keeps | SAT | 5,185,320,472 | 4,071,184,918, 21% fewer | `x86/COST.md`, "Lane 4, as built" |
+| a hashed index for each Map and Set past 8 entries | big daddy, 300 rounds | 6,917,983,458 | 4,085,933,251, 40.9% fewer | `x86/bigdaddy/README.md` |
+| the same | SAT | 4,071,184,918 | 2,723,707,216, 33.1% fewer | the same |
+| the one-byte strings made once, and allocation in line | big daddy, 300 rounds | 4,085,933,251 | 3,873,443,548, 5.2% fewer | `x86/COLLECTOR.md`, "Cheaper allocation" |
+
+The counts also said where to look. Big daddy ran 90% of its instructions in the runtime: 31.6% of the run in a Map's or a Set's search for a key, a walk of the entries in order, and 15.3% in comparing strings a byte at a time, most of it for that search (`x86/bigdaddy/README.md`, "Where we're weak against node"). The hashed index (`8fc3ab7`) finds a key past 8 entries by its hash, as an object's table already did, and compares strings 8 bytes a step; the two shares fell to 3.9% and 2.0%. In the SAT race, FrameValues (`3c3c4b0`) took the propagation function from 2,155,867,135 instructions to 1,263,899,707. In big daddy the largest cost left is the collector's sweep, whose zeroing of dead blocks alone is 11.3% of the run.
+
+On a quiet box after all three, at `e5babdd` on 2026-11-28, the SAT race took 1.95 times node's time, where it took 2.29 the day before, and big daddy at its full size took 1.56 times node's (`x86/RACES.md`).
 
 ### What comes next
 
@@ -450,7 +475,7 @@ The compiler's own milestones say what follows (`x86/README.md`):
 | classes | compiled since `6ec8068`; the parser already writes each class as plain functions, so the work was the `NewInstance` and `InstanceOf` instructions of the bytecode |
 | milestone 4, the runtime in the subset: `console.log`'s formatting, Map and Set, and number printing, written in the JavaScript subset and compiled by this compiler | next; four corpus programs wait on its number printing (02, 30, 58 and 54) |
 | milestone 5, the collector of `x86/COLLECTOR.md` ({{chapter The compiler to x86-64}}) | in (`a328636`, `460b606`) |
-| milestone 6, the type specialization the loops above ask for | after milestone 4 |
+| milestone 6, the type specialization the loops above ask for | begun: an integer kind, each array's element kind in its header, and loops placed twice, with a fast copy for the values each loop only reads (`x86/README.md`; `x86/SPECIALIZATION.md`) |
 
 Since 2026-11-26 an instance holds its class's table of methods, and a method takes its receiver as its first parameter, passed in `rdx` by every call through a value.
 
@@ -1128,17 +1153,17 @@ The interpreter works RC1's release pipeline harder than most Roc projects do. J
 
 He put the three together at about 12 times faster for this repository's code specifically (Zulip, #off topic > LLVM). They are expected to merge after Roc 0.10, so every build time above is RC1's own.
 
-### js-x86 building a program, preliminary, as of 2026-11-27
+### js-x86 building a program, as of 2026-11-27
 
-The compiler turns the question around: how long from a program's source to an executable on the disk? `x86/buildrace.shale` times js-x86 against `roc build` of the same race written in Roc, at `--opt=dev` and at `--opt=speed`, the build that makes the fast executable the races run (`x86/buildrace/README.md`). These numbers are preliminary: the machine was shared with other work, and a run on a quiet machine will replace them. The headline, from warm runs at a load of 1.0 to 1.3 (`x86/buildrace/PROFILE.md`, "The build race, before and after"; `x86/RC2.md` for the executables):
+The compiler turns the question around: how long from a program's source to an executable on the disk? `x86/buildrace.shale` times js-x86 against `roc build` of the same race written in Roc, at `--opt=dev` and at `--opt=speed`, the build that makes the fast executable the races run (`x86/buildrace/README.md`). The latest verdict, warm builds on a quiet box on 2026-11-27, the medians of three (`x86/RACES.md`; `x86/RC2.md` for the executables):
 
 | from a race's source to an executable | build time | the executable it makes |
 |---|---|---|
-| js-x86 | 44 to 94 ms | fast |
+| js-x86 | 30 to 600 ms, big daddy the longest | fast |
 | `roc build --opt=dev`, warm | 0.02 to 0.03 s | about 2.3 MB, 10 to 25 times slower than `--opt=speed`'s |
-| `roc build --opt=speed`, warm | 0.72 to 3.8 s | 32 to 180 KB, fast |
+| `roc build --opt=speed`, warm | 1.05 to 3.50 s | 32 to 180 KB, fast |
 
-So js-x86 builds 15 to 50 times faster than the Roc build that makes a fast executable; Roc's dev build is faster still, and makes a slow one.
+Only js-x86 builds big daddy. On the three races ported to Roc, js-x86 builds 15 to 50 times faster than the Roc build that makes a fast executable (`x86/buildrace/PROFILE.md`, "The build race, before and after"); Roc's dev build is about as fast, and makes a slow executable.
 
 ## How it is tested
 
@@ -1146,7 +1171,7 @@ A check is trusted once it has been seen to fail. Each check below holds the cod
 
 ### The compiler's checks
 
-`x86/programs.shale`, a tier of the default `check.shale`, compiles each program in `x86/tests/` and holds what its executable prints, and its exit code, to node's; each program in `x86/tests/refused/` names the refusal `js-x86` must print or the line its executable must stop with. Then it holds the corpus to `x86/corpus.txt`, the list of programs whose executables match node, so a program that starts or stops matching fails the gate until the list moves. It holds the count of calls the inliner puts in line across `x86/tests/` exactly (its `INLINED`), and runs every executable with `heapwalk`, which checks every block's header at the exit (`x86/COLLECTOR.md`). `x86/hello.shale` runs the backend's 134 expects, the encoder's 119 among them, each holding one instruction's bytes, and `x86/fib.shale` the compiler's 230 (each script's `EXPECTS`, held exactly, as of 2026-11-27).
+`x86/programs.shale`, a tier of the default `check.shale`, compiles each program in `x86/tests/` and holds what its executable prints, and its exit code, to node's; each program in `x86/tests/refused/` names the refusal `js-x86` must print or the line its executable must stop with. Then it holds the corpus to `x86/corpus.txt`, the list of programs whose executables match node, so a program that starts or stops matching fails the gate until the list moves. It holds the count of calls the inliner puts in line across `x86/tests/` exactly (its `INLINED`), and runs every executable with `heapwalk`, which checks every block's header at the exit (`x86/COLLECTOR.md`). `x86/hello.shale` runs the backend's 137 expects, the encoder's 122 among them, each holding one instruction's bytes, and `x86/fib.shale` the compiler's 249 (each script's `EXPECTS`, held exactly, as of 2026-11-28). `x86/cost.shale proof=1`, another tier, holds the instruction counter to a loop of 10, 20 and 30 trips, whose head must run one time more than its trips and whose body once a trip (`b4bb941`).
 
 ### The interpreter against node
 
@@ -1174,6 +1199,8 @@ A planted fault is a deliberate bug, committed to show that a check catches it, 
 | `<` lowered with the wrong condition | `0c5ea7e` |
 | each rule of the inliner's budget | `22361e1` |
 | three faults in the heap's headers and pages | `a328636` |
+
+`x86/COST.md` records two more, for the counter's proof: a block after a conditional jump left uncounted, and the counters' addresses halved.
 
 The interpreter's record lists five, each reverted too:
 
@@ -1272,4 +1299,6 @@ The project leans on these outside tools for its builds, its checks, its measure
 
 The races run on a shared two-core virtual machine, and their timings move with its load. `x86/cost.shale` measures what the bytes alone decide: it compiles each race, disassembles the executable with objdump, and hands llvm-mca the fast path of a range of bytecode instructions. Run twice, it prints the same tables byte for byte (`x86/COST.md`, "How to run it"). LLVM stays outside the compiler: llvm-mca reads only the disassembly of the bytes js-x86 writes (`07e599b`).
 
-Its first table explained a result the timings left open. A branch of milestone 6's work, `x86-kinds6-l3`, cut the SAT race's watch loop from 353 instructions to 229 on its fast path, and the race ran at about the same speed. Over that fast path, the stores grew from 42 to 67, 65 of them to the frame. Cascade Lake retires one store a cycle, so the store port set the branch's block throughput at 67.0 cycles a pass, against master's 63.8 (`x86/COST.md`, "What it says about lane 3", `1623197`).
+Its first table explained a result the timings left open. A branch of milestone 6's work, `x86-kinds6-l3`, cut the SAT race's watch loop from 348 instructions to 222 on its fast path, and the race ran at about the same speed. Over that fast path the stores grew from 42 to 63, 61 of them to the frame, and llvm-mca put both builds' block throughput at 63.0 cycles a pass: about half of the instructions cut were tag tests and their branches, cheap and off the loop's bound. The table first read 353, 229, 67.0 and 63.8 (`1623197`), until a fix to the tier stopped it reading an empty place's code twice (`3c3c4b0`; `x86/COST.md`, "Lane 4, as built"). The next branch took the loop's frame stores from 61 to 21, and its throughput to 31.8 cycles (`044070b`).
+
+The counter of {{chapter What the compiler leaves to an optimizer}} is the tier's other half, and it is js-x86's own code. With `counted=1`, `x86/cost.shale` also hands llvm-mca every block that ran, and each block's count times its throughput, summed, is the run's predicted cycles, a model for comparing two builds of one race (`x86/COST.md`, "The counter"). A counted executable is a separate file from the race's, and runs 3 to 10 times as long.
