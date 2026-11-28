@@ -1,0 +1,4 @@
+// refused: `own` hands over a variable it can then poison, and `xs` is a `const` (line 4, column 10)
+function keep(own list) { return list.length; }
+const xs = [1, 2];
+keep(own xs);

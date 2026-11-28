@@ -1,0 +1,8 @@
+{ owner: 'ada', balance: 70 }
+55 0
+1
+[ 1, 2, 3, 4 ] 10 10
+3
+4.5
+2147483647 kava [ true, false ]
+[exit 0]

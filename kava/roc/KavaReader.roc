@@ -758,7 +758,7 @@ KavaReader :: [].{
 		if reader.code != Ordinary {
 			return Err(KavaState.fault_here(reader, "a ghost or a clause can't hand a value over"))
 		}
-		said = KavaChecks.quoted("kava: own ${name}: ${name} was used after it was handed over (${reader.file}, line ${keyword.line.to_str()})")
+		said = KavaChecks.quoted("kava: own ${name} failed: ${name} was used after it was handed over (${reader.file}, line ${keyword.line.to_str()})")
 		poisoned = Edits.replacement(
 			keyword.start,
 			named.end,
@@ -782,7 +782,7 @@ KavaReader :: [].{
 		first = reader.at + 1
 		lent = KavaReader.expression(KavaState.advance(reader), AtElementEnd)?
 		text = KavaState.rendered(lent, first, lent.at)
-		said = KavaChecks.quoted("kava: lent ${text}: ${text} was written (${reader.file}, line ${keyword.line.to_str()})")
+		said = KavaChecks.quoted("kava: lent ${text} failed: it was written (${reader.file}, line ${keyword.line.to_str()})")
 		opened = Edits.replacement(
 			keyword.start,
 			KavaState.token_at(reader, first).start,

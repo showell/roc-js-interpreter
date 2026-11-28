@@ -1,0 +1,7 @@
+// refused: `seen` is a ghost's name, and ordinary code may not declare it (line 5, column 14)
+ghost let seen = 0;
+function count(xs) {
+  ghost seen += xs.length;
+  for (const seen of xs) console.log(seen);
+}
+count([1]);

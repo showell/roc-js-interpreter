@@ -1,0 +1,50 @@
+// Ghost state: a class's ghost field read only by its invariant and by
+// other ghosts, a ghost variable, and a law, carried and never run. Strip
+// mode deletes every ghost; a checked build keeps them, and a ghost that
+// catches the ordinary code out throws.
+class Ledger {
+  ghost postings = 0;
+  ghost total: number = 0;
+  invariant this.balance === this.total;
+
+  constructor() {
+    this.balance = 0;
+  }
+
+  post(amount: i32) {
+    this.balance += amount;
+    ghost this.total += amount;
+    ghost this.postings++;
+  }
+
+  // A bug a ghost sees: the balance moves twice.
+  postTwice(amount: i32) {
+    this.balance += 2 * amount;
+    ghost this.total += amount;
+  }
+}
+
+law balanced(ledger: Ledger, amount: i32) {
+  ledger.post(amount) implies ledger.balance == old(ledger.balance) + amount
+}
+
+function fill(n: number) {
+  const ledger = new Ledger();
+  ghost let checked = 0;
+  for (let i = 1; i <= n; i++) {
+    ledger.post(i);
+    ghost checked += i;
+  }
+  ghost if (checked !== ledger.balance) throw new Error("the ghost disagrees");
+  return ledger.balance;
+}
+
+console.log(fill(10));
+const ledger = new Ledger();
+ledger.post(5);
+try {
+  ledger.postTwice(3);
+  console.log("postTwice passed:", ledger.balance);
+} catch (e) {
+  console.log("postTwice threw:", e.message);
+}

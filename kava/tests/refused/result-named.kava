@@ -1,0 +1,6 @@
+// refused: `result` names the value an `ensures` or a result's type checks: rename this variable (line 3, column 7)
+function double(x) ensures result === 2 * x {
+  let result = x + x;
+  return result;
+}
+console.log(double(2));

@@ -1,0 +1,77 @@
+// Contracts that hold: requires, ensures with result and old(x), a loop's
+// invariant, a class's invariant, types, a ghost, own and lent. Strip mode
+// and a checked build print the same, since nothing here fails.
+function withdraw(account: { owner: string, balance: i64 }, amount: i64): { owner: string, balance: i64 }
+  requires amount > 0
+  requires account.balance >= amount
+  ensures result.balance === old(account.balance) - amount
+  ensures result.balance >= 0
+{
+  return { owner: account.owner, balance: account.balance - amount };
+}
+
+function sumTo(n: i32): i32 requires n >= 0 ensures result === n * (n + 1) / 2 {
+  let total = 0;
+  let i = 0;
+  while (i <= n) invariant total === i * (i - 1) / 2 {
+    total += i;
+    i++;
+  }
+  return total;
+}
+
+class Counter {
+  invariant this.count >= 0;
+  constructor(start: number) {
+    this.count = start;
+  }
+  up(): number {
+    this.count += 1;
+    return this.count;
+  }
+  down() requires this.count > 0 {
+    this.count -= 1;
+  }
+}
+
+function push(own xs: number[], x: number): own number[] {
+  xs.push(x);
+  return xs;
+}
+
+function total(lent xs: number[]): number {
+  let s = 0;
+  for (const x of xs) s += x;
+  return s;
+}
+
+function countEvens(xs: number[]): number cost O(n) where n = xs.length {
+  let evens = 0;
+  ghost let seen = 0;
+  for (const x of xs) cost O(1) {
+    if (x % 2 === 0) evens++;
+    ghost seen++;
+  }
+  ghost {
+    if (seen !== xs.length) throw new Error("the ghost lost count");
+  }
+  return evens;
+}
+
+const account = withdraw({ owner: "ada", balance: 100 }, 30);
+console.log(account);
+console.log(sumTo(10), sumTo(0));
+const c = new Counter(1);
+c.up();
+c.down();
+c.down();
+console.log(c.up());
+let a = [1, 2, 3];
+let b = push(own a, 4);
+console.log(b, total(lent b), total(b));
+console.log(countEvens([1, 2, 3, 4, 6]));
+const half = (x: number): number requires x >= 0 => x / 2;
+console.log(half(9));
+let limit: i32 = 2147483647;
+const name: string = "kava", flags: boolean[] = [true, false];
+console.log(limit, name, flags);

@@ -1,0 +1,14 @@
+requires gave 11
+ensures gave -10
+old gave 41
+passes gave 60
+loop invariant gave 5
+class invariant gave -4
+constructor invariant gave -1
+i32 parameter gave 1073741824
+i32 result gave 3.5
+number parameter gave 5
+record shape gave Ada Lovelace
+record field gave Ada 7
+declared type gave 1099511627776
+[exit 0]

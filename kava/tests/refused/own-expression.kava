@@ -1,0 +1,4 @@
+// refused: `own` hands over a variable: write `own <name>` (line 4, column 6)
+function keep(own list) { return list.length; }
+const box = { items: [1] };
+keep(own box.items);

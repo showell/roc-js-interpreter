@@ -1,0 +1,10 @@
+// refused: `a` is used after it was handed over at line 8 (line 9, column 13)
+function push(own xs: number[], x: number): own number[] {
+  xs.push(x);
+  return xs;
+}
+
+let a = [1, 2, 3];
+let b = push(own a, 4);
+console.log(a);
+console.log(b);

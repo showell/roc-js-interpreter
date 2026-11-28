@@ -99,7 +99,7 @@ KavaChecks :: [].{
 		for param in contract.params {
 			match (param.name, param.hold) {
 				(Named(name), Lent) => {
-					said = KavaChecks.quoted("kava: lent ${name}: ${name} was written (${file}, line ${param.line.to_str()})")
+					said = KavaChecks.quoted("kava: lent ${name} failed: it was written (${file}, line ${param.line.to_str()})")
 					$parts = $parts.append("${name} = $kava_lend(${name}, ${said});")
 				}
 				_ => {}

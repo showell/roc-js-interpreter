@@ -1,0 +1,5 @@
+// refused: a ghost may not write `balance`, which is no ghost (line 4, column 9)
+let balance = 10;
+ghost let audited = 0;
+ghost { balance = 0; audited = 1; }
+console.log(balance);
