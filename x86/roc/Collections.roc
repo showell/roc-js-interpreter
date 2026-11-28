@@ -332,7 +332,7 @@ Collections :: [].{
 		# entry's value when it has one, else a new entry after the last, the
 		# entries copied to twice the room when they fill it.
 		put =
-			[Emit.mark("runtime_collection_put")]
+			[Emit.mark(Runtime.collection_put)]
 				.concat(canonical_key("runtime_collection_put_key"))
 				.concat([
 					# A Set's value is its key.
@@ -694,6 +694,53 @@ Collections :: [].{
 					Emit.imm(Rax, Boxing.undefined_bits),
 				])
 				.concat(leave)
+		# `get`, `has` and `delete` of the key `rsi` in the Map or Set whose
+		# record is at `rdi`, untagged: what a call site's guard in line
+		# reaches once it holds (BuiltinLowering's `collection_fast_items`),
+		# and what `runtime_collection_method` reaches by its number. `set`
+		# and `add` are `runtime_collection_put`'s, the answer the receiver.
+		given = |{ label, value }| [
+			Emit.mark(label),
+			Emit.imm(Rax, value),
+			Emit.ret,
+		]
+		lookups =
+			[
+				Emit.mark(Runtime.collection_get),
+				Emit.call("runtime_collection_find"),
+				Emit.test(Rax, Rax),
+				Emit.jcc(E, "runtime_collection_get_none"),
+				Emit.load(Rax, Emit.mem(Rax, 8)),
+				Emit.ret,
+			]
+				.concat(
+					given({ label: "runtime_collection_get_none", value: Boxing.undefined_bits }),
+				)
+				.concat([
+					Emit.mark(Runtime.collection_has),
+					Emit.call("runtime_collection_find"),
+					Emit.test(Rax, Rax),
+					Emit.jcc(E, "runtime_collection_lookup_false"),
+					Emit.jmp("runtime_collection_lookup_true"),
+					# A deleted entry keeps its place, its key the tombstone.
+					Emit.mark(Runtime.collection_delete),
+					Emit.save(Rdi),
+					Emit.call("runtime_collection_find"),
+					Emit.restore(Rdi),
+					Emit.test(Rax, Rax),
+					Emit.jcc(E, "runtime_collection_lookup_false"),
+					Emit.imm(Rcx, Boxing.gone_bits),
+					Emit.store(Emit.mem(Rax, 0), Rcx),
+					Emit.imm(Rcx, Boxing.undefined_bits),
+					Emit.store(Emit.mem(Rax, 8), Rcx),
+					Emit.load(Rcx, Emit.mem(Rdi, 8)),
+					Emit.minus_imm(Rcx, 1),
+					Emit.store(Emit.mem(Rdi, 8), Rcx),
+				])
+				.concat(given({ label: "runtime_collection_lookup_true", value: Boxing.true_bits }))
+				.concat(
+					given({ label: "runtime_collection_lookup_false", value: Boxing.false_bits }),
+				)
 		method_case = |{ number, label }| [Emit.cmp_imm(Rcx, number), Emit.jcc(E, label)]
 		answer = |{ label, value }| [Emit.mark(label), Emit.imm(Rax, value)].concat(leave)
 		# `rcx`: 0 get, 1 set, 2 has, 3 delete, 4 clear, 5 add, 6 keys, 7
@@ -795,10 +842,7 @@ Collections :: [].{
 					Emit.mark("runtime_collection_method_get"),
 					Emit.test(R8, R8),
 					Emit.jcc(Ne, "runtime_collection_method_stop"),
-					Emit.call("runtime_collection_find"),
-					Emit.test(Rax, Rax),
-					Emit.jcc(E, "runtime_collection_method_undefined"),
-					Emit.load(Rax, Emit.mem(Rax, 8)),
+					Emit.call(Runtime.collection_get),
 				])
 				.concat(leave)
 				.concat([
@@ -812,26 +856,15 @@ Collections :: [].{
 				.concat(leave)
 				.concat([
 					Emit.mark("runtime_collection_method_has"),
-					Emit.call("runtime_collection_find"),
-					Emit.test(Rax, Rax),
-					Emit.jcc(E, "runtime_collection_method_false"),
-					Emit.jmp("runtime_collection_method_true"),
-					Emit.mark("runtime_collection_method_delete"),
-					Emit.call("runtime_collection_find"),
-					Emit.test(Rax, Rax),
-					Emit.jcc(E, "runtime_collection_method_false"),
-					Emit.imm(Rcx, Boxing.gone_bits),
-					Emit.store(Emit.mem(Rax, 0), Rcx),
-					Emit.imm(Rcx, Boxing.undefined_bits),
-					Emit.store(Emit.mem(Rax, 8), Rcx),
-					Emit.load(Rdi, RuntimeBuilders.local(8)),
+					Emit.call(Runtime.collection_has),
 				])
-				.concat(RuntimeBuilders.unboxed_items(Rdi))
+				.concat(leave)
 				.concat([
-					Emit.load(Rcx, Emit.mem(Rdi, 8)),
-					Emit.minus_imm(Rcx, 1),
-					Emit.store(Emit.mem(Rdi, 8), Rcx),
-					Emit.jmp("runtime_collection_method_true"),
+					Emit.mark("runtime_collection_method_delete"),
+					Emit.call(Runtime.collection_delete),
+				])
+				.concat(leave)
+				.concat([
 					Emit.mark("runtime_collection_method_clear"),
 					Emit.load(Rcx, Emit.mem(Rdi, 16)),
 					Emit.load(R8, Emit.mem(Rdi, 32)),
@@ -853,12 +886,6 @@ Collections :: [].{
 						value: Boxing.undefined_bits,
 					}),
 				)
-				.concat(
-					answer({ label: "runtime_collection_method_true", value: Boxing.true_bits }),
-				)
-				.concat(
-					answer({ label: "runtime_collection_method_false", value: Boxing.false_bits }),
-				)
 				.append(Emit.mark("runtime_collection_method_stop"))
 				.concat(RuntimeBuilders.stopping_items("runtime_text_collection_method"))
 		[
@@ -872,6 +899,7 @@ Collections :: [].{
 			listed,
 			iterator_of,
 			for_each,
+			lookups,
 			method,
 		].join()
 	}

@@ -3645,7 +3645,7 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 									},
 								)
 							} else {
-								field_read_items(
+								read = field_read_items(
 									site,
 									{
 										kind,
@@ -3654,6 +3654,14 @@ instruction_items = |site, { instruction, state, unconverted, checked }| {
 										slow_items: called,
 									},
 								)
+								if key == "size" and kind == Value {
+									BuiltinLowering.collection_size_items(
+										site,
+										{ place: top_place(0), slow_items: read },
+									)
+								} else {
+									read
+								}
 							},
 							LoweringBasics.with_top(LoweringBasics.without_top(state, 1), given),
 						),

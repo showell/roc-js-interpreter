@@ -14,12 +14,14 @@
 ## what it lowered.
 import js.Ast
 import js.ValueRules
+import Assembly
 import Boxing
 import Emit
 import LoweringBasics
 import Runtime
 import RuntimeBuilders
 import StringMethods
+import X86
 
 BuiltinLowering :: [].{
 
@@ -431,7 +433,12 @@ BuiltinLowering :: [].{
 						Emit.call(Runtime.collection_method),
 						Emit.store(receiver, Rax),
 					])
-				Ok(LoweringBasics.falling(called, after(Value)))
+				items = match collection_fast_path(name, count) {
+					Ok(fast) =>
+						collection_fast_items(site, { fast, receiver, base, slow_items: called })
+					Err(NoFastPath) => called
+				}
+				Ok(LoweringBasics.falling(items, after(Value)))
 			}
 			("splice", _) => {
 				called = LoweringBasics.arguments_array_items(site, { base, count })
@@ -906,6 +913,37 @@ BuiltinLowering :: [].{
 			),
 		)
 	}
+
+	## A Map's or a Set's `size` read in line, as `runtime_get_size` reads it,
+	## when the value at `place` is a collection whose record's first word is
+	## a Map's or a Set's; anything else (an object's own `size`, an
+	## iterator's) takes `slow_items`.
+	collection_size_items : LoweringBasics.Site,
+	{
+		place : X86.Mem,
+		slow_items : List(Assembly.Statement),
+	} -> List(Assembly.Statement)
+	collection_size_items = |site, { place, slow_items }| {
+		slow_label = LoweringBasics.inner_label(site, "size_slow")
+		done_label = LoweringBasics.inner_label(site, "size_done")
+		[Emit.load(Rdi, place)]
+			.concat(RuntimeBuilders.tag_load_items(Rdi))
+			.concat([Emit.cmp_imm(Rcx, Boxing.collection_tag), Emit.jcc(Ne, slow_label)])
+			.concat(RuntimeBuilders.unboxed_items(Rdi))
+			.concat([
+				Emit.load(Rcx, Emit.mem(Rdi, 0)),
+				Emit.cmp_imm(Rcx, 2),
+				Emit.jcc(Ae, slow_label),
+				Emit.load(Rax, Emit.mem(Rdi, 8)),
+				Instruction(Cvtsi2sd({ to: Xmm0, from: Rax })),
+				Instruction(MovqFromXmm({ to: Rax, from: Xmm0 })),
+				Emit.store(place, Rax),
+				Emit.jmp(done_label),
+				Emit.mark(slow_label),
+			])
+			.concat(slow_items)
+			.append(Emit.mark(done_label))
+	}
 }
 
 ## The kind of what a string method of StringMethods' table gives.
@@ -917,3 +955,95 @@ string_method_kind = |name|
 		"startsWith" | "endsWith" => Boolean
 		_ => String
 	}
+
+## A call site's fast path of a Map's or a Set's method (`collection_fast_items`):
+## the record's first word it holds for (a Map's 0, a Set's 1, or either),
+## the routine its guard reaches, and whether the call's answer is the
+## routine's or the receiver itself (`set` and `add`).
+CollectionFast : {
+	holds : [MapOnly, SetOnly, MapOrSet],
+	routine : Str,
+	answer : [Routine, Receiver],
+}
+
+## The fast path of `name` called with `count` arguments: `get`, `has`,
+## `delete` and `add` of one, `set` of two. Any other call takes the generic
+## dispatch.
+collection_fast_path : Str, U64 -> Try(CollectionFast, [NoFastPath])
+collection_fast_path = |name, count|
+	match (name, count) {
+		("get", 1) => Ok({
+			holds: MapOnly,
+			routine: Runtime.collection_get,
+			answer: Routine,
+		})
+		("has", 1) => Ok({
+			holds: MapOrSet,
+			routine: Runtime.collection_has,
+			answer: Routine,
+		})
+		("delete", 1) => Ok({
+			holds: MapOrSet,
+			routine: Runtime.collection_delete,
+			answer: Routine,
+		})
+		("set", 2) => Ok({
+			holds: MapOnly,
+			routine: Runtime.collection_put,
+			answer: Receiver,
+		})
+		("add", 1) => Ok({
+			holds: SetOnly,
+			routine: Runtime.collection_put,
+			answer: Receiver,
+		})
+		_ => Err(NoFastPath)
+	}
+
+## A Map's or a Set's method called at a site with the routine itself, the
+## key in `rsi` and a value in `rdx`, no array of arguments and no lookup by
+## name, when the guard in line holds: the receiver's tag is a collection's
+## and its record's first word is what the method needs. Anything else (an
+## object with a method of that name, an iterator, a Set's `get`) takes
+## `slow_items`, the generic dispatch, which answers or stops as it always
+## did.
+collection_fast_items : LoweringBasics.Site,
+{
+	fast : CollectionFast,
+	receiver : X86.Mem,
+	base : U64,
+	slow_items : List(Assembly.Statement),
+} -> List(Assembly.Statement)
+collection_fast_items = |site, { fast, receiver, base, slow_items }| {
+	slow_label = LoweringBasics.inner_label(site, "collection_slow")
+	done_label = LoweringBasics.inner_label(site, "collection_done")
+	held = match fast.holds {
+		MapOnly => [Emit.test(Rcx, Rcx), Emit.jcc(Ne, slow_label)]
+		SetOnly => [Emit.cmp_imm(Rcx, 1), Emit.jcc(Ne, slow_label)]
+		MapOrSet => [Emit.cmp_imm(Rcx, 2), Emit.jcc(Ae, slow_label)]
+	}
+	value =
+		if fast.routine == Runtime.collection_put and fast.holds == MapOnly {
+			[Emit.load(Rdx, LoweringBasics.stack_place(site.code, base + 1))]
+		} else {
+			[]
+		}
+	answered = match fast.answer {
+		Routine => [Emit.store(receiver, Rax)]
+		Receiver => []
+	}
+	[Emit.load(Rdi, receiver)]
+		.concat(RuntimeBuilders.tag_load_items(Rdi))
+		.concat([Emit.cmp_imm(Rcx, Boxing.collection_tag), Emit.jcc(Ne, slow_label)])
+		.concat(RuntimeBuilders.unboxed_items(Rdi))
+		.append(Emit.load(Rcx, Emit.mem(Rdi, 0)))
+		.concat(held)
+		.append(Emit.load(Rsi, LoweringBasics.stack_place(site.code, base)))
+		.concat(value)
+		.append(Emit.call(fast.routine))
+		.concat(answered)
+		.append(Emit.jmp(done_label))
+		.append(Emit.mark(slow_label))
+		.concat(slow_items)
+		.append(Emit.mark(done_label))
+}
