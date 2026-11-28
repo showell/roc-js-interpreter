@@ -1071,6 +1071,16 @@ code_items = |context| {
 	# end: each such walk counts at one head, a function has no more heads
 	# than instructions, and the other walks end on their own (below).
 	var $widenings = Dict.empty()
+	# The thresholds an `Integer` slot of a loop's head widens through
+	# (`integer_thresholds`), and how many walks each head has widened its
+	# `Integer`s alone. Those walks count against no `most_widenings`: each
+	# head takes at most `most_threshold_walks` of them through the
+	# thresholds, then widens a grown side to ±2^53 at once, each side at most
+	# once more, so they end as a demotion's do.
+	code = context.program.codes.get(context.index) ?? crash "Lowering.code_items: a code's index"
+	thresholds = integer_thresholds(context, code)
+	var $stepped = Dict.empty()
+	var $spent = []
 	while True {
 		walk = code_walk(
 			context,
@@ -1078,6 +1088,8 @@ code_items = |context| {
 				heads: $heads,
 				doubted: $doubted,
 				demoted: $demoted,
+				thresholds,
+				spent: $spent,
 			},
 		)
 		match walk {
@@ -1096,7 +1108,16 @@ code_items = |context| {
 			Ok(Widened({ at, state, integers_only })) => {
 				# A head whose `Integer`s alone widened widens each at most once,
 				# to the whole range, so those walks end too, as a demotion's.
-				if !integers_only {
+				if integers_only {
+					count = match $stepped.get(at) {
+						Ok(before) => before + 1
+						Err(_) => 1
+					}
+					$stepped = $stepped.insert(at, count)
+					if count == most_threshold_walks {
+						$spent = $spent.append(at)
+					}
+				} else {
 					$widenings = widened_once_more(context, { widenings: $widenings, at })?
 				}
 				$heads = $heads.insert(at, state)
@@ -1136,15 +1157,13 @@ widened_once_more = |context, { widenings, at }| {
 }
 
 ## Whether a loop's head widened to `after` from `head` differs only in its
-## slots' `Integer` ranges, each side kept or now at ±2^53.
+## slots' `Integer` ranges, each now holding the one it held.
 only_integers_widened : LoweringBasics.State, LoweringBasics.State -> Bool
 only_integers_widened = |head, after| {
-	limit = LoweringBasics.integer_limit
 	kept = |one, other|
 		match (one, other) {
 			(Ready(Integer(was)), Ready(Integer(now))) =>
-				(now.low == was.low or now.low == 0 - limit)
-					and (now.high == was.high or now.high == limit)
+				now.low <= was.low and was.high <= now.high
 			_ => one == other
 		}
 	head.stack_kinds == after.stack_kinds and List.map2(
@@ -1173,6 +1192,8 @@ code_walk : LoweringBasics.Context,
 	heads : Dict(U64, LoweringBasics.State),
 	doubted : Dict(U64, List(U64)),
 	demoted : List(U64),
+	thresholds : List(I64),
+	spent : List(U64),
 } -> Try(
 	[
 		Walked(CodeItems),
@@ -1189,7 +1210,7 @@ code_walk : LoweringBasics.Context,
 	],
 	[Refused(Str)],
 )
-code_walk = |context, { heads, doubted, demoted }| {
+code_walk = |context, { heads, doubted, demoted, thresholds, spent }| {
 	code = context.program.codes.get(context.index) ?? crash "Lowering.code_walk: a code's index"
 	entered = entry_doubles(context, { code, demoted })
 	start = start_state(context, { code, entered })?
@@ -1545,7 +1566,12 @@ code_walk = |context, { heads, doubted, demoted }| {
 									other: sent,
 								},
 							)?
-							again = integers_widened(head, met)
+							open = if spent.contains(target) {
+								[]
+							} else {
+								thresholds
+							}
+							again = integers_widened(head, { met, thresholds: open })
 							if again != head {
 								integers_only = only_integers_widened(head, again)
 								return Ok(Widened({ at: target, state: again, integers_only }))
@@ -3150,11 +3176,17 @@ integer_clashes = |one, other| {
 }
 
 ## A loop's head met with a way back (`met`), each `Integer` slot's range
-## widened on the side it grew, to ±2^53 there, so a counter's head settles
-## at once and a counter that only climbs keeps its least (`i = 0`, `i++`
-## stays at least 0).
-integers_widened : LoweringBasics.State, LoweringBasics.State -> LoweringBasics.State
-integers_widened = |head, met| {
+## widened on the side it grew: to the nearest of the function's thresholds
+## past what it grew to (`integer_thresholds`), or to ±2^53 there when none
+## is past it or `thresholds` is empty. So a counter that only climbs keeps its
+## least (`i = 0`, `i++` stays at least 0), and `b = (a + b) % M` settles at
+## 0 to M - 1, not at ±2^53, where `a + b` would no longer be an `Integer`.
+integers_widened : LoweringBasics.State,
+{
+	met : LoweringBasics.State,
+	thresholds : List(I64),
+} -> LoweringBasics.State
+integers_widened = |head, { met, thresholds }| {
 	limit = LoweringBasics.integer_limit
 	slots = List.map2(
 		head.slots,
@@ -3163,12 +3195,12 @@ integers_widened = |head, met| {
 			match (before, after) {
 				(Ready(Integer(was)), Ready(Integer(grown))) if before != after => {
 					low = if grown.low < was.low {
-						0 - limit
+						thresholds.keep_if(|bound| bound <= grown.low).last() ?? (0 - limit)
 					} else {
 						grown.low
 					}
 					high = if grown.high > was.high {
-						limit
+						thresholds.keep_if(|bound| bound >= grown.high).first() ?? limit
 					} else {
 						grown.high
 					}
@@ -3179,6 +3211,99 @@ integers_widened = |head, met| {
 	)
 	{ ..met, slots }
 }
+
+## The thresholds a loop's head widens an `Integer` to before ±2^53
+## (`integers_widened`), the classic widening with thresholds: the bounds the
+## function's own code names, smallest first. They are 0; each `%` by a
+## whole constant `m`'s ±(|m| - 1), the most a remainder can be; and each `&`
+## by a whole constant at least 0, the most it leaves. An ordering's constant
+## is none: the ordering narrows its counter already, and each threshold a
+## counter climbs through costs a walk. A function with neither operator has
+## 0 alone, so its heads widen as they did before thresholds. A constant is the literal or the number held for good
+## (`KnownFunctions.constant_numbers`) just before the operator, its right
+## side. At most `most_thresholds` of them are kept, the smallest in size,
+## so a head widens a side at most that many times more than it did
+## (x86/README.md, "A loop's head").
+integer_thresholds : LoweringBasics.Context, Bytecode.Code -> List(I64)
+integer_thresholds = |context, code| {
+	constant = |instruction|
+		match instruction {
+			PushNumber(number) => LoweringBasics.integer_of_literal(number)
+			LoadBoxed({ slot, name: _, at: _ }) =>
+				match context.numbers.get(slot) {
+					Ok(number) => LoweringBasics.integer_of_literal(number)
+					Err(_) => Err(NotInteger)
+				}
+			_ => Err(NotInteger)
+		}
+	var $found = [0]
+	# Each instruction beside the one before it.
+	pairs = List.map2(
+		code.ops.drop_last(1),
+		code.ops.drop_first(1),
+		|before, after| (before, after),
+	)
+	for (before, instruction) in pairs {
+		bounds = match (instruction, constant(before)) {
+			(Binary(operator, _), Ok(Integer({ low: number, high: _ }))) =>
+				operator_bounds(operator, number)
+			_ => []
+		}
+		$found = $found.concat(bounds)
+	}
+	limit = LoweringBasics.integer_limit
+	var $distinct = []
+	for bound in $found {
+		if bound > 0 - limit and bound < limit and !$distinct.contains(bound) {
+			$distinct = $distinct.append(bound)
+		}
+	}
+	order = |one, other|
+		if one < other {
+			Before
+		} else if one > other {
+			After
+		} else {
+			Same
+		}
+	$distinct
+		.sort_with(|one, other| order(magnitude(one), magnitude(other)))
+		.take_first(most_thresholds)
+		.sort_with(order)
+}
+
+## The thresholds an operator with the constant `number` on its right names
+## (`integer_thresholds`).
+operator_bounds : Ast.BinaryOperator, I64 -> List(I64)
+operator_bounds = |operator, number|
+	match operator {
+		Remainder if number != 0 => {
+			most = magnitude(number) - 1
+			[most, 0 - most]
+		}
+		BitAnd if number >= 0 => [number]
+		_ => []
+	}
+
+## A whole number's distance from 0.
+magnitude : I64 -> I64
+magnitude = |number|
+	if number < 0 {
+		0 - number
+	} else {
+		number
+	}
+
+## The most thresholds one function's loop heads widen through
+## (`integer_thresholds`).
+most_thresholds : U64
+most_thresholds = 8
+
+## The most walks of one function that widen one loop's head's `Integer`s
+## alone through the thresholds (`code_items`); after them that head widens a
+## grown side straight to ±2^53.
+most_threshold_walks : U64
+most_threshold_walks = 8
 
 ## An instruction's values made: the code that makes them, the state
 ## after, and the functions it made values of.
