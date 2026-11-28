@@ -1,0 +1,96 @@
+-- budget: steps=50000000
+-- x86/kernels.shale: the tiny kernels of x86/kernels/README.md, each
+-- written twice, held to one checksum. Each kernel's JS file is compiled by
+-- js-x86 (its dev build, from the shared build cache) and run, run by node,
+-- and its Roc twin is built by Roc's release build (`--opt=speed`, through
+-- tools/roc_build.shale, so it is built once and shared) and run with the
+-- JS file's sizes as its arguments. All three must print the same line.
+-- From the repository's root:
+--
+--   shale x86/kernels.shale                     # every kernel, checked
+--   shale x86/kernels.shale only=sum_array,dot  # some of them
+--   shale x86/kernels.shale time=1              # and one timing of each, niced: a guide
+--
+-- A kernel's sizes are the JS file's `const NAME = <digits>;` lines that
+-- SIZES names, in that order; the Roc twin reads them from its arguments.
+-- check.shale does not run this script: a Roc release build takes a
+-- minute or more on this box.
+
+use("./executables.shale")
+
+const WHO = "x86/kernels.shale"
+const DIR = "x86/kernels"
+const WANT_KERNEL = "x86: a kernel's Roc twin, built by the release build, run to check it"
+
+const KERNELS = {"sum_array", "dot", "fibonacci_remainder", "call", "fields", "push", "map_get", "concat"}
+const SIZES = {
+  sum_array = {"SIZE", "ROUNDS"},
+  dot = {"SIZE", "ROUNDS"},
+  fibonacci_remainder = {"N"},
+  call = {"N"},
+  fields = {"N"},
+  push = {"SIZE", "ROUNDS"},
+  map_get = {"KEYS", "N"},
+  concat = {"SIZE", "ROUNDS"},
+}
+
+-- The kernel's sizes, read from its JS text in SIZES' order.
+function sizes_of(name, text)
+  local out = {}
+  for s in SIZES[name] do
+    local m = re_find(text, "\nconst " .. s .. " = ([0-9]+);")
+    if m == nil then fail(WHO .. ": " .. name .. ".js has no line `const " .. s .. " = <digits>;`") end
+    push(out, m.group)
+  end
+  return out
+end
+
+-- A run of argv: `{out, ms, cpu_ms}`, stopped unless it exits 0.
+function ran(who, argv, want)
+  local r = run(argv, {timeout_ms = 300000, whole = 100000, want = want, nice = 19})
+  if r.ended ~= "exit" or r.code ~= 0 then fail(WHO .. ": " .. who .. " ended " .. r.ended .. " " .. get(r, "code", -1) .. ": " .. sub(r.out, 1, 2000)) end
+  return r
+end
+
+function main()
+  local names = KERNELS
+  local only = arg("only", "")
+  if only ~= "" then names = split(only, ",") end
+  local timing = arg("time", false)
+  local driver = built_roc(WHO, "x86/roc/JsToX86.roc", "js-x86", "dev")
+  local dir = executables_dir() .. "/kernels"
+  mkdir(dir)
+  local rows = {}
+  for name in names do
+    if not has_key(SIZES, name) then fail(WHO .. ": no kernel named " .. name) end
+    local js = DIR .. "/" .. name .. ".js"
+    local text = read(js)
+    local path = dir .. "/" .. name
+    local bytes = written_executable(WHO, driver, text, path)
+    local roc_exe = built_roc(WHO, DIR .. "/" .. name .. ".roc", "kernel-" .. re_replace(name, "_", "-"), "speed")
+    local ours = ran("js-x86's " .. name, {real(path)}, WANT_BINARY)
+    local node = ran("node's " .. name, {"node", real(js)}, WANT_NODE)
+    local argv = {roc_exe}
+    for s in sizes_of(name, text) do push(argv, s) end
+    local roc = ran("Roc's " .. name, argv, WANT_KERNEL)
+    if ours.out ~= node.out then fail(WHO .. ": " .. name .. ": js-x86's executable printed " .. trim(ours.out) .. ", node " .. trim(node.out)) end
+    if roc.out ~= node.out then fail(WHO .. ": " .. name .. ": Roc's twin printed " .. trim(roc.out) .. ", node " .. trim(node.out)) end
+    local row = {kernel = name, checksum = trim(node.out), bytes = bytes}
+    if timing then
+      row.ours_ms = ours.ms
+      row.node_ms = node.ms
+      row.roc_ms = roc.ms
+    end
+    push(rows, row)
+    yield()
+  end
+  local cols = {"kernel", "checksum", "bytes"}
+  if timing then
+    for c in {"ours_ms", "node_ms", "roc_ms"} do push(cols, c) end
+    print(trim(must(run({"uptime"}, {timeout_ms = 10000, whole = 1000})).out))
+  end
+  print(table(rows, cols))
+  print("kernels: " .. #rows .. " of " .. #names .. " print node's checksum, compiled and in Roc")
+end
+
+main()

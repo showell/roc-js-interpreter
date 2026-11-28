@@ -15,6 +15,8 @@ This folder is the start of an ahead-of-time compiler for the JavaScript subset 
 
 **Predicting speed without a stopwatch:** `x86/cost.shale` is a deterministic cost tier. It runs llvm-mca on the bytes this compiler writes, so it reads the same on a busy box as on a quiet one. x86/COST.md explains what it measures and gives its first table. With `counted=1` it also gives each race's exact dynamic instruction count, from js-x86's `counted` mode (`roc/Counter.roc`), by place, by function and in all, with cycles predicted from it.
 
+**Tiny kernels against Roc:** x86/kernels/README.md reads eight small loops, each written in JS and in Roc, instruction by instruction against Roc's release build, and ranks the gaps in our code generation.
+
 **The races' latest verdicts** (the SAT, fib, bank, fourteen, build and collector races, each against node and Roc) are in x86/RACES.md, each with its date, its commit, the box's load and the method.
 
 ## What works now (2026-11-25: Map and Set, the timers, and node's errors)

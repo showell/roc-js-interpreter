@@ -11,6 +11,15 @@
 --   shale x86/cost.shale twice=1 ...                  # the same tier run twice, held equal
 --   shale x86/cost.shale counted=1 races=sat          # and each race's exact dynamic count
 --   shale x86/cost.shale proof=1                      # the counter held to a loop's counts, by hand
+--   shale x86/cost.shale races=x86/kernels/dot.js counted=1 loop=1   # a kernel, and its hot loop
+--   shale x86/cost.shale native=<exe>                  # another compiler's jumps back, to find its loop by
+--   shale x86/cost.shale native=<exe> range=14c0-14e1  # and that loop read by llvm-mca
+--
+-- A race may be named by a `.js` file's path (x86/kernels/README.md's
+-- kernels), run as it is. `loop=1` beside `counted=1` finds the counted
+-- run's hottest loop and reads its hot path with llvm-mca; `native=` reads
+-- a loop of an executable another compiler wrote (Roc's twins) the same
+-- way, by its addresses.
 --
 -- Three parts:
 --   - **The bytes.** Each race (fib at N = 100,000, bank at 2,000,000
@@ -69,6 +78,8 @@ const WHO = "x86/cost.shale"
 const CODE_START = 4194424
 const WANT_OBJDUMP = "x86: the compiled race read back for its cost"
 const WANT_MCA = "x86: llvm-mca reads our bytes' disassembly, outside the compiler, for the cost tier"
+-- `loop=1`, beside `counted=1`: each race's hottest loop, read as a kernel's.
+const HOT_LOOP = arg("loop", false)
 
 function set_const(text, name, value)
   local pattern = "\nconst " .. name .. " = [^;\n]+;"
@@ -87,9 +98,15 @@ function races(names)
   }
   local out = {}
   for name in split(names, ",") do
-    if not has_key(fixed, name) then fail(WHO .. ": no race named " .. name .. ": fib, bank, fourteen, bigdaddy or sat") end
-    local f = fixed[name]
-    push(out, {name = name, size = re_replace(f.value, "\"", ""), text = set_const(read(f.path), f.line, f.value)})
+    if ends_with(name, ".js") then
+      -- A kernel (x86/kernels/README.md), named by its path, run as it is.
+      local file = basename(name)
+      push(out, {name = sub(file, 1, #file - 3), size = "", text = read(name)})
+    else
+      if not has_key(fixed, name) then fail(WHO .. ": no race named " .. name .. ": fib, bank, fourteen, bigdaddy, sat or a .js file's path") end
+      local f = fixed[name]
+      push(out, {name = name, size = re_replace(f.value, "\"", ""), text = set_const(read(f.path), f.line, f.value)})
+    end
   end
   return out
 end
@@ -224,11 +241,52 @@ function kinds_of(path_lines)
   return k
 end
 
+-- Hundredths as `7.00`.
+function values_text(h)
+  local frac = "" .. h % 100
+  if #frac < 2 then frac = "0" .. frac end
+  return (h // 100) .. "." .. frac
+end
+
+-- The busiest resource of llvm-mca's "Resource pressure per iteration", as
+-- `SKXPort4 7.00` (ties joined by `/`): the port a block's throughput waits
+-- on. On Cascade Lake ports 0, 1, 5 and 6 run arithmetic (6 the branches),
+-- 2 and 3 loads, 4 store data and 7 store addresses.
+function bound_port(out)
+  local names = {}
+  for m in re_find_all(out, "\n\\[([0-9]+)\\] +- ([A-Za-z0-9]+)") do names[m.groups[1]] = m.groups[2] end
+  local at = find(out, "Resource pressure per iteration:")
+  if at == nil then return "?" end
+  local rows = lines(sub(out, at, at + 2000))
+  if #rows < 3 then return "?" end
+  local values = words(rows[3])
+  local most = 0
+  local who = {}
+  for i = 1, #values do
+    if values[i] ~= "-" then
+      local p = re_find(values[i], "^([0-9]+)\\.([0-9][0-9])$")
+      if p == nil then fail(WHO .. ": llvm-mca's pressure " .. values[i] .. " is no number") end
+      local v = tonumber(p.groups[1]) * 100 + tonumber(p.groups[2])
+      local name = sub(get(names, "" .. (i - 1), "?"), 4)
+      if v > most then
+        most = v
+        who = {name}
+      elseif v == most then
+        push(who, name)
+      end
+    end
+  end
+  if most == 0 then return "none" end
+  return join(who, "/") .. " " .. values_text(most)
+end
+
 -- llvm-mca's reading of the file's pass, loads after every store before
 -- them (`alias`) or after none: `{instructions, uops, rthroughput, latency,
 -- out}`.
-function mca_run(file, cpu, alias, show)
-  local argv = {"llvm-mca-18", "-mtriple=x86_64", "-mcpu=" .. cpu, "-noalias=" .. (alias and "false" or "true"), "-iterations=1"}
+function mca_run(file, cpu, alias, show, iterations?)
+  local passes = 1
+  if iterations ~= nil then passes = iterations end
+  local argv = {"llvm-mca-18", "-mtriple=x86_64", "-mcpu=" .. cpu, "-noalias=" .. (alias and "false" or "true"), "-iterations=" .. passes}
   if show then push(argv, "-timeline") push(argv, "-timeline-max-cycles=0") end
   push(argv, real(file))
   local r = run(argv, {timeout_ms = 60000, whole = 4000000, want = WANT_MCA})
@@ -238,7 +296,7 @@ function mca_run(file, cpu, alias, show)
   local cycles = re_find(r.out, "Total Cycles: +([0-9]+)")
   local uops = re_find(r.out, "Total uOps: +([0-9]+)")
   local rt = re_find(r.out, "Block RThroughput: +([0-9.]+)")
-  return {instructions = n.group, latency = cycles.group, uops = uops.group, rthroughput = rt.group, out = r.out}
+  return {instructions = n.group, latency = cycles.group, uops = uops.group, rthroughput = rt.group, bound = bound_port(r.out), out = r.out}
 end
 
 -- llvm-mca's reading of a fast path: its instructions, micro-ops and block
@@ -252,6 +310,9 @@ function mca(path_lines, cpu, file, show)
   local held = mca_run(file, cpu, true, show)
   local free = mca_run(file, cpu, false, false)
   held.free = free.latency
+  -- One pass's port pressure is one assignment of its micro-ops; a
+  -- hundred passes' average is the steady state the throughput assumes.
+  held.bound = mca_run(file, cpu, true, false, 100).bound
   return held
 end
 
@@ -491,7 +552,118 @@ function counted(race, d, path, cpu)
   local cycles = 0
   for k in keys(rt) do cycles = cycles + ran.counts[tonumber(k)] * rt[k] end
   local row = {race = race.name .. " " .. race.size, driver = d.label, blocks = #map.points, kept = map.kept, instructions_run = total, in_program = program, in_runtime = total - program, predicted_cycles = (cycles + 50) // 100}
-  return {row = row, by_place = by_place, by_function = by_function, total = total, program = program, raw = ran.raw, blocks = blocks, counts = ran.counts, labels = rows, instructions = instructions}
+  return {row = row, by_place = by_place, by_function = by_function, total = total, program = program, raw = ran.raw, blocks = blocks, counts = ran.counts, labels = rows, instructions = instructions, places = places, functions = functions}
+end
+
+-- ── A kernel's hot loop (x86/kernels/README.md) ──────────────────────────
+
+-- The counted run's hottest loop: of every jump back in the program's code
+-- (`code_*`), the one whose target's block ran the most times, the shorter
+-- on a tie, so an inner loop beats the loop around it. Its hot path is each
+-- instruction from the target to the jump whose block ran at least half as
+-- often as the head: what a trip runs, without the slow ways laid out
+-- between. `{row, listing}`: the row has the loop's static instructions, the
+-- hot path's, its head's runs (the trips, and one more per entry), the
+-- instructions the loop's own code ran per trip and the whole run's per
+-- trip (the runtime's routines it calls included), and llvm-mca's reading
+-- of the hot path as one block; `listing` is the hot path, a line each,
+-- with its place and how often it ran.
+function hot_loop(name, c, cpu, path)
+  local ins = c.instructions
+  local index = {}
+  for n = 1, #ins do index["" .. ins[n].at] = n end
+  local best = nil
+  for n = 1, #ins do
+    if c.blocks[n] ~= 0 and starts_with(c.functions[n], "code_") then
+      local m = re_find(ins[n].text, "^j[a-z]+ +0x([0-9a-f]+)")
+      if m ~= nil then
+        local t = get(index, "" .. (unhex(m.groups[1]) - CODE_START), 0)
+        if t > 0 and t < n and c.blocks[t] ~= 0 then
+          local head = c.counts[c.blocks[t]]
+          if best == nil or head > best.head or (head == best.head and n - t < best.last - best.first) then best = {first = t, last = n, head = head} end
+        end
+      end
+    end
+  end
+  if best == nil then fail(WHO .. ": " .. name .. ": the program's code has no loop") end
+  local hot = {}
+  local listing = {}
+  local ran = 0
+  local place = ""
+  for n = best.first, best.last do
+    local runs = 0
+    if c.blocks[n] ~= 0 then runs = c.counts[c.blocks[n]] end
+    ran = ran + runs
+    if runs * 2 >= best.head then
+      push(hot, ins[n].text)
+      local shown = ""
+      if c.places[n] ~= place then shown = c.places[n] end
+      place = c.places[n]
+      push(listing, shown .. "\t" .. runs .. "\t" .. ins[n].text)
+    end
+  end
+  local m = mca(hot, cpu, path .. ".loop.s", false)
+  local row = {kernel = name, loop = best.last - best.first + 1, hot = #hot, head_runs = best.head, loop_per_trip = values_text((ran * 100 + best.head // 2) // best.head), all_per_trip = values_text((c.total * 100 + best.head // 2) // best.head), instructions_run = c.total, uops = m.uops, rthroughput = m.rthroughput, bound = m.bound, latency = m.latency, free = m.free}
+  return {row = row, listing = listing}
+end
+
+-- ── Another compiler's loop, read the same way ───────────────────────────
+
+-- An executable's instructions from `from` to `to` (addresses, hex), by
+-- objdump with its symbols: `{at, text}`, each text as llvm-mc reads it
+-- (objdump's `# <symbol>` comments and `<symbol+off>` names left out).
+function native_instructions(exe, from, to)
+  local d = run({"objdump", "-d", "-M", "intel", "--no-show-raw-insn", "--start-address=0x" .. from, "--stop-address=0x" .. to, real(exe)}, {timeout_ms = 120000, whole = 20000000, want = WANT_OBJDUMP})
+  if d.code ~= 0 then fail(WHO .. ": objdump exited " .. d.code .. ": " .. sub(d.out, 1, 400)) end
+  local out = {}
+  for l in lines(d.out) do
+    local m = re_find(l, "^ *([0-9a-f]+):\t(.*)$")
+    if m ~= nil then
+      local t = trim(re_replace(re_replace(m.groups[2], " *#.*$", ""), " <[^>]*>", ""))
+      local b = re_find(t, "^(j[a-z]+|call) +([0-9a-f]+)$")
+      if b ~= nil then t = b.groups[1] .. " 0x" .. b.groups[2] end
+      push(out, {at = unhex(m.groups[1]), text = t})
+    end
+  end
+  return out
+end
+
+-- `native=<exe>`: with `range=<from>-<to>` (hex addresses, the loop's first
+-- instruction and the one after its jump back; several joined by `,` make
+-- one path, for a loop whose hot trip jumps over code between), those
+-- instructions and llvm-mca's reading of them as one block; with no range, every jump
+-- back in the app's own code (a Roc executable's `roc__` function, where
+-- LLVM puts `main!` and what it inlines), with its span, to find the loop
+-- by.
+function native(exe, range, cpu)
+  if range == "" then
+    local d = run({"objdump", "-d", "-M", "intel", "--no-show-raw-insn", real(exe)}, {timeout_ms = 120000, whole = 200000000, want = WANT_OBJDUMP})
+    local fn = ""
+    local rows = {}
+    for l in lines(d.out) do
+      local s = re_find(l, "^([0-9a-f]+) <(.*)>:$")
+      if s ~= nil then fn = s.groups[2] end
+      local m = re_find(l, "^ *([0-9a-f]+):\t(j[a-z]+) +([0-9a-f]+)( |$)")
+      if m ~= nil and starts_with(fn, "roc__") and unhex(m.groups[3]) < unhex(m.groups[1]) then push(rows, {fn = sub(fn, 1, 60), from = m.groups[3], jump = m.groups[1], bytes = unhex(m.groups[1]) - unhex(m.groups[3])}) end
+    end
+    print(table(rows, {"fn", "from", "jump", "bytes"}))
+    return nil
+  end
+  local texts = {}
+  local first = ""
+  for piece in split(range, ",") do
+    local r = re_find(piece, "^([0-9a-f]+)-([0-9a-f]+)$")
+    if r == nil then fail(WHO .. ": a range is `<from>-<to>` in hex, several joined by `,`, not " .. piece) end
+    if first == "" then first = r.groups[1] end
+    for i in native_instructions(exe, r.groups[1], r.groups[2]) do
+      push(texts, i.text)
+      print(i.text)
+    end
+  end
+  local file = executables_dir() .. "/cost/native-" .. first .. ".s"
+  mkdir(dirname(file))
+  local m = mca(texts, cpu, file, false)
+  print(table({{instructions = m.instructions, uops = m.uops, rthroughput = m.rthroughput, bound = m.bound, latency = m.latency, free = m.free}}, {"instructions", "uops", "rthroughput", "bound", "latency", "free"}))
 end
 
 -- The `top` largest of a map of counts, as rows with their share.
@@ -534,11 +706,16 @@ function one(race, i, d, dir, places, cpu, show, first, count, top)
     end
   end
   out.count = false
+  out.loop = false
   if count then
     local c = counted(race, d, path, cpu)
     local all = top_rows(c.by_place, c.total, 1000000)
     replace(path .. ".places.txt", table(all, {"name", "instructions", "share"}) .. "\n")
     out.count = {row = c.row, raw = c.raw, places = top_rows(c.by_place, c.total, top), functions = top_rows(c.by_function, c.total, top), file = real(path) .. ".places.txt"}
+    if HOT_LOOP then
+      out.loop = hot_loop(race.name, c, cpu, path)
+      replace(path .. ".loop.txt", join(out.loop.listing, "\n") .. "\n")
+    end
   end
   return out
 end
@@ -555,6 +732,8 @@ function tier(list, ds, places, cpu, show, count, top)
   local tops = {}
   local raws = {}
   local shown = {}
+  local loop_rows = {}
+  local listings = {}
   for race in list do
     local first = nil
     for i = 1, #ds do
@@ -564,6 +743,10 @@ function tier(list, ds, places, cpu, show, count, top)
       if o.place then push(place_rows, o.place) end
       if o.kinds then push(kind_rows, o.kinds) end
       if o.shown then push(shown, o.shown) end
+      if o.loop then
+        push(loop_rows, o.loop.row)
+        push(listings, "── " .. race.name .. ", " .. ds[i].label .. ": the hot loop (place, runs, instruction)\n" .. join(o.loop.listing, "\n"))
+      end
       if o.count then
         push(count_rows, o.count.row)
         push(raws, o.count.raw)
@@ -576,6 +759,7 @@ function tier(list, ds, places, cpu, show, count, top)
   if #place_rows > 0 then text = text .. "\n" .. table(place_rows, {"driver", "places", "instructions", "uops", "rthroughput", "latency", "free"}) end
   if #kind_rows > 0 then text = text .. "\n" .. table(kind_rows, {"driver", "places", "all", "branches", "shifts", "converts", "loads", "frame_loads", "stores", "frame_stores"}) end
   if #count_rows > 0 then text = text .. "\n" .. table(count_rows, {"race", "driver", "blocks", "kept", "instructions_run", "in_program", "in_runtime", "predicted_cycles"}) .. "\n" .. join(tops, "\n") end
+  if #loop_rows > 0 then text = text .. "\n" .. table(loop_rows, {"kernel", "loop", "hot", "head_runs", "loop_per_trip", "all_per_trip", "instructions_run", "uops", "rthroughput", "bound", "latency", "free"}) .. "\n" .. join(listings, "\n") end
   return {text = text, shown = shown, raws = raws}
 end
 
@@ -649,6 +833,11 @@ function proof(d, cpu)
 end
 
 function main()
+  local native_exe = arg("native", "")
+  if native_exe ~= "" then
+    native(native_exe, arg("range", ""), arg("mcpu", "cascadelake"))
+    return nil
+  end
   if arg("proof", false) then
     proof(drivers("")[1], arg("mcpu", "cascadelake"))
     return nil
