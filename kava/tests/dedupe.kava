@@ -1,6 +1,8 @@
 // The sketch's two dedupes: one with a Set, which holds its cost, and the
-// classic cliff, `includes` inside a loop over n. Cost isn't checked yet, so
-// both run, in strip mode and checked.
+// classic cliff, `includes` inside a loop over n. Both run here, in every
+// mode, and print the same; kava/tests/cost/ checks their claims, and the
+// `size` generator below is deleted by strip mode and written as a function
+// nothing calls by checked mode.
 function dedupe(xs: string[]): string[] cost O(n) where n = xs.length {
   const seen = new Set();
   const out = [];
@@ -16,6 +18,12 @@ function dedupeSlowly(xs: string[]): string[] cost O(n) where n = xs.length {
     if (!out.includes(x)) out.push(x);
   }
   return out;
+}
+
+size dedupe(n: number) {
+  const xs: string[] = [];
+  for (let i = 0; i < n; i++) xs.push("w" + i);
+  return [xs];
 }
 
 const words = ["kava", "java", "kava", "roc", "java", "node"];

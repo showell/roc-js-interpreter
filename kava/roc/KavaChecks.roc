@@ -177,7 +177,8 @@ KavaChecks :: [].{
 	## they are hoisted, so no line of the program moves. A poisoned variable
 	## holds a proxy whose every use throws; a lent value is a view whose
 	## every write throws, reads lent in turn, and a Map's or a Set's reads
-	## passed through.
+	## passed through, a counted build's call by its site's key (KavaCost) as
+	## the call by its method's name.
 	helpers : Str
 	helpers = Str.join_with(
 		[
@@ -214,11 +215,14 @@ KavaChecks :: [].{
 			"  const fail = () => $kava_fail(message);",
 			"  const collection = v instanceof Map || v instanceof Set;",
 			"  const writes = [\"set\", \"add\", \"delete\", \"clear\"];",
+			"  // A counted build calls a method by its site's key, a Symbol.",
+			"  const names = globalThis.$kava_key_names;",
+			"  const name_of = (key) => (names && names.has(key) ? names.get(key) : key);",
 			"  return new Proxy(v, {",
 			"    get(target, key) {",
 			"      const x = Reflect.get(target, key, target);",
 			"      if (collection && typeof x === \"function\") {",
-			"        if (writes.includes(key)) { return fail; }",
+			"        if (writes.includes(name_of(key))) { return fail; }",
 			"        return (...args) => $kava_lend(x.apply(target, args), message);",
 			"      }",
 			"      return typeof x === \"function\" ? x : $kava_lend(x, message);",

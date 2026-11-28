@@ -1,0 +1,16 @@
+kava cost: composed.kava at n = 1024 to 8192, each ratio within 1/24 of its class's
+FAIL uniqueCount (composed.kava, line 11): the counts grow faster than O(n) where n = xs.length
+  n = 1024, 2048, 4096, 8192
+  counts 1049600, 4196352, 16781312, 67117056: ratio 4.00, 4.00, 4.00 a doubling; O(n) allows at most 2.08
+  the cliff: line 8, `indexOf`, counts 1048576, 4194304, 16777216, 67108864: ratio 4.00, 4.00, 4.00 a doubling
+PASS sum (composed.kava, line 25): O(n) where n = xs.length holds
+  n = 1024, 2048, 4096, 8192
+  counts 1024, 2048, 4096, 8192: ratio 2.00, 2.00, 2.00 a doubling; O(n) allows at most 2.08
+PASS total (composed.kava, line 35): O(n) where n = rows.length holds
+  n = 1024, 2048, 4096, 8192
+  counts 4096, 8192, 16384, 32768: ratio 2.00, 2.00, 2.00 a doubling; O(n) allows at most 2.08
+PASS joined (composed.kava, line 45): O(n^2) where n = words.length holds
+  n = 1024, 2048, 4096, 8192
+  counts 1048576, 4194304, 16777216, 67108864: ratio 4.00, 4.00, 4.00 a doubling; O(n^2) allows at most 4.17
+kava cost: 3 of 4 claims hold
+[exit 1]

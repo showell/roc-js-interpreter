@@ -7,13 +7,16 @@ app [main!] { js: "../../js/roc/main.roc" }
 #
 #   kava strip <file> "<program>"
 #   kava checked <file> "<program>"
+#   kava counted <file> "<program>"
 #
 # `strip` writes the program with every addition taken out, each line where
 # it was; a program with none comes out byte for byte the same. `checked`
 # writes it with the checks written in (KavaChecks.roc), each failure an
 # Error whose message names the clause, `<file>` and the line, and the
-# functions the checks call after it. Both write JavaScript for node, which
-# is the oracle and gives the benchmarks.
+# functions the checks call after it. `counted` writes the checked build
+# with a counter of its work (KavaCost.roc), which kava/cost.shale reads to
+# check each `cost` claim. Each writes JavaScript for node, which is the
+# oracle and gives the benchmarks.
 #
 # The program is read (KavaReader.roc), its static rules judged
 # (KavaRules.roc), and its strip mode's text read by the subset's own parser,
@@ -26,6 +29,7 @@ import js.Lexer
 import js.Parser
 import Edits
 import KavaChecks
+import KavaCost
 import KavaReader
 import KavaRules
 import KavaTokens
@@ -54,14 +58,23 @@ main! = |arguments| {
 			text: src,
 			mode: Check,
 		})
+		(
+			Ok("counted"),
+			Ok(file),
+			Ok(src),
+		) => write_output!({
+			file: file,
+			text: src,
+			mode: Count,
+		})
 		_ => {
-			echo!("usage: kava strip|checked <file> \"<program>\"\n")
+			echo!("usage: kava strip|checked|counted <file> \"<program>\"\n")
 			Err(Exit(2))
 		}
 	}
 }
 
-Mode : [Strip, Check]
+Mode : [Strip, Check, Count]
 
 ## A program's text, the file it came from, and the mode to write it in.
 Request : {
@@ -121,6 +134,19 @@ output_of = |request| {
 				}
 				Ok("${ended}${KavaChecks.helpers}")
 			}
+		}
+		Count => {
+			edits = List.concat(
+				List.concat(reader.checked_edits, KavaRules.live_reads(reader)),
+				KavaCost.edits(reader),
+			)
+			counted = applied_or_fault(src, edits)?
+			ended = if counted.ends_with("\n") {
+				counted
+			} else {
+				"${counted}\n"
+			}
+			Ok("${ended}${KavaChecks.helpers}${KavaCost.helpers(reader)}")
 		}
 	}
 }

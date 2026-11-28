@@ -1,0 +1,7 @@
+kava cost: cliff.kava at n = 1024 to 8192, each ratio within 1/24 of its class's
+FAIL dedupe (cliff.kava, line 4): the counts grow faster than O(n) where n = xs.length
+  n = 1024, 2048, 4096, 8192
+  counts 263168, 1050624, 4198400, 16785408: ratio 3.99, 4.00, 4.00 a doubling; O(n) allows at most 2.08
+  the cliff: line 7, `includes` inside the loop at line 6, counts 262144, 1048576, 4194304, 16777216: ratio 4.00, 4.00, 4.00 a doubling
+kava cost: 0 of 1 claims hold
+[exit 1]

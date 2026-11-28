@@ -79,8 +79,54 @@ KavaState :: [].{
 		# The returns of each function being read, innermost last.
 		frames : List(List(KavaState.ReturnSite)),
 		olds : U64,
-		# Each `cost` clause and `law`, as written, for the checks to come.
+		# Each `cost` clause and `law`, as written.
 		carried : List({ text : Str, line : U64 }),
+		# What counted mode counts (KavaCost): each loop of ordinary code, by
+		# its body, and each call, spread and string growth it charges.
+		loop_bodies : List(KavaState.LoopBody),
+		sites : List(KavaState.Site),
+		# Each function's `cost` claim, with where its body opens and closes,
+		# and the line of each loop's, which isn't checked yet.
+		cost_claims : List(KavaState.Costed),
+		loop_claims : List(U64),
+		# The `size name(n) { ... }` generators, by the function each sizes.
+		sizes : List(Str),
+	}
+
+	## A loop's body, by its tokens, and the line of the loop's keyword.
+	LoopBody : {
+		line : U64,
+		first : U64,
+		past : U64,
+	}
+
+	## A place counted mode charges, by its token: a call of a method the cost
+	## table names, a `...` spread, or a string grown by name, `s += e` as a
+	## statement (`Grown`) or `s = s + e` (`GrownBy`, at the second `s`).
+	Site : {
+		index : U64,
+		kind : [
+			Called(Str),
+			Spread,
+			Grown(Str),
+			GrownBy(Str),
+		],
+	}
+
+	## A cost clause, `cost O(claim) where name = code, ...`, and its line.
+	Claim : {
+		claim : Str,
+		wheres : List({ name : Str, code : Str }),
+		line : U64,
+	}
+
+	## A function's cost claim: its name ("" for none), and the bytes just
+	## inside its body's `{` and at its `}`; an arrow whose body is an
+	## expression has none (`Unframed`).
+	Costed : {
+		name : Str,
+		claim : KavaState.Claim,
+		body : [Framed({ open : U64, close : U64 }), Unframed],
 	}
 
 	## A program to read: its bytes, its tokens, and the file it came from,
@@ -109,6 +155,11 @@ KavaState :: [].{
 		frames: [],
 		olds: 0,
 		carried: [],
+		loop_bodies: [],
+		sites: [],
+		cost_claims: [],
+		loop_claims: [],
+		sizes: [],
 	}
 
 	# ---- tokens ----------------------------------------------------------------

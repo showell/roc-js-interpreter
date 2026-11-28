@@ -1,0 +1,233 @@
+-- budget: steps=100000000
+-- kava/cost.shale: each `cost O(...) where n = ...` claim of a KavaScript
+-- program checked by counting its work under node. From the repository's
+-- root:
+--
+--   shale kava/cost.shale file=kava/tests/cost/dedupe.kava
+--   shale kava/cost.shale file=kava/tests/cost/cliff.kava base=4096
+--
+-- `kava counted` writes the program with a counter of its work
+-- (kava/roc/KavaCost.roc: a loop's trip counts one, a builtin of the cost
+-- table its cost, a spread its length, a string grown by name its length).
+-- node runs it with `--kava-cost <base>`, which calls each costed function
+-- on its `size name(n) { ... }` generator's arguments at n = base, 2·base,
+-- 4·base and 8·base, after the program's own top level, and prints each
+-- one's counts, the whole function's (every call it makes included) and
+-- each site's. This script judges how the counts grow.
+--
+-- **THE CHECK.** A claim is an upper bound, as O(...) is: the count may
+-- grow slower than claimed, never faster. Each doubling's ratio, the count
+-- at 2m over the count at m, must stay at or under the class's own ratio
+-- times 1 + 1/(2K):
+--   - O(1): 1; O(log n): (k+1)/k; O(n): 2; O(n log n): 2(k+1)/k; O(n^2): 4,
+--     where m = 2^k (so `base` is a power of two, and the logs are exact);
+--   - K = log2(4·base), the k of the last doubling.
+-- **WHY 1/(2K):** the classes nearest each other are O(n) and O(n log n)
+-- (and O(1) and O(log n)), whose ratios differ by 2/k, at least 2/K at the
+-- sizes measured. Half that gap, 1/K, is the most the bound may give
+-- without letting the next class pass, so the tolerance is half of half,
+-- 1/(2K) of the ratio, which is 1/K for O(n): at base 1024, K = 12, and
+-- O(n) is allowed 2.08 a doubling, where O(n log n) shows at least 2.17.
+-- What the tolerance absorbs is a count's lower terms, which an exact count
+-- still has: a loop of n - 1 trips, or a setup's constant cost. A constant
+-- term pulls a ratio under the class's; a negative one, as n - 1, pushes it
+-- over by 1/(m - 1), far inside 1/(2K).
+--
+-- **THE CHECK CAN SEE:** with `within` planted to take every ratio as 2,
+-- kava/programs.shale went red, the cliff and composed.kava's helper both
+-- passing against their .cost.out files (2026-11-28), and was put back.
+--
+-- Each claim prints PASS or FAIL with its counts and ratios, and a failing
+-- one names the site whose count grows fastest: its line, what it is, and
+-- the loop it is in. A claim the runner can't measure fails too, saying
+-- why: a function with no `size` generator, no name, a claim of another
+-- class, a `where` without `n`, or a `cost` clause on a loop, which isn't
+-- checked yet. The run fails when any claim does.
+--
+-- kava is built on the dev backend by tools/roc_build.shale (the prelude's
+-- built_roc), only when its cache holds no build of these inputs; the
+-- written JavaScript goes under the build mount, and node runs niced.
+
+const WHO = "kava/cost.shale"
+const WANT_KAVA = "kava: the KavaScript front end, built here"
+const WANT_NODE = "kava: node is KavaScript's oracle"
+const NODE_CLOCK = "js/node_clock.cjs"
+const DOUBLINGS = 3
+
+const board = {held = 0, failed = 0}
+
+-- The exponent of a power of two, or nil for anything else.
+function log2_of(m)
+  local k = 0
+  local v = m
+  while v > 1 do
+    if v % 2 ~= 0 then return nil end
+    v = v // 2
+    k = k + 1
+  end
+  if v ~= 1 then return nil end
+  return k
+end
+
+-- A claim's class: its name and its ratio for the doubling from 2^k, as a
+-- fraction `{num, den}`; nil for a class the runner doesn't check.
+function class_of(claim)
+  local c = re_replace(trim(claim), " +", " ")
+  if c == "1" then return {name = "O(1)", growth = "one"} end
+  if c == "log n" then return {name = "O(log n)", growth = "log"} end
+  if c == "n" then return {name = "O(n)", growth = "linear"} end
+  if c == "n log n" then return {name = "O(n log n)", growth = "n log n"} end
+  if c == "n^2" or c == "n²" or c == "n * n" then return {name = "O(n^2)", growth = "square"} end
+  return nil
+end
+
+function class_ratio(class, k)
+  if class.growth == "one" then return {num = 1, den = 1} end
+  if class.growth == "log" then return {num = k + 1, den = k} end
+  if class.growth == "linear" then return {num = 2, den = 1} end
+  if class.growth == "n log n" then return {num = 2 * (k + 1), den = k} end
+  return {num = 4, den = 1}
+end
+
+-- A fraction to two places, as `2.08`.
+function hundredths(num, den)
+  local h = (num * 100 + den // 2) // den
+  local cents = h % 100
+  local pad_cents = cents < 10 and ("0" .. cents) or ("" .. cents)
+  return (h // 100) .. "." .. pad_cents
+end
+
+-- Whether `c2` over `c1` stays within the class's ratio from 2^k, given the
+-- tolerance 1/(2K).
+function within(class, k, big_k, c1, c2)
+  if c1 == 0 then return c2 == 0 end
+  local r = class_ratio(class, k)
+  return c2 * r.den * 2 * big_k <= c1 * r.num * (2 * big_k + 1)
+end
+
+function ratio_text(c1, c2)
+  if c1 == 0 then return c2 == 0 and "1.00" or "past any" end
+  return hundredths(c2, c1)
+end
+
+function ratios_of(counts)
+  local out = {}
+  for i = 1, DOUBLINGS do push(out, ratio_text(counts[i], counts[i + 1])) end
+  return join(out, ", ")
+end
+
+function counts_text(counts)
+  return join(counts, ", ")
+end
+
+-- The site whose count grows fastest at the last doubling, past the bound,
+-- the largest count first among equals; nil for none.
+function cliff_of(sites, class, k, big_k)
+  local best = nil
+  for s in sites do
+    local c1 = s.counts[DOUBLINGS]
+    local c2 = s.counts[DOUBLINGS + 1]
+    if not within(class, k, big_k, c1, c2) then
+      if best == nil then
+        best = s
+      else
+        local b1 = best.counts[DOUBLINGS]
+        local b2 = best.counts[DOUBLINGS + 1]
+        -- c2/c1 against b2/b1, by cross products.
+        if c1 == 0 or c2 * b1 > b2 * c1 or (c2 * b1 == b2 * c1 and c2 > b2) then best = s end
+      end
+    end
+  end
+  return best
+end
+
+function verdict(ok, head, detail)
+  if ok then board.held = board.held + 1 else board.failed = board.failed + 1 end
+  print((ok and "PASS " or "FAIL ") .. head)
+  for d in detail do print("  " .. d) end
+  return nil
+end
+
+function judge(report, file, base)
+  if has_key(report, "loop") then
+    verdict(false, "the loop at line " .. report.loop .. " (" .. file .. "): a loop's `cost` isn't checked yet, only a function's", {})
+    return nil
+  end
+  local name = report.name == "" and "a function" or report.name
+  local head = name .. " (" .. file .. ", line " .. report.line .. ")"
+  local class = class_of(report.claim)
+  if class == nil then
+    verdict(false, head .. ": O(" .. report.claim .. ") is no class the runner checks: O(1), O(log n), O(n), O(n log n) or O(n^2)", {})
+    return nil
+  end
+  local claimed = class.name .. (report.where == "" and "" or (" where " .. report.where))
+  if has_key(report, "fault") then
+    verdict(false, head .. ": " .. claimed .. " can't be measured: " .. report.fault, {})
+    return nil
+  end
+  for i = 1, #report.sizes do
+    if get(report.ns, i, nil) ~= report.sizes[i] then
+      local made = get(report.ns, i, nil)
+      local said = (made == nil or made == -1) and "no `where n = ...`" or ("n = " .. made)
+      verdict(false, head .. ": size(" .. report.sizes[i] .. ") made " .. said, {})
+      return nil
+    end
+  end
+  local k0 = log2_of(base)
+  local big_k = k0 + DOUBLINGS - 1
+  local ok = true
+  for i = 1, DOUBLINGS do
+    if not within(class, k0 + i - 1, big_k, report.counts[i], report.counts[i + 1]) then ok = false end
+  end
+  local last = class_ratio(class, big_k)
+  local allowed = hundredths(last.num * (2 * big_k + 1), last.den * 2 * big_k)
+  local detail = {
+    "n = " .. counts_text(report.sizes),
+    "counts " .. counts_text(report.counts) .. ": ratio " .. ratios_of(report.counts) .. " a doubling; " .. class.name .. " allows at most " .. allowed,
+  }
+  if ok then
+    verdict(true, head .. ": " .. claimed .. " holds", detail)
+    return nil
+  end
+  local cliff = cliff_of(report.sites, class, big_k, big_k)
+  if cliff == nil then
+    push(detail, "no one site grows past the bound alone: the claim fails on their sum")
+  else
+    local inside = cliff.loop == 0 and "" or (" inside the loop at line " .. cliff.loop)
+    if cliff.loop == cliff.line and cliff.what == "a trip of the loop" then inside = "" end
+    push(detail, "the cliff: line " .. cliff.line .. ", " .. cliff.what .. inside .. ", counts " .. counts_text(cliff.counts) .. ": ratio " .. ratios_of(cliff.counts) .. " a doubling")
+  end
+  verdict(false, head .. ": the counts grow faster than " .. claimed, detail)
+  return nil
+end
+
+function main()
+  local file = arg("file", "")
+  local base = arg("base", 1024)
+  if file == "" then fail(WHO .. ": file= names the program") end
+  local k = log2_of(base)
+  if k == nil or base < 16 then fail(WHO .. ": base= is a power of two of 16 or more, not " .. base) end
+  local exe = built_roc(WHO, "kava/roc/Kava.roc", "kava", "dev")
+  local r = run({exe, "counted", basename(file), read(file)}, {timeout_ms = 60000, whole = 4000000, want = WANT_KAVA})
+  if r.code ~= 0 then fail(WHO .. ": " .. trim(r.out)) end
+  local out_dir = "build:roc-js-interpreter/gen/kava/" .. basename(real(".")) .. "/cost"
+  mkdir(out_dir)
+  local js = out_dir .. "/" .. basename(file) .. ".js"
+  replace(js, r.out)
+  local n = run({"node", "--require", real(NODE_CLOCK), real(js), "--kava-cost", "" .. base}, {timeout_ms = 300000, cpu_budget_ms = 120000, stage = "node --kava-cost " .. file, whole = 4000000, want = WANT_NODE, nice = 19})
+  if n.code ~= 0 then fail(WHO .. ": node exited " .. n.code .. " on " .. file .. ": " .. trim(n.out)) end
+  local big_k = k + DOUBLINGS - 1
+  print("kava cost: " .. basename(file) .. " at n = " .. base .. " to " .. (base * 8) .. ", each ratio within 1/" .. (2 * big_k) .. " of its class's")
+  local claims = 0
+  for l in lines(n.out) do
+    if starts_with(l, "kava-cost ") then
+      claims = claims + 1
+      judge(json_read(sub(l, 11), {null = -1}), basename(file), base)
+    end
+  end
+  if claims == 0 then fail(WHO .. ": " .. file .. " makes no cost claim") end
+  print("kava cost: " .. board.held .. " of " .. claims .. " claims hold")
+  if board.failed > 0 then fail(WHO .. ": " .. board.failed .. " of " .. claims .. " claims fail") end
+end
+
+main()

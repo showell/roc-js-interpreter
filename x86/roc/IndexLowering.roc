@@ -306,9 +306,10 @@ IndexLowering :: [].{
 		kind : LoweringBasics.Kind,
 		place : X86.Mem,
 		integer : Bool,
+		hoisted : Try(LoweringBasics.HoistedArray, [NotHoisted]),
 		slow_items : List(Assembly.Statement),
 	} -> List(Assembly.Statement)
-	length_items = |site, { kind, place, integer, slow_items }| {
+	length_items = |site, { kind, place, integer, hoisted, slow_items }| {
 		# The length kept as an `Integer` (a known array's or string's,
 		# whose slow way is never taken), or made a double.
 		stored =
@@ -320,6 +321,11 @@ IndexLowering :: [].{
 					Instruction(MovsdStore({ to: place, from: Xmm0 })),
 				]
 			}
+		# A loop that keeps the array's facts hoisted holds its length.
+		match (kind, hoisted) {
+			(Array, Ok(facts)) => return [Emit.load(Rax, facts.length)].concat(stored)
+			_ => {}
+		}
 		slow_label = LoweringBasics.inner_label(site, "slow")
 		done_label = LoweringBasics.inner_label(site, "done")
 		array_label = LoweringBasics.inner_label(site, "array")
@@ -359,9 +365,20 @@ IndexLowering :: [].{
 		receiver : X86.Mem,
 		index : X86.Mem,
 		checks : IndexLowering.Checks,
+		hoisted : Try(LoweringBasics.HoistedArray, [NotHoisted]),
 		slow_items : List(Assembly.Statement),
 	} -> List(Assembly.Statement)
-	item_read_items = |site, { kinds, receiver, index, checks, slow_items }| {
+	item_read_items = |
+		site,
+		{
+			kinds,
+			receiver,
+			index,
+			checks,
+			hoisted,
+			slow_items,
+		},
+	| {
 		slow_label = LoweringBasics.inner_label(site, "slow")
 		done_label = LoweringBasics.inner_label(site, "done")
 		match item_address_items({
@@ -369,6 +386,7 @@ IndexLowering :: [].{
 			receiver,
 			index,
 			checks,
+			hoisted,
 			label: slow_label,
 		}) {
 			Ok(addressed) =>
@@ -393,14 +411,16 @@ IndexLowering :: [].{
 		index_kind : LoweringBasics.Kind,
 		receiver : X86.Mem,
 		index : X86.Mem,
+		hoisted : Try(LoweringBasics.HoistedArray, [NotHoisted]),
 		exit : Str,
 	} -> List(Assembly.Statement)
-	int32_read_items = |{ index_kind, receiver, index, exit }|
+	int32_read_items = |{ index_kind, receiver, index, hoisted, exit }|
 		match item_address_items({
 			kinds: (Array, index_kind),
 			receiver,
 			index,
 			checks: IndexLowering.all_checks,
+			hoisted,
 			label: exit,
 		}) {
 			Ok(addressed) =>
@@ -456,6 +476,7 @@ IndexLowering :: [].{
 			receiver,
 			index,
 			checks: IndexLowering.all_checks,
+			hoisted: Err(NotHoisted),
 			label: exit,
 		}) {
 			Ok(addressed) =>
@@ -479,6 +500,7 @@ IndexLowering :: [].{
 		value_place : X86.Mem,
 		stored : Heap.ItemStored,
 		checks : IndexLowering.Checks,
+		hoisted : Try(LoweringBasics.HoistedArray, [NotHoisted]),
 		slow_items : List(Assembly.Statement),
 	} -> List(Assembly.Statement)
 	item_write_items = |
@@ -490,20 +512,29 @@ IndexLowering :: [].{
 			value_place,
 			stored,
 			checks,
+			hoisted,
 			slow_items,
 		},
 	| {
 		slow_label = LoweringBasics.inner_label(site, "slow")
 		done_label = LoweringBasics.inner_label(site, "done")
+		# The kind's upkeep takes the record in `rdi`, which a loop's kept
+		# facts hold untagged.
+		record = match (kinds.0, hoisted) {
+			(Array, Ok(facts)) => [Emit.load(Rdi, facts.record)]
+			_ => []
+		}
 		match item_address_items({
 			kinds,
 			receiver,
 			index,
 			checks,
+			hoisted,
 			label: slow_label,
 		}) {
 			Ok(addressed) =>
 				addressed
+					.concat(record)
 					.concat([Emit.load(Rax, value_place), Emit.store(item_place, Rax)])
 					.concat(
 						Heap.kind_kept_items({
@@ -595,9 +626,19 @@ item_address_items : {
 	receiver : X86.Mem,
 	index : X86.Mem,
 	checks : IndexLowering.Checks,
+	hoisted : Try(LoweringBasics.HoistedArray, [NotHoisted]),
 	label : Str,
 } -> Try(List(Assembly.Statement), [Untested])
-item_address_items = |{ kinds, receiver, index, checks, label }| {
+item_address_items = |
+	{
+		kinds,
+		receiver,
+		index,
+		checks,
+		hoisted,
+		label,
+	},
+| {
 	receiver_tested = match kinds.0 {
 		Array => Ok([])
 		Value => Ok([
@@ -641,16 +682,34 @@ item_address_items = |{ kinds, receiver, index, checks, label }| {
 				Emit.jcc(Ne, label),
 			]
 		}
+	# A loop that keeps the array's facts hoisted holds its length and its
+	# items' address, so the record isn't loaded or untagged.
+	kept = match (kinds.0, hoisted) {
+		(Array, Ok(facts)) => Ok(facts)
+		_ => Err(NotHoisted)
+	}
+	length_place = match kept {
+		Ok(facts) => facts.length
+		Err(_) => Emit.mem(Rdi, 0)
+	}
 	range_tested =
 		if checks.in_range {
 			[]
 		} else {
 			[
-				Emit.load(Rdx, Emit.mem(Rdi, 0)),
+				Emit.load(Rdx, length_place),
 				Emit.cmp(Rcx, Rdx),
 				Emit.jcc(Ae, label),
 			]
 		}
+	opened = match kept {
+		Ok(facts) => range_tested.append(Emit.load(R8, facts.items_address))
+		Err(_) =>
+			[Emit.load(Rdi, receiver)]
+				.concat(RuntimeBuilders.unboxed_items(Rdi))
+				.concat(range_tested)
+				.append(Emit.load(R8, Emit.mem(Rdi, 16)))
+	}
 	Ok(
 		receiver_tested
 			.concat(
@@ -662,10 +721,7 @@ item_address_items = |{ kinds, receiver, index, checks, label }| {
 			)
 			.concat(loaded)
 			.concat(whole_tested)
-			.append(Emit.load(Rdi, receiver))
-			.concat(RuntimeBuilders.unboxed_items(Rdi))
-			.concat(range_tested)
-			.append(Emit.load(R8, Emit.mem(Rdi, 16))),
+			.concat(opened),
 	)
 }
 

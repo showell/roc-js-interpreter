@@ -1,0 +1,19 @@
+// The sketch's good dedupe: a Set's `has` and `add` are O(1), so the loop
+// over n is O(n), as claimed. The cost runner must pass it.
+function dedupe(xs: string[]): string[] cost O(n) where n = xs.length {
+  const seen = new Set();
+  const out = [];
+  for (const x of xs) {
+    if (!seen.has(x)) { seen.add(x); out.push(x); }
+  }
+  return out;
+}
+
+// n words, every second one a repeat of the one before it.
+size dedupe(n) {
+  const xs = [];
+  for (let i = 0; i < n; i++) xs.push("w" + Math.floor(i / 2));
+  return [xs];
+}
+
+console.log(dedupe(["kava", "java", "kava", "roc"]));

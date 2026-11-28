@@ -1,0 +1,19 @@
+// The sketch's classic cliff: `includes` walks `out`, which grows with n,
+// inside a loop over n, so the loop is O(n²), not the declared O(n). The
+// cost runner must refuse it and name the loop.
+function dedupe(xs: string[]): string[] cost O(n) where n = xs.length {
+  const out = [];
+  for (const x of xs) {
+    if (!out.includes(x)) out.push(x);
+  }
+  return out;
+}
+
+// n words, every second one a repeat of the one before it.
+size dedupe(n) {
+  const xs = [];
+  for (let i = 0; i < n; i++) xs.push("w" + Math.floor(i / 2));
+  return [xs];
+}
+
+console.log(dedupe(["kava", "java", "kava", "roc"]));

@@ -66,7 +66,7 @@ const REPORT = arg("corpus", "held") == "report"
 -- it says why.
 const INLINED = "inlined: 47 sites, 683 instructions"
 -- The loops versioned across x86/tests/: a commit that moves it says why.
-const VERSIONED = "versioned: 23 loops, 618 instructions"
+const VERSIONED = "versioned: 24 loops, 636 instructions"
 -- Every executable here runs with this first argument: it walks the heap at
 -- its exit and at a stop and checks every block's header, so a header an
 -- allocation wrote wrong stops the program, and its output can't be node's.
@@ -91,7 +91,7 @@ const TORTURE_SAMPLED = {"x86/tests/join.js", "x86/tests/lazy-sweep-churn.js", "
 const HEAP_HELD = {
   ["33-string-append.js"] = "heap: 55 allocations, 0 collections, 4 pages at most; live at the exit: 13 blocks, 296 bytes asked, 464 bytes in blocks, 3 pages",
   ["55-garbage.js"] = "heap: 9073 allocations, 0 collections, 17 pages at most; live at the exit: 74 blocks, 4424 bytes asked, 5824 bytes in blocks, 6 pages",
-  ["57-map-set-churn.js"] = "heap: 40545 allocations, 0 collections, 57 pages at most; live at the exit: 56 blocks, 334024 bytes asked, 535552 bytes in blocks, 17 pages",
+  ["57-map-set-churn.js"] = "heap: 20383 allocations, 0 collections, 38 pages at most; live at the exit: 56 blocks, 334024 bytes asked, 535552 bytes in blocks, 17 pages",
   ["60-many-instances.js"] = "heap: 14160 allocations, 0 collections, 28 pages at most; live at the exit: 191 blocks, 16008 bytes asked, 23840 bytes in blocks, 11 pages",
 }
 -- The races held here, each at a small size: its file, and the `const` line

@@ -1,0 +1,6 @@
+kava cost: dedupe.kava at n = 1024 to 8192, each ratio within 1/24 of its class's
+PASS dedupe (dedupe.kava, line 3): O(n) where n = xs.length holds
+  n = 1024, 2048, 4096, 8192
+  counts 2560, 5120, 10240, 20480: ratio 2.00, 2.00, 2.00 a doubling; O(n) allows at most 2.08
+kava cost: 1 of 1 claims hold
+[exit 0]

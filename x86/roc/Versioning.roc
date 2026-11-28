@@ -129,6 +129,24 @@ Versioning :: [].{
 	## The most instructions the program's fast copies may hold.
 	most_program_instructions : U64
 	most_program_instructions = 1600
+
+	## Each loop of the code, its head's place and its `Loop`'s, the outer
+	## ones of a nest first, as the versioning reads them (for LoopInvariants).
+	loop_ranges : Bytecode.Code -> List((U64, U64))
+	loop_ranges = |code| outer_first_loops(code)
+
+	## The place a jump at `at` goes to, or `NoJump`.
+	target_of : Bytecode.Op, U64 -> Try(U64, [NoJump])
+	target_of = |instruction, at| jump_target(instruction, at)
+
+	## The slots the instructions write, each once.
+	slots_written : List(Bytecode.Op) -> List(U64)
+	slots_written = |body_instructions| written_slots(body_instructions)
+
+	## Whether the value the instruction at `at` pushes is next taken as the
+	## receiver of an item read or write.
+	receiver_use : List(Bytecode.Op), U64 -> Bool
+	receiver_use = |body_instructions, at| is_receiver_use(body_instructions, at)
 }
 
 ## A loop chosen to be versioned: its head and its `Loop`'s places, the
