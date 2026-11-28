@@ -31,18 +31,20 @@ Edits :: [].{
 		text: text,
 	}
 
-	## The span `start` to `end` replaced by `text`, which takes no spaces.
-	replacement : U64, U64, Str -> Edits.Edit
-	replacement = |start, end, text| {
-		start: start,
-		end: end,
-		text: text,
+	## What a deletion takes: the bytes `start` to `end`, and the spaces on
+	## `side`.
+	Cut : {
+		start : U64,
+		end : U64,
+		side : Edits.Side,
 	}
 
-	## The deletion of `start` to `end`, with the spaces on `side`; the whole
+	## The deletion of a cut's bytes, with the spaces on its side; the whole
 	## line's spaces when nothing else stands on the line.
-	deletion : List(U8), U64, U64, Edits.Side -> Edits.Edit
-	deletion = |src, start, end, side| {
+	deletion : List(U8), Edits.Cut -> Edits.Edit
+	deletion = |src, cut| {
+		start = cut.start
+		end = cut.end
 		var $before = start
 		while $before > 0 and Edits.is_space_at(src, $before - 1) {
 			$before = $before - 1
@@ -60,7 +62,7 @@ Edits :: [].{
 				text: "",
 			}
 		} else {
-			match side {
+			match cut.side {
 				SpacesBefore => {
 					start: $before,
 					end: end,
@@ -134,25 +136,53 @@ Edits :: [].{
 
 	expect {
 		src = "function f(a) requires a > 0 {\n".to_utf8()
-		cut = Edits.deletion(src, 14, 28, SpacesBefore)
+		cut = Edits.deletion(
+			src,
+			{
+				start: 14,
+				end: 28,
+				side: SpacesBefore,
+			},
+		)
 		Edits.text_with(src, [cut]) == Ok("function f(a) {\n")
 	}
 
 	expect {
 		src = "  ghost total += 1;\nx\n".to_utf8()
-		cut = Edits.deletion(src, 2, 19, SpacesAfter)
+		cut = Edits.deletion(
+			src,
+			{
+				start: 2,
+				end: 19,
+				side: SpacesAfter,
+			},
+		)
 		Edits.text_with(src, [cut]) == Ok("\nx\n")
 	}
 
 	expect {
 		src = "f(own a)".to_utf8()
-		cut = Edits.deletion(src, 2, 5, SpacesAfter)
+		cut = Edits.deletion(
+			src,
+			{
+				start: 2,
+				end: 5,
+				side: SpacesAfter,
+			},
+		)
 		Edits.text_with(src, [cut]) == Ok("f(a)")
 	}
 
 	expect {
 		src = "law l() {\n  a\n}\nb".to_utf8()
-		cut = Edits.deletion(src, 0, 15, SpacesAfter)
+		cut = Edits.deletion(
+			src,
+			{
+				start: 0,
+				end: 15,
+				side: SpacesAfter,
+			},
+		)
 		Edits.text_with(src, [cut]) == Ok("\n\n\nb")
 	}
 

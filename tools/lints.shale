@@ -110,13 +110,6 @@ const HELD = {
   -- js's three are too. They go when the recipe learns a headerless app's
   -- entry.
   ["x86/find_functions_and_parameters_that_dont_earn_their_keep/dead"] = 4,
-  -- kava/'s layout findings (the KavaScript front end's lane, 2026-11-28):
-  -- functions of three or four bare arguments that should take a record,
-  -- and lines past 100 columns. New code's debt, the one recipe kava/ isn't
-  -- at zero on; every other recipe holds it at zero.
-  ["kava/check_and_fix_group_stacking/to stack"] = 19,
-  ["kava/check_and_fix_group_stacking/long"] = 16,
-  ["kava/check_and_fix_group_stacking/wide string"] = 26,
 }
 
 -- The number a summary gives for a check: "check N", or "N check" for

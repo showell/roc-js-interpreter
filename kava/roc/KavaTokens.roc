@@ -43,7 +43,8 @@ KavaTokens :: [].{
 			from = $scan.at
 			stepped = Lexer.scan_one(src, $scan)?
 			if stepped.tokens.len() > $scan.tokens.len() {
-				made = stepped.tokens.last() ?? crash "KavaTokens.spanned_tokens_of: a step that made a token has one"
+				why = "KavaTokens.spanned_tokens_of: a step that made a token has one"
+				made = stepped.tokens.last() ?? crash why
 				$spanned = $spanned.append({
 					kind: made.kind,
 					line: made.line,

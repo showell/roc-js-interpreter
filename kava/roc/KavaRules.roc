@@ -36,10 +36,21 @@ KavaRules :: [].{
 		for met in reader.uses {
 			is_ghost = names.contains(met.name)
 			is_ghost_field = fields.contains(met.name)
+			named = "`${met.name}`"
+			ordinary = "ordinary code may not"
 			broken = match (met.code, met.role) {
-				(Ordinary, Bound) if is_ghost => Err("`${met.name}` is a ghost's name, and ordinary code may not declare it")
-				(Ordinary, Field) if is_ghost_field => Err("ordinary code may not read the ghost field `${met.name}`")
-				(Ordinary, FieldWritten) if is_ghost_field => Err("ordinary code may not write the ghost field `${met.name}`")
+				(
+					Ordinary,
+					Bound,
+				) if is_ghost => Err("${named} is a ghost's name, and ${ordinary} declare it")
+				(
+					Ordinary,
+					Field,
+				) if is_ghost_field => Err("${ordinary} read the ghost field ${named}")
+				(
+					Ordinary,
+					FieldWritten,
+				) if is_ghost_field => Err("${ordinary} write the ghost field ${named}")
 				(Ordinary, Bound) => Ok({})
 				(Ordinary, Field) => Ok({})
 				(Ordinary, FieldWritten) => Ok({})
@@ -55,7 +66,9 @@ KavaRules :: [].{
 					Ghostly,
 					Updated,
 				) if !is_ghost => Err("a ghost may not write `${met.name}`, which is no ghost")
-				(Ghostly, FieldWritten) if !is_ghost_field => Err("a ghost may not write the field `${met.name}`, which is no ghost field")
+				(Ghostly, FieldWritten) if !is_ghost_field => {
+					Err("a ghost may not write the field ${named}, which is no ghost field")
+				}
 				_ => Ok({})
 			}
 			match broken {
@@ -76,12 +89,12 @@ KavaRules :: [].{
 	handovers_held = |reader| {
 		for met in reader.uses {
 			if met.role == Handed {
+				named = "`${met.name}`"
+				constant = "`const`"
+				hands_over = "`own` hands over a variable it can then poison"
 				if reader.constants.contains(met.name) {
 					return Err(
-						KavaRules.fault_at(
-							met,
-							"`own` hands over a variable it can then poison, and `${met.name}` is a `const`",
-						),
+						KavaRules.fault_at(met, "${hands_over}, and ${named} is a ${constant}"),
 					)
 				}
 				KavaRules.unused_after(reader, met)?
@@ -158,19 +171,23 @@ KavaRules :: [].{
 		innermost = reader.loops.keep_if(|loop| loop.first < at and at < loop.past).first()
 		match innermost {
 			Ok(loop) => {
-				in_function = reader.bodies.any(|body| body.first > loop.first and body.first <= at and at < body.past)
-				declared = reader.uses.any(|met| met.role == Bound and met.name == handed.name and met.index > loop.first and met.index < loop.past)
-				renewed = reader.uses.any(|met| met.role == Assigned and met.name == handed.name and met.index > at and met.index < loop.past)
+				is_in_loop = |index| index > loop.first and index < loop.past
+				in_function = reader.bodies.any(
+					|body| body.first > loop.first and body.first <= at and at < body.past,
+				)
+				is_named = |met| met.name == handed.name and is_in_loop(met.index)
+				declared = reader.uses.any(|met| met.role == Bound and is_named(met))
+				is_renewal = |met| met.role == Assigned and is_named(met) and met.index > at
+				renewed = reader.uses.any(is_renewal)
 				if in_function or declared or renewed {
 					Ok({})
 				} else {
 					line = KavaState.token_at(reader, loop.first).line
-					Err(
-						KavaRules.fault_at(
-							handed,
-							"`${handed.name}` is handed over on every pass of the loop at line ${line.to_str()}, and nothing in it gives `${handed.name}` a new value",
-						),
-					)
+					named = "`${handed.name}`"
+					loop_line = "the loop at line ${line.to_str()}"
+					every_pass = "${named} is handed over on every pass of ${loop_line}"
+					nothing = "nothing in it gives ${named} a new value"
+					Err(KavaRules.fault_at(handed, "${every_pass}, and ${nothing}"))
 				}
 			}
 			Err(ListWasEmpty) => Ok({})
@@ -188,18 +205,18 @@ KavaRules :: [].{
 				here = KavaState.token_at(reader, met.index)
 				match met.role {
 					Read => {
-						$edits = $edits.append(
-							Edits.replacement(here.start, here.end, "$kava_live(${met.name})"),
-						)
+						$edits = $edits.append({
+							start: here.start,
+							end: here.end,
+							text: "$kava_live(${met.name})",
+						})
 					}
 					Shorthand => {
-						$edits = $edits.append(
-							Edits.replacement(
-								here.start,
-								here.end,
-								"${met.name}: $kava_live(${met.name})",
-							),
-						)
+						$edits = $edits.append({
+							start: here.start,
+							end: here.end,
+							text: "${met.name}: $kava_live(${met.name})",
+						})
 					}
 					_ => {}
 				}

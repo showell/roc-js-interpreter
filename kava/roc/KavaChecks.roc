@@ -41,9 +41,19 @@ KavaChecks :: [].{
 		olds : List(KavaChecks.Old),
 	}
 
+	## What failed, in which file, at which line.
+	Failure : {
+		file : Str,
+		what : Str,
+		line : U64,
+	}
+
 	## A failure's message: what failed, then the file and the line.
-	message : Str, Str, U64 -> Str
-	message = |file, what, line| "kava: ${what} failed (${file}, line ${line.to_str()})"
+	message : KavaChecks.Failure -> Str
+	message = |failure| {
+		place = "${failure.file}, line ${failure.line.to_str()}"
+		"kava: ${failure.what} failed (${place})"
+	}
 
 	## A text as a JavaScript string literal, in double quotes.
 	string_literal : Str -> Str
@@ -57,17 +67,17 @@ KavaChecks :: [].{
 				_ => $out.append(byte)
 			}
 		}
-		Str.from_utf8($out.append('"')) ?? crash "KavaChecks.string_literal: escapes keep whole characters"
+		why = "KavaChecks.string_literal: escapes keep whole characters"
+		Str.from_utf8($out.append('"')) ?? crash why
 	}
 
-	## The statement that fails with `what`'s message unless `test` holds.
-	guard : Str, Str, Str, U64 -> Str
-	guard = |
-		file,
-		test,
-		what,
-		line,
-	| "if (!(${test})) $kava_fail(${KavaChecks.string_literal(KavaChecks.message(file, what, line))});"
+	## The statement that fails with the failure's message unless `test`
+	## holds.
+	guard : Str, KavaChecks.Failure -> Str
+	guard = |test, failure| {
+		said = KavaChecks.string_literal(KavaChecks.message(failure))
+		"if (!(${test})) $kava_fail(${said});"
+	}
 
 	## The checks at a function's entry, on one line, or "" for none.
 	entry_checks : Str, KavaChecks.Contract -> Str
@@ -78,10 +88,12 @@ KavaChecks :: [].{
 				(Named(name), Typed(shape, text)) => {
 					$parts = $parts.append(
 						KavaChecks.guard(
-							file,
 							KavaTypes.check_of(shape, name),
-							"type ${name}: ${text}",
-							parameter.line,
+							{
+								file: file,
+								what: "type ${name}: ${text}",
+								line: parameter.line,
+							},
 						),
 					)
 				}
@@ -90,7 +102,14 @@ KavaChecks :: [].{
 		}
 		for clause in contract.required {
 			$parts = $parts.append(
-				KavaChecks.guard(file, clause.code, "requires ${clause.text}", clause.line),
+				KavaChecks.guard(
+					clause.code,
+					{
+						file: file,
+						what: "requires ${clause.text}",
+						line: clause.line,
+					},
+				),
 			)
 		}
 		for old in contract.olds {
@@ -99,7 +118,9 @@ KavaChecks :: [].{
 		for parameter in contract.parameters {
 			match (parameter.name, parameter.hold) {
 				(Named(name), Lent) => {
-					said = KavaChecks.string_literal("kava: lent ${name} failed: it was written (${file}, line ${parameter.line.to_str()})")
+					written = "lent ${name} failed: it was written"
+					place = "${file}, line ${parameter.line.to_str()}"
+					said = KavaChecks.string_literal("kava: ${written} (${place})")
 					$parts = $parts.append("${name} = $kava_lend(${name}, ${said});")
 				}
 				_ => {}
@@ -115,22 +136,38 @@ KavaChecks :: [].{
 		var $parts = match contract.result {
 			Typed(shape, text, line) => [
 				KavaChecks.guard(
-					file,
 					KavaTypes.check_of(shape, "result"),
-					"type result: ${text}",
-					line,
+					{
+						file: file,
+						what: "type result: ${text}",
+						line: line,
+					},
 				),
 			]
 			Untyped => []
 		}
 		for clause in contract.ensured {
 			$parts = $parts.append(
-				KavaChecks.guard(file, clause.code, "ensures ${clause.text}", clause.line),
+				KavaChecks.guard(
+					clause.code,
+					{
+						file: file,
+						what: "ensures ${clause.text}",
+						line: clause.line,
+					},
+				),
 			)
 		}
 		for clause in contract.invariants {
 			$parts = $parts.append(
-				KavaChecks.guard(file, clause.code, "invariant ${clause.text}", clause.line),
+				KavaChecks.guard(
+					clause.code,
+					{
+						file: file,
+						what: "invariant ${clause.text}",
+						line: clause.line,
+					},
+				),
 			)
 		}
 		Str.join_with($parts, " ")
@@ -144,21 +181,44 @@ KavaChecks :: [].{
 	helpers : Str
 	helpers = Str.join_with(
 		[
-			"function $kava_fail(message) { throw new Error(message); }",
-			"function $kava_is_i32(v) { return Number.isInteger(v) && v >= -2147483648 && v <= 2147483647; }",
-			"function $kava_is_i64(v) { return Number.isInteger(v) && v >= -9223372036854775808 && v < 9223372036854775808; }",
-			"function $kava_is_record(v, keys) { return typeof v === \"object\" && v !== null && !Array.isArray(v) && Object.keys(v).length === keys.length && keys.every((k) => Object.prototype.hasOwnProperty.call(v, k)); }",
-			"function $kava_poison(message) { const fail = () => $kava_fail(message); return new Proxy({}, { get: fail, set: fail, has: fail, deleteProperty: fail, ownKeys: fail, getOwnPropertyDescriptor: fail, defineProperty: fail, getPrototypeOf: fail }); }",
-			"function $kava_live(v) { if (v !== null && v !== undefined) { v[\"$kava live\"]; } return v; }",
+			"function $kava_fail(message) {",
+			"  throw new Error(message);",
+			"}",
+			"function $kava_is_i32(v) {",
+			"  return Number.isInteger(v) && v >= -2147483648 && v <= 2147483647;",
+			"}",
+			"function $kava_is_i64(v) {",
+			"  return Number.isInteger(v)",
+			"    && v >= -9223372036854775808 && v < 9223372036854775808;",
+			"}",
+			"function $kava_is_record(v, keys) {",
+			"  return typeof v === \"object\" && v !== null && !Array.isArray(v)",
+			"    && Object.keys(v).length === keys.length",
+			"    && keys.every((k) => Object.prototype.hasOwnProperty.call(v, k));",
+			"}",
+			"function $kava_poison(message) {",
+			"  const fail = () => $kava_fail(message);",
+			"  return new Proxy({}, {",
+			"    get: fail, set: fail, has: fail, deleteProperty: fail, ownKeys: fail,",
+			"    getOwnPropertyDescriptor: fail, defineProperty: fail, getPrototypeOf: fail,",
+			"  });",
+			"}",
+			"function $kava_live(v) {",
+			"  if (v !== null && v !== undefined) { v[\"$kava live\"]; }",
+			"  return v;",
+			"}",
 			"function $kava_lend(v, message) {",
-			"  if (v === null || (typeof v !== \"object\" && typeof v !== \"function\")) { return v; }",
+			"  if (v === null || (typeof v !== \"object\" && typeof v !== \"function\")) {",
+			"    return v;",
+			"  }",
 			"  const fail = () => $kava_fail(message);",
 			"  const collection = v instanceof Map || v instanceof Set;",
+			"  const writes = [\"set\", \"add\", \"delete\", \"clear\"];",
 			"  return new Proxy(v, {",
 			"    get(target, key) {",
 			"      const x = Reflect.get(target, key, target);",
 			"      if (collection && typeof x === \"function\") {",
-			"        if (key === \"set\" || key === \"add\" || key === \"delete\" || key === \"clear\") { return fail; }",
+			"        if (writes.includes(key)) { return fail; }",
 			"        return (...args) => $kava_lend(x.apply(target, args), message);",
 			"      }",
 			"      return typeof x === \"function\" ? x : $kava_lend(x, message);",
@@ -173,10 +233,13 @@ KavaChecks :: [].{
 
 	expect KavaChecks.string_literal("a \"b\" \\ c") == "\"a \\\"b\\\" \\\\ c\""
 
-	expect KavaChecks.guard(
-		"f.kava",
-		"x > 0",
-		"requires x > 0",
-		3,
-	) == "if (!(x > 0)) $kava_fail(\"kava: requires x > 0 failed (f.kava, line 3)\");"
+	expect {
+		failure = {
+			file: "f.kava",
+			what: "requires x > 0",
+			line: 3,
+		}
+		said = "kava: requires x > 0 failed (f.kava, line 3)"
+		KavaChecks.guard("x > 0", failure) == "if (!(x > 0)) $kava_fail(\"${said}\");"
+	}
 }

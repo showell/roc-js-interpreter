@@ -83,12 +83,20 @@ KavaState :: [].{
 		carried : List({ text : Str, line : U64 }),
 	}
 
-	start_of : List(U8), List(KavaTokens.Spanned), Str -> KavaState.State
-	start_of = |src, tokens, file| {
-		src: src,
-		tokens: tokens,
+	## A program to read: its bytes, its tokens, and the file it came from,
+	## as its messages name it.
+	Source : {
+		src : List(U8),
+		tokens : List(KavaTokens.Spanned),
+		file : Str,
+	}
+
+	start_of : KavaState.Source -> KavaState.State
+	start_of = |source| {
+		src: source.src,
+		tokens: source.tokens,
 		at: 0,
-		file: file,
+		file: source.file,
 		code: Ordinary,
 		strip_edits: [],
 		checked_edits: [],
@@ -108,7 +116,10 @@ KavaState :: [].{
 	token_at : KavaState.State, U64 -> KavaTokens.Spanned
 	token_at = |reader, index| match reader.tokens.get(index) {
 		Ok(found) => found
-		Err(OutOfBounds) => reader.tokens.last() ?? crash "KavaState.token_at: the tokens end with an end token"
+		Err(OutOfBounds) => {
+			why = "KavaState.token_at: the tokens end with an end token"
+			reader.tokens.last() ?? crash why
+		}
 	}
 
 	token : KavaState.State -> KavaTokens.Spanned
@@ -148,7 +159,10 @@ KavaState :: [].{
 
 	## Whether the next token stands on the same line as the reader's.
 	is_next_on_line : KavaState.State -> Bool
-	is_next_on_line = |reader| KavaState.next_token(reader).before == SameLine and KavaState.next_token(reader).kind != End
+	is_next_on_line = |reader| {
+		next = KavaState.next_token(reader)
+		next.before == SameLine and next.kind != End
+	}
 
 	fault_here : KavaState.State, Str -> Lexer.Fault
 	fault_here = |reader, why| {
@@ -177,7 +191,7 @@ KavaState :: [].{
 	spelling : KavaState.State, U64 -> Str
 	spelling = |reader, index| match KavaState.token_at(reader, index).kind {
 		End => "the end of the program"
-		_ => "`${KavaState.one_line(reader, index, index + 1)}`"
+		_ => "`${KavaState.one_line(reader, { first: index, past: index + 1 })}`"
 	}
 
 	## The index past the bracket that closes the one at `index`.
@@ -211,8 +225,10 @@ KavaState :: [].{
 
 	## The tokens `first` up to `past` as one line: each token's own text, a
 	## space between two that had space or a line between them.
-	one_line : KavaState.State, U64, U64 -> Str
-	one_line = |reader, first, past| {
+	one_line : KavaState.State, KavaState.Stretch -> Str
+	one_line = |reader, stretch| {
+		first = stretch.first
+		past = stretch.past
 		var $out = []
 		var $at = first
 		while $at < past {
@@ -235,40 +251,56 @@ KavaState :: [].{
 	## are left out, since the ghost's own deletion covers them; inside a
 	## clause both are, since a clause's text is deleted and written again
 	## whole.
-	with_edits : KavaState.State, List(Edits.Edit), List(Edits.Edit) -> KavaState.State
-	with_edits = |reader, strip_edits, checked_edits| match reader.code {
+	with_edits : KavaState.State,
+	{
+		strip_edits : List(Edits.Edit),
+		checked_edits : List(Edits.Edit),
+	} -> KavaState.State
+	with_edits = |reader, edits| match reader.code {
 		Ordinary => {
 			..reader,
-			strip_edits: List.concat(reader.strip_edits, strip_edits),
-			checked_edits: List.concat(reader.checked_edits, checked_edits),
+			strip_edits: List.concat(reader.strip_edits, edits.strip_edits),
+			checked_edits: List.concat(reader.checked_edits, edits.checked_edits),
 		}
-		Ghostly => { ..reader, checked_edits: List.concat(reader.checked_edits, checked_edits) }
+		Ghostly => {
+			..reader,
+			checked_edits: List.concat(reader.checked_edits, edits.checked_edits),
+		}
 		Clausal => reader
 	}
 
 	## The reader with the tokens `first` up to `past` deleted in both modes,
 	## with the spaces before them.
-	deleted_in_both : KavaState.State, U64, U64 -> KavaState.State
-	deleted_in_both = |reader, first, past| {
+	deleted_in_both : KavaState.State, KavaState.Stretch -> KavaState.State
+	deleted_in_both = |reader, stretch| {
+		start = KavaState.token_at(reader, stretch.first).start
+		end = KavaState.token_at(reader, stretch.past - 1).end
 		cut = Edits.deletion(
 			reader.src,
-			KavaState.token_at(reader, first).start,
-			KavaState.token_at(reader, past - 1).end,
-			SpacesBefore,
+			{
+				start: start,
+				end: end,
+				side: SpacesBefore,
+			},
 		)
-		KavaState.with_edits(reader, [cut], [cut])
+		KavaState.with_edits(reader, { strip_edits: [cut], checked_edits: [cut] })
 	}
 
-	## The reader having met the name at `index`, doing `role` with it.
-	with_use : KavaState.State, U64, Str, KavaState.Role -> KavaState.State
-	with_use = |reader, index, name, role| {
-		here = KavaState.token_at(reader, index)
+	## The reader having met the name at a token, doing `role` with it.
+	with_use : KavaState.State,
+	{
+		index : U64,
+		name : Str,
+		role : KavaState.Role,
+	} -> KavaState.State
+	with_use = |reader, meeting| {
+		here = KavaState.token_at(reader, meeting.index)
 		met = {
-			name: name,
-			index: index,
+			name: meeting.name,
+			index: meeting.index,
 			line: here.line,
 			column: here.column,
-			role: role,
+			role: meeting.role,
 			code: reader.code,
 		}
 		{ ..reader, uses: reader.uses.append(met) }

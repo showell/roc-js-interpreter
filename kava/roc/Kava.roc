@@ -40,12 +40,20 @@ main! = |arguments| {
 			Ok("strip"),
 			Ok(file),
 			Ok(src),
-		) => write_output!(file, src, Strip)
+		) => write_output!({
+			file: file,
+			text: src,
+			mode: Strip,
+		})
 		(
 			Ok("checked"),
 			Ok(file),
 			Ok(src),
-		) => write_output!(file, src, Check)
+		) => write_output!({
+			file: file,
+			text: src,
+			mode: Check,
+		})
 		_ => {
 			echo!("usage: kava strip|checked <file> \"<program>\"\n")
 			Err(Exit(2))
@@ -55,39 +63,50 @@ main! = |arguments| {
 
 Mode : [Strip, Check]
 
-write_output! : Str, Str, Mode => Try({}, [Exit(I8)])
-write_output! = |file, src, mode| {
-	match output_of(file, src, mode) {
+## A program's text, the file it came from, and the mode to write it in.
+Request : {
+	file : Str,
+	text : Str,
+	mode : Mode,
+}
+
+write_output! : Request => Try({}, [Exit(I8)])
+write_output! = |request| {
+	match output_of(request) {
 		Ok(text) => {
 			echo!(text)
 			Ok({})
 		}
 		Err(fault) => {
-			echo!("kava: ${fault.why} (line ${fault.line.to_str()}, column ${fault.column.to_str()})\n")
+			place = "line ${fault.line.to_str()}, column ${fault.column.to_str()}"
+			echo!("kava: ${fault.why} (${place})\n")
 			Err(Exit(1))
 		}
 	}
 }
 
 ## The program as `mode` writes it, or why it is refused.
-output_of : Str, Str, Mode -> Try(Str, Lexer.Fault)
-output_of = |file, text, mode| {
+output_of : Request -> Try(Str, Lexer.Fault)
+output_of = |request| {
+	text = request.text
+	file = request.file
 	src = text.to_utf8()
 	tokens = KavaTokens.spanned_tokens_of(src)?
-	reader = KavaReader.program(src, tokens, file)?
+	reader = KavaReader.program({
+		src: src,
+		tokens: tokens,
+		file: file,
+	})?
 	KavaRules.ghosts_kept_apart(reader)?
 	KavaRules.handovers_held(reader)?
 	stripped = applied_or_fault(src, reader.strip_edits)?
 	match Parser.program_of(stripped, Core) {
 		Ok(_) => {}
 		Err(fault) => {
-			return Err({
-				..fault,
-				why: "the program without its additions is not in the JavaScript subset: ${fault.why}",
-			})
+			return Err({ ..fault, why: "${not_in_subset}: ${fault.why}" })
 		}
 	}
-	match mode {
+	match request.mode {
 		Strip => Ok(stripped)
 		Check => {
 			edits = List.concat(reader.checked_edits, KavaRules.live_reads(reader))
@@ -105,6 +124,11 @@ output_of = |file, text, mode| {
 		}
 	}
 }
+
+## The refusal of a program whose text without its additions the subset's
+## parser refuses.
+not_in_subset : Str
+not_in_subset = "the program without its additions is not in the JavaScript subset"
 
 applied_or_fault : List(U8), List(Edits.Edit) -> Try(Str, Lexer.Fault)
 applied_or_fault = |src, edits| match Edits.text_with(src, edits) {

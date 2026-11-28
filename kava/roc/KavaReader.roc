@@ -50,9 +50,9 @@ KavaReader :: [].{
 	]
 
 	## The whole program, read.
-	program : List(U8), List(KavaTokens.Spanned), Str -> Try(KavaState.State, Lexer.Fault)
-	program = |src, tokens, file| {
-		var $reader = KavaState.start_of(src, tokens, file)
+	program : KavaState.Source -> Try(KavaState.State, Lexer.Fault)
+	program = |source| {
+		var $reader = KavaState.start_of(source)
 		while KavaState.token($reader).kind != End {
 			if KavaState.is_punct($reader, "}") {
 				return Err(KavaState.fault_here($reader, "a `}` that closes nothing"))
@@ -243,7 +243,9 @@ KavaReader :: [].{
 			}
 			Name("break") => KavaReader.jump(reader)
 			Name("continue") => KavaReader.jump(reader)
-			Name("ghost") if on_line and KavaReader.is_ghost_start(next_kind) => KavaReader.ghost_statement(reader)
+			Name("ghost") if on_line and KavaReader.is_ghost_start(next_kind) => {
+				KavaReader.ghost_statement(reader)
+			}
 			Name("law") if on_line => KavaReader.law(reader)
 			Name("requires") if on_line and KavaReader.is_clause_start(next_kind) => {
 				Err(
@@ -384,10 +386,12 @@ KavaReader :: [].{
 		ended = KavaReader.statement_end(declared.reader)?
 		checks = declared.parsed.map(
 			|typed| KavaChecks.guard(
-				ended.file,
 				KavaTypes.check_of(typed.shape, typed.name),
-				"type ${typed.name}: ${typed.text}",
-				typed.line,
+				{
+					file: ended.file,
+					what: "type ${typed.name}: ${typed.text}",
+					line: typed.line,
+				},
 			),
 		)
 		if checks.is_empty() {
@@ -398,7 +402,7 @@ KavaReader :: [].{
 				Semicolon(at) => Edits.insertion(at, " ${line}")
 				NoSemicolon(at) => Edits.insertion(at, "; ${line}")
 			}
-			Ok(KavaState.with_edits(ended, [], [inserted]))
+			Ok(KavaState.with_edits(ended, { strip_edits: [], checked_edits: [inserted] }))
 		}
 	}
 
@@ -429,7 +433,7 @@ KavaReader :: [].{
 			bound = KavaReader.binding($reader)?
 			$reader = match kind {
 				Const => {
-					names = bound.uses.drop_first(uses_before).keep_if(|met| met.role == Bound).map(|met| met.name)
+					names = KavaReader.bound_names(bound, uses_before)
 					{ ..bound, constants: List.concat(bound.constants, names) }
 				}
 				Let => bound
@@ -469,8 +473,8 @@ KavaReader :: [].{
 	)
 	annotation = |reader| {
 		read = KavaTypes.shape_at(reader.tokens, reader.at + 1)?
-		text = KavaState.one_line(reader, reader.at + 1, read.next)
-		cut = KavaState.deleted_in_both(reader, reader.at, read.next)
+		text = KavaState.one_line(reader, { first: reader.at + 1, past: read.next })
+		cut = KavaState.deleted_in_both(reader, { first: reader.at, past: read.next })
 		Ok({ reader: { ..cut, at: read.next }, parsed: { shape: read.shape, text: text } })
 	}
 
@@ -480,7 +484,16 @@ KavaReader :: [].{
 	binding : KavaState.State -> Try(KavaState.State, Lexer.Fault)
 	binding = |reader| match KavaState.token(reader).kind {
 		Name(word) if !KavaReader.is_keyword(word) => Ok(
-			KavaState.advance(KavaState.with_use(reader, reader.at, word, Bound)),
+			KavaState.advance(
+				KavaState.with_use(
+					reader,
+					{
+						index: reader.at,
+						name: word,
+						role: Bound,
+					},
+				),
+			),
 		)
 		Punct("[") => KavaReader.array_pattern(KavaState.advance(reader))
 		Punct("{") => KavaReader.object_pattern(KavaState.advance(reader))
@@ -564,25 +577,27 @@ KavaReader :: [].{
 	expression = |reader, stop| {
 		var $reader = reader
 		var $first = reader.at
-		while !KavaReader.is_stopped($reader, stop, $first) {
+		while !KavaReader.is_stopped($reader, { stop: stop, first: $first }) {
 			$reader = KavaReader.term($reader, stop)?
 		}
 		Ok($reader)
 	}
 
-	is_stopped : KavaState.State, KavaReader.Stop, U64 -> Bool
-	is_stopped = |reader, stop, first| {
+	## Whether the expression that started at token `first` stops here.
+	is_stopped : KavaState.State, { stop : KavaReader.Stop, first : U64 } -> Bool
+	is_stopped = |reader, started| {
 		current = KavaState.token(reader)
-		line_ends = reader.at > first and current.before == NewLine and !KavaReader.is_continued(
-			KavaState.previous_token(reader).kind,
-			current.kind,
-		)
+		previous = KavaState.previous_token(reader).kind
+		is_past_first = reader.at > started.first
+		is_broken = current.before == NewLine and !KavaReader.is_continued(previous, current.kind)
+		line_ends = is_past_first and is_broken
 		comma = current.kind == Punct(",")
-		clause_ends = KavaReader.is_clause_word(current.kind) or current.kind == Punct("{") or current.kind == Punct("=>")
+		is_body = current.kind == Punct("{") or current.kind == Punct("=>")
+		clause_ends = KavaReader.is_clause_word(current.kind) or is_body
 		if KavaState.is_closer(current.kind) or current.kind == Punct(";") {
 			True
 		} else {
-			match stop {
+			match started.stop {
 				AtStatementEnd => line_ends
 				AtDeclaratorEnd => comma or line_ends
 				AtElementEnd => comma
@@ -600,6 +615,8 @@ KavaReader :: [].{
 	term = |reader, stop| {
 		current = KavaState.token(reader)
 		next = KavaState.next_token(reader)
+		# `own` or `lent` before a name, outside a call's arguments.
+		is_held = KavaState.is_next_on_line(reader) and KavaReader.is_clause_start(next.kind)
 		match current.kind {
 			Punct("(") => KavaReader.parenthesis(reader, stop)
 			Punct("[") => KavaReader.skip_brackets(reader)
@@ -614,14 +631,20 @@ KavaReader :: [].{
 					hold: Shared,
 					line: current.line,
 				}
-				bound = KavaState.with_use(reader, reader.at, word, Bound)
+				bound = KavaState.with_use(
+					reader,
+					{
+						index: reader.at,
+						name: word,
+						role: Bound,
+					},
+				)
 				KavaReader.arrow_rest(
 					{ ..bound, at: reader.at + 1 },
-					[parameter],
-					stop,
+					{ parameters: [parameter], stop: stop },
 				)
 			}
-			Name("own") if KavaState.is_next_on_line(reader) and KavaReader.is_clause_start(next.kind) => {
+			Name("own") if is_held => {
 				Err(
 					KavaState.fault_here(
 						reader,
@@ -629,7 +652,7 @@ KavaReader :: [].{
 					),
 				)
 			}
-			Name("lent") if KavaState.is_next_on_line(reader) and KavaReader.is_clause_start(next.kind) => {
+			Name("lent") if is_held => {
 				Err(
 					KavaState.fault_here(
 						reader,
@@ -650,7 +673,8 @@ KavaReader :: [].{
 		before = KavaState.previous_token(reader).kind
 		after = KavaState.next_token(reader)
 		is_field = reader.at > 0 and (before == Punct(".") or before == Punct("?."))
-		is_postfix = after.before == SameLine and (after.kind == Punct("++") or after.kind == Punct("--"))
+		is_step = after.kind == Punct("++") or after.kind == Punct("--")
+		is_postfix = after.before == SameLine and is_step
 		is_compound = match after.kind {
 			Punct(text) => KavaReader.assignments.contains(text)
 			_ => False
@@ -668,7 +692,14 @@ KavaReader :: [].{
 		} else {
 			Read
 		}
-		KavaState.with_use(reader, reader.at, word, role)
+		KavaState.with_use(
+			reader,
+			{
+				index: reader.at,
+				name: word,
+				role: role,
+			},
+		)
 	}
 
 	## A `(`: an arrow function's parameters, a call's arguments, or a
@@ -686,7 +717,7 @@ KavaReader :: [].{
 		}
 		if KavaReader.is_arrow(reader) {
 			parameters = KavaReader.parameter_list(reader)?
-			KavaReader.arrow_rest(parameters.reader, parameters.parsed, stop)
+			KavaReader.arrow_rest(parameters.reader, { parameters: parameters.parsed, stop: stop })
 		} else if is_callee {
 			KavaReader.arguments(reader)
 		} else {
@@ -758,18 +789,30 @@ KavaReader :: [].{
 		if reader.code != Ordinary {
 			return Err(KavaState.fault_here(reader, "a ghost or a clause can't hand a value over"))
 		}
-		said = KavaChecks.string_literal("kava: own ${name} failed: ${name} was used after it was handed over (${reader.file}, line ${keyword.line.to_str()})")
-		poisoned = Edits.replacement(
-			keyword.start,
-			named.end,
-			"((v) => (${name} = $kava_poison(${said}), v))($kava_live(${name}))",
+		place = "${reader.file}, line ${keyword.line.to_str()}"
+		failed = "own ${name} failed: ${name} was used after it was handed over"
+		said = KavaChecks.string_literal("kava: ${failed} (${place})")
+		poisoned = {
+			start: keyword.start,
+			end: named.end,
+			text: "((v) => (${name} = $kava_poison(${said}), v))($kava_live(${name}))",
+		}
+		cut = Edits.deletion(
+			reader.src,
+			{
+				start: keyword.start,
+				end: keyword.end,
+				side: SpacesAfter,
+			},
 		)
-		cut = Edits.deletion(reader.src, keyword.start, keyword.end, SpacesAfter)
+		edited = KavaState.with_edits(reader, { strip_edits: [cut], checked_edits: [poisoned] })
 		handed = KavaState.with_use(
-			KavaState.with_edits(reader, [cut], [poisoned]),
-			reader.at + 1,
-			name,
-			Handed,
+			edited,
+			{
+				index: reader.at + 1,
+				name: name,
+				role: Handed,
+			},
 		)
 		Ok({ ..handed, at: reader.at + 2 })
 	}
@@ -781,16 +824,24 @@ KavaReader :: [].{
 		keyword = KavaState.token(reader)
 		first = reader.at + 1
 		lent = KavaReader.expression(KavaState.advance(reader), AtElementEnd)?
-		text = KavaState.one_line(lent, first, lent.at)
-		said = KavaChecks.string_literal("kava: lent ${text} failed: it was written (${reader.file}, line ${keyword.line.to_str()})")
-		opened = Edits.replacement(
-			keyword.start,
-			KavaState.token_at(reader, first).start,
-			"$kava_lend(",
-		)
+		text = KavaState.one_line(lent, { first: first, past: lent.at })
+		place = "${reader.file}, line ${keyword.line.to_str()}"
+		said = KavaChecks.string_literal("kava: lent ${text} failed: it was written (${place})")
+		opened = {
+			start: keyword.start,
+			end: KavaState.token_at(reader, first).start,
+			text: "$kava_lend(",
+		}
 		closed = Edits.insertion(KavaState.previous_token(lent).end, ", ${said})")
-		cut = Edits.deletion(reader.src, keyword.start, keyword.end, SpacesAfter)
-		Ok(KavaState.with_edits(lent, [cut], [opened, closed]))
+		cut = Edits.deletion(
+			reader.src,
+			{
+				start: keyword.start,
+				end: keyword.end,
+				side: SpacesAfter,
+			},
+		)
+		Ok(KavaState.with_edits(lent, { strip_edits: [cut], checked_edits: [opened, closed] }))
 	}
 
 	skip_brackets : KavaState.State -> Try(KavaState.State, Lexer.Fault)
@@ -862,14 +913,21 @@ KavaReader :: [].{
 			} else {
 				match current.kind {
 					Name(word) => KavaReader.skip_default(
-						KavaState.advance(KavaState.with_use($reader, $reader.at, word, Shorthand)),
+						KavaState.advance(
+							KavaState.with_use(
+								$reader,
+								{
+									index: $reader.at,
+									name: word,
+									role: Shorthand,
+								},
+							),
+						),
 					)?
 					_ => {
+						found = KavaState.spelling($reader, $reader.at)
 						return Err(
-							KavaState.fault_here(
-								$reader,
-								"expected a property, found ${KavaState.spelling($reader, $reader.at)}",
-							),
+							KavaState.fault_here($reader, "expected a property, found ${found}"),
 						)
 					}
 				}
@@ -893,7 +951,14 @@ KavaReader :: [].{
 	function_rest = |reader| {
 		named = match KavaState.token(reader).kind {
 			Name(word) if !KavaReader.is_keyword(word) => KavaState.advance(
-				KavaState.with_use(reader, reader.at, word, Bound),
+				KavaState.with_use(
+					reader,
+					{
+						index: reader.at,
+						name: word,
+						role: Bound,
+					},
+				),
 			)
 			_ => reader
 		}
@@ -910,27 +975,28 @@ KavaReader :: [].{
 			Plain => []
 			_ => placing.invariants
 		}
-		contract = KavaReader.contract_of(
-			clauses.parsed,
-			parameters.parsed,
-			result.parsed,
-			invariants,
-		)
+		signature = {
+			parameters: parameters.parsed,
+			result: result.parsed,
+			invariants: invariants,
+		}
+		contract = KavaReader.contract_of(clauses.parsed, signature)
 		KavaReader.function_body(clauses.reader, contract)
 	}
 
 	## The rest of an arrow function, after its parameters: its result's
 	## type and contract, `=>`, and its body.
 	arrow_rest : KavaState.State,
-	List(KavaChecks.Parameter),
-	KavaReader.Stop -> Try(
-		KavaState.State,
-		Lexer.Fault,
-	)
-	arrow_rest = |reader, parameters, stop| {
+	{
+		parameters : List(KavaChecks.Parameter),
+		stop : KavaReader.Stop,
+	} -> Try(KavaState.State, Lexer.Fault)
+	arrow_rest = |reader, arrow_head| {
+		stop = arrow_head.stop
 		result = KavaReader.result_type(reader)?
 		clauses = KavaReader.function_clauses(result.reader)?
-		contract = KavaReader.contract_of(clauses.parsed, parameters, result.parsed, [])
+		signature = { parameters: arrow_head.parameters, result: result.parsed, invariants: [] }
+		contract = KavaReader.contract_of(clauses.parsed, signature)
 		arrow = KavaState.expect_punct(clauses.reader, "=>")?
 		if KavaState.is_punct(arrow, "{") {
 			KavaReader.function_body(arrow, contract)
@@ -954,7 +1020,12 @@ KavaReader :: [].{
 				KavaReader.result_kept_apart(closed, stretch)?
 				opened = Edits.insertion(start, "{ ${entry} const result = (")
 				ended = Edits.insertion(end, "); ${exits} return result; }")
-				Ok(KavaState.with_edits(closed, [], [opened, ended]))
+				Ok(
+					KavaState.with_edits(
+						closed,
+						{ strip_edits: [], checked_edits: [opened, ended] },
+					),
+				)
 			}
 		}
 	}
@@ -972,7 +1043,13 @@ KavaReader :: [].{
 			first = KavaState.token($reader)
 			is_hold_word = KavaState.is_word($reader, "own") or KavaState.is_word($reader, "lent")
 			held_kind = KavaState.next_token($reader).kind
-			is_held = is_hold_word and KavaState.is_next_on_line($reader) and (KavaReader.is_clause_start(held_kind) or held_kind == Punct("{") or held_kind == Punct("[") or held_kind == Punct("..."))
+			is_pattern = [
+				Punct("{"),
+				Punct("["),
+				Punct("..."),
+			].contains(held_kind)
+			is_binding = KavaReader.is_clause_start(held_kind) or is_pattern
+			is_held = is_hold_word and KavaState.is_next_on_line($reader) and is_binding
 			hold = if !is_held {
 				Shared
 			} else if KavaState.is_word($reader, "own") {
@@ -981,8 +1058,17 @@ KavaReader :: [].{
 				Lent
 			}
 			if is_held {
-				cut = Edits.deletion($reader.src, first.start, first.end, SpacesAfter)
-				$reader = KavaState.advance(KavaState.with_edits($reader, [cut], [cut]))
+				cut = Edits.deletion(
+					$reader.src,
+					{
+						start: first.start,
+						end: first.end,
+						side: SpacesAfter,
+					},
+				)
+				$reader = KavaState.advance(
+					KavaState.with_edits($reader, { strip_edits: [cut], checked_edits: [cut] }),
+				)
 			}
 			if KavaState.is_punct($reader, "...") {
 				$reader = KavaState.advance($reader)
@@ -1040,19 +1126,22 @@ KavaReader :: [].{
 		olds : List(KavaChecks.Old),
 	}
 
-	contract_of : KavaReader.Clauses,
-	List(KavaChecks.Parameter),
-	[
-		Typed(KavaTypes.Shape, Str, U64),
-		Untyped,
-	],
-	List(KavaChecks.Clause) -> KavaChecks.Contract
-	contract_of = |clauses, parameters, result, invariants| {
-		parameters: parameters,
-		result: result,
+	## A function's parts that make its contract, read apart.
+	Signature : {
+		parameters : List(KavaChecks.Parameter),
+		result : KavaReader.ResultType,
+		invariants : List(KavaChecks.Clause),
+	}
+
+	ResultType : [Typed(KavaTypes.Shape, Str, U64), Untyped]
+
+	contract_of : KavaReader.Clauses, KavaReader.Signature -> KavaChecks.Contract
+	contract_of = |clauses, signature| {
+		parameters: signature.parameters,
+		result: signature.result,
 		required: clauses.required,
 		ensured: clauses.ensured,
-		invariants: invariants,
+		invariants: signature.invariants,
 		olds: clauses.olds,
 	}
 
@@ -1068,7 +1157,10 @@ KavaReader :: [].{
 			} else {
 				is_ensures = KavaState.is_word($reader, "ensures")
 				read = KavaReader.clause($reader, AtClauseEnd)?
-				$reader = KavaState.deleted_in_both(read.reader, $reader.at, read.reader.at)
+				$reader = KavaState.deleted_in_both(
+					read.reader,
+					{ first: $reader.at, past: read.reader.at },
+				)
 				$clauses = if is_ensures {
 					{
 						..$clauses,
@@ -1099,10 +1191,10 @@ KavaReader :: [].{
 		if read.at == first {
 			return Err(KavaState.fault_here(reader, "a clause with no expression"))
 		}
-		olds = KavaReader.olds_in(read, first, read.at)
+		olds = KavaReader.olds_in(read, { first: first, past: read.at })
 		value = {
 			clause: {
-				text: KavaState.one_line(read, first, read.at),
+				text: KavaState.one_line(read, { first: first, past: read.at }),
 				code: olds.code,
 				line: keyword.line,
 			},
@@ -1114,13 +1206,14 @@ KavaReader :: [].{
 	## The tokens `first` up to `past` as a check runs them: each `old(x)`
 	## the local that saves `x` at entry, numbered from the reader's count.
 	olds_in : KavaState.State,
-	U64,
-	U64 -> {
+	KavaState.Stretch -> {
 		code : Str,
 		olds : List(KavaChecks.Old),
 		count : U64,
 	}
-	olds_in = |reader, first, past| {
+	olds_in = |reader, stretch| {
+		first = stretch.first
+		past = stretch.past
 		var $pieces = []
 		var $olds = []
 		var $count = reader.olds
@@ -1133,20 +1226,23 @@ KavaReader :: [].{
 			} else {
 				""
 			}
-			is_old = here.kind == Name("old") and KavaState.token_at(reader, $at + 1).kind == Punct("(") and KavaState.token_at(reader, $at.minus_saturated(1)).kind != Punct(".")
+			is_called = KavaState.token_at(reader, $at + 1).kind == Punct("(")
+			is_field = KavaState.token_at(reader, $at.minus_saturated(1)).kind == Punct(".")
+			is_old = here.kind == Name("old") and is_called and !is_field
 			if is_old {
 				closing = KavaState.past_closing(reader, $at + 1)
 				$count = $count + 1
 				local = "$kava_old_${$count.to_str()}"
 				$olds = $olds.append({
 					local: local,
-					code: KavaState.one_line(reader, $at + 2, closing - 1),
+					code: KavaState.one_line(reader, { first: $at + 2, past: closing - 1 }),
 				})
 				$pieces = $pieces.append("${space}${local}")
 				$last_end = KavaState.token_at(reader, closing - 1).end
 				$at = closing
 			} else {
-				$pieces = $pieces.append("${space}${KavaState.one_line(reader, $at, $at + 1)}")
+				piece = KavaState.one_line(reader, { first: $at, past: $at + 1 })
+				$pieces = $pieces.append("${space}${piece}")
 				$last_end = here.end
 				$at = $at + 1
 			}
@@ -1190,13 +1286,31 @@ KavaReader :: [].{
 			}
 			$reader = KavaState.with_code($reader, code)
 		}
-		KavaReader.carry($reader, reader.at, $reader.at, SpacesBefore)
+		KavaReader.carry(
+			$reader,
+			{
+				first: reader.at,
+				past: $reader.at,
+				side: SpacesBefore,
+			},
+		)
 	}
 
 	## The reader having carried the addition `first` up to `past`: deleted
 	## in strip mode, a comment in a checked build, and kept as written.
-	carry : KavaState.State, U64, U64, Edits.Side -> Try(KavaState.State, Lexer.Fault)
-	carry = |reader, first, past, side| {
+	## An addition carried, by its tokens, and which spaces its deletion
+	## takes.
+	Carrying : {
+		first : U64,
+		past : U64,
+		side : Edits.Side,
+	}
+
+	carry : KavaState.State, KavaReader.Carrying -> Try(KavaState.State, Lexer.Fault)
+	carry = |reader, carrying| {
+		first = carrying.first
+		past = carrying.past
+		side = carrying.side
 		start = KavaState.token_at(reader, first).start
 		end = KavaState.token_at(reader, past - 1).end
 		text = Str.from_utf8(
@@ -1207,7 +1321,14 @@ KavaReader :: [].{
 				KavaState.fault_here({ ..reader, at: first }, "a carried addition can't hold `*/`"),
 			)
 		}
-		cut = Edits.deletion(reader.src, start, end, side)
+		cut = Edits.deletion(
+			reader.src,
+			{
+				start: start,
+				end: end,
+				side: side,
+			},
+		)
 		kept = {
 			..reader,
 			carried: reader.carried.append({
@@ -1218,8 +1339,10 @@ KavaReader :: [].{
 		Ok(
 			KavaState.with_edits(
 				kept,
-				[cut],
-				[Edits.insertion(start, "/* "), Edits.insertion(end, " */")],
+				{
+					strip_edits: [cut],
+					checked_edits: [Edits.insertion(start, "/* "), Edits.insertion(end, " */")],
+				},
 			),
 		)
 	}
@@ -1250,7 +1373,7 @@ KavaReader :: [].{
 			[Edits.insertion(open, " ${entry}")]
 		}
 		if exits == "" {
-			Ok(KavaState.with_edits(framed, [], entered))
+			Ok(KavaState.with_edits(framed, { strip_edits: [], checked_edits: entered }))
 		} else {
 			KavaReader.result_kept_apart(framed, stretch)?
 			var $edits = entered
@@ -1259,13 +1382,11 @@ KavaReader :: [].{
 					Valued => ""
 					Bare => " undefined"
 				}
-				$edits = $edits.append(
-					Edits.replacement(
-						site.keyword_start,
-						site.keyword_end,
-						"{ const result =${value}",
-					),
-				)
+				$edits = $edits.append({
+					start: site.keyword_start,
+					end: site.keyword_end,
+					text: "{ const result =${value}",
+				})
 				$edits = match site.ending {
 					Semicolon(at) => $edits.append(
 						Edits.insertion(at, " ${exits} return result; }"),
@@ -1284,7 +1405,7 @@ KavaReader :: [].{
 					Edits.insertion(closing.start, "{ const result = undefined; ${exits} } "),
 				)
 			}
-			Ok(KavaState.with_edits(framed, [], $edits))
+			Ok(KavaState.with_edits(framed, { strip_edits: [], checked_edits: $edits }))
 		}
 	}
 
@@ -1292,16 +1413,34 @@ KavaReader :: [].{
 	## checked names `result`, which the checks name the value returned.
 	result_kept_apart : KavaState.State, KavaState.Stretch -> Try({}, Lexer.Fault)
 	result_kept_apart = |reader, stretch| {
-		named = reader.uses.find_first(|met| met.name == "result" and met.code != Clausal and met.index >= stretch.first and met.index < stretch.past and met.role != Field and met.role != FieldWritten)
+		is_inside = |met| met.index >= stretch.first and met.index < stretch.past
+		is_variable = |met| met.code != Clausal and met.role != Field and met.role != FieldWritten
+		is_result = |met| met.name == "result" and is_inside(met) and is_variable(met)
+		named = reader.uses.find_first(is_result)
 		match named {
 			Ok(met) => Err({
-				why: "`result` names the value an `ensures` or a result's type checks: rename this variable",
+				why: KavaReader.result_named,
 				line: met.line,
 				column: met.column,
 			})
 			Err(NotFound) => Ok({})
 		}
 	}
+
+	## The refusal of a variable named `result` where checks name the value
+	## returned so.
+	result_named : Str
+	result_named = Str.concat(
+		"`result` names the value an `ensures` or a result's type checks:",
+		" rename this variable",
+	)
+
+	## The names the uses from `from` on bind.
+	bound_names : KavaState.State, U64 -> List(Str)
+	bound_names = |
+		reader,
+		from,
+	| reader.uses.drop_first(from).keep_if(|met| met.role == Bound).map(|met| met.name)
 
 	## A `return` and its value, recorded for the function it is in.
 	return_statement : KavaState.State -> Try(KavaState.State, Lexer.Fault)
@@ -1383,7 +1522,10 @@ KavaReader :: [].{
 				"invariant",
 			) and on_line and KavaReader.is_clause_start(next_kind) {
 				read = KavaReader.clause($reader, AtClauseEnd)?
-				$reader = KavaState.deleted_in_both(read.reader, $reader.at, read.reader.at)
+				$reader = KavaState.deleted_in_both(
+					read.reader,
+					{ first: $reader.at, past: read.reader.at },
+				)
 				$invariants = $invariants.append(read.parsed.clause)
 			} else if KavaState.is_word($reader, "cost") and on_line and next_kind == Name("O") {
 				$reader = KavaReader.cost_clause($reader)?
@@ -1402,17 +1544,19 @@ KavaReader :: [].{
 			}
 			checks = $invariants.map(
 				|each| KavaChecks.guard(
-					$reader.file,
 					each.code,
-					"invariant ${each.text}",
-					each.line,
+					{
+						file: $reader.file,
+						what: "invariant ${each.text}",
+						line: each.line,
+					},
 				),
 			)
-			$reader = KavaState.with_edits(
-				$reader,
-				[],
-				[Edits.insertion(KavaState.token($reader).end, " ${Str.join_with(checks, " ")}")],
+			checked = Edits.insertion(
+				KavaState.token($reader).end,
+				" ${Str.join_with(checks, " ")}",
 			)
+			$reader = KavaState.with_edits($reader, { strip_edits: [], checked_edits: [checked] })
 		}
 		looped = KavaReader.statement($reader)?
 		Ok({ ..looped, loops: looped.loops.append({ first: first, past: looped.at }) })
@@ -1441,7 +1585,14 @@ KavaReader :: [].{
 	class_rest = |reader| {
 		named = match KavaState.token(reader).kind {
 			Name(word) if !KavaReader.is_keyword(word) => KavaState.advance(
-				KavaState.with_use(reader, reader.at, word, Bound),
+				KavaState.with_use(
+					reader,
+					{
+						index: reader.at,
+						name: word,
+						role: Bound,
+					},
+				),
 			)
 			_ => reader
 		}
@@ -1498,7 +1649,16 @@ KavaReader :: [].{
 		) {
 			here = KavaState.token_at(reader, $at)
 			next = KavaState.token_at(reader, $at + 1)
-			is_invariant = $depth == 0 and $starts_member and here.kind == Name("invariant") and next.before == SameLine and !(next.kind == Punct("(") or next.kind == Punct("=") or next.kind == Punct(";") or next.kind == Punct("}"))
+			is_member_start = $depth == 0 and $starts_member
+			is_member_name = [
+				Punct("("),
+				Punct("="),
+				Punct(";"),
+				Punct("}"),
+			].contains(next.kind)
+			is_keyword_on_line = here.kind == Name("invariant") and next.before == SameLine
+			is_clause = is_keyword_on_line and !is_member_name
+			is_invariant = is_member_start and is_clause
 			if is_invariant {
 				read = KavaReader.clause({ ..$reader, at: $at }, AtStatementEnd)?
 				past = if KavaState.is_punct(read.reader, ";") {
@@ -1506,7 +1666,7 @@ KavaReader :: [].{
 				} else {
 					read.reader.at
 				}
-				cut = KavaState.deleted_in_both(read.reader, $at, past)
+				cut = KavaState.deleted_in_both(read.reader, { first: $at, past: past })
 				$reader = { ..cut, at: reader.at }
 				$found = $found.append({
 					clause: read.parsed.clause,
@@ -1527,7 +1687,8 @@ KavaReader :: [].{
 					TemplateTail(_) => $depth.minus_saturated(1)
 					_ => $depth
 				}
-				$starts_member = $depth == 0 and (here.kind == Punct("}") or here.kind == Punct(";"))
+				is_member_end = here.kind == Punct("}") or here.kind == Punct(";")
+				$starts_member = $depth == 0 and is_member_end
 				$at = $at + 1
 			}
 		}
@@ -1541,7 +1702,12 @@ KavaReader :: [].{
 		if KavaState.is_punct(reader, ";") {
 			return Ok(KavaState.advance(reader))
 		}
-		if KavaState.is_word(reader, "ghost") and KavaState.is_next_on_line(reader) and KavaState.next_token(reader).kind != Punct("(") and KavaState.next_token(reader).kind != Punct("=") {
+		after_ghost = KavaState.next_token(reader).kind
+		is_ghost_member = after_ghost != Punct("(") and after_ghost != Punct("=")
+		if KavaState.is_word(
+			reader,
+			"ghost",
+		) and KavaState.is_next_on_line(reader) and is_ghost_member {
 			return KavaReader.ghost_field(reader)
 		}
 		is_static = KavaState.is_word(
@@ -1619,7 +1785,7 @@ KavaReader :: [].{
 			KavaReader.statement(inside)?
 		}
 		named = if KavaState.is_word(inside, "let") or KavaState.is_word(inside, "const") {
-			bound = ended.uses.drop_first(uses_before).keep_if(|met| met.role == Bound).map(|met| met.name)
+			bound = KavaReader.bound_names(ended, uses_before)
 			{ ..ended, ghost_names: List.concat(ended.ghost_names, bound) }
 		} else {
 			ended
@@ -1633,12 +1799,21 @@ KavaReader :: [].{
 	ghost_deleted = |reader, keyword| {
 		whole = Edits.deletion(
 			reader.src,
-			keyword.start,
-			KavaState.previous_token(reader).end,
-			SpacesAfter,
+			{
+				start: keyword.start,
+				end: KavaState.previous_token(reader).end,
+				side: SpacesAfter,
+			},
 		)
-		word = Edits.deletion(reader.src, keyword.start, keyword.end, SpacesAfter)
-		Ok(KavaState.with_edits(reader, [whole], [word]))
+		word = Edits.deletion(
+			reader.src,
+			{
+				start: keyword.start,
+				end: keyword.end,
+				side: SpacesAfter,
+			},
+		)
+		Ok(KavaState.with_edits(reader, { strip_edits: [whole], checked_edits: [word] }))
 	}
 
 	## A class's `ghost f = e;`: a field only checks read.
@@ -1688,9 +1863,11 @@ KavaReader :: [].{
 		past = KavaState.past_closing(named, past_parameters)
 		KavaReader.carry(
 			{ ..named, at: past },
-			reader.at,
-			past,
-			SpacesAfter,
+			{
+				first: reader.at,
+				past: past,
+				side: SpacesAfter,
+			},
 		)
 	}
 }

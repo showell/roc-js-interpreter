@@ -39,8 +39,15 @@ KavaTypes :: [].{
 		Err(OutOfBounds) => End
 	}
 
-	fault_at : List(KavaTokens.Spanned), U64, Str -> Lexer.Fault
-	fault_at = |tokens, index, why| match tokens.get(index) {
+	## A fault at a token, saying why.
+	fault_at : List(KavaTokens.Spanned), { index : U64, why : Str } -> Lexer.Fault
+	fault_at = |tokens, place| {
+		why = place.why
+		KavaTypes.fault_at_token(tokens.get(place.index), why)
+	}
+
+	fault_at_token : Try(KavaTokens.Spanned, [OutOfBounds]), Str -> Lexer.Fault
+	fault_at_token = |found_token, why| match found_token {
 		Ok(found) => {
 			why: why,
 			line: found.line,
@@ -82,11 +89,16 @@ KavaTypes :: [].{
 			if KavaTypes.kind_at(tokens, inner.next) == Punct(")") {
 				Ok({ shape: inner.shape, next: inner.next + 1 })
 			} else {
-				Err(KavaTypes.fault_at(tokens, inner.next, "expected `)` to close a type"))
+				Err(
+					KavaTypes.fault_at(
+						tokens,
+						{ index: inner.next, why: "expected `)` to close a type" },
+					),
+				)
 			}
 		}
 		Punct("{") => KavaTypes.record_at(tokens, index + 1)
-		_ => Err(KavaTypes.fault_at(tokens, index, "expected a type"))
+		_ => Err(KavaTypes.fault_at(tokens, { index: index, why: "expected a type" }))
 	}
 
 	named_shape : Str -> KavaTypes.Shape
@@ -109,15 +121,20 @@ KavaTypes :: [].{
 			field_name = match KavaTypes.kind_at(tokens, $at) {
 				Name(word) => Ok(word)
 				_ => Err(
-					KavaTypes.fault_at(tokens, $at, "expected a field's name in a record type"),
+					KavaTypes.fault_at(
+						tokens,
+						{ index: $at, why: "expected a field's name in a record type" },
+					),
 				)
 			}?
 			if KavaTypes.kind_at(tokens, $at + 1) != Punct(":") {
 				return Err(
 					KavaTypes.fault_at(
 						tokens,
-						$at + 1,
-						"expected `:` after a field's name in a record type",
+						{
+							index: $at + 1,
+							why: "expected `:` after a field's name in a record type",
+						},
 					),
 				)
 			}
@@ -129,7 +146,10 @@ KavaTypes :: [].{
 				field.next
 			} else {
 				return Err(
-					KavaTypes.fault_at(tokens, field.next, "expected `,` or `}` in a record type"),
+					KavaTypes.fault_at(
+						tokens,
+						{ index: field.next, why: "expected `,` or `}` in a record type" },
+					),
 				)
 			}
 		}
@@ -141,35 +161,40 @@ KavaTypes :: [].{
 	## it. The `$kava_is_*` functions are the checked build's own
 	## (KavaChecks.helpers).
 	check_of : KavaTypes.Shape, Str -> Str
-	check_of = |shape, subject| KavaTypes.check_at_depth(shape, subject, 1)
+	check_of = |shape, subject| KavaTypes.check_at_depth(shape, { subject: subject, depth: 1 })
 
 	## The check of a value `depth` arrays deep, its items named apart from
 	## those of the arrays around it.
-	check_at_depth : KavaTypes.Shape, Str, U64 -> Str
-	check_at_depth = |shape, subject, depth| match shape {
-		Number => "typeof ${subject} === \"number\""
-		Whole32 => "$kava_is_i32(${subject})"
-		Whole64 => "$kava_is_i64(${subject})"
-		Text => "typeof ${subject} === \"string\""
-		Boolean => "typeof ${subject} === \"boolean\""
-		Big => "typeof ${subject} === \"bigint\""
-		Items(inner) => {
-			item = "$kava_item_${depth.to_str()}"
-			"(Array.isArray(${subject}) && ${subject}.every((${item}) => ${KavaTypes.check_at_depth(inner, item, depth + 1)}))"
+	check_at_depth : KavaTypes.Shape, { subject : Str, depth : U64 } -> Str
+	check_at_depth = |shape, place| {
+		subject = place.subject
+		depth = place.depth
+		match shape {
+
+			Number => "typeof ${subject} === \"number\""
+			Whole32 => "$kava_is_i32(${subject})"
+			Whole64 => "$kava_is_i64(${subject})"
+			Text => "typeof ${subject} === \"string\""
+			Boolean => "typeof ${subject} === \"boolean\""
+			Big => "typeof ${subject} === \"bigint\""
+			Items(inner) => {
+				item = "$kava_item_${depth.to_str()}"
+				each = KavaTypes.check_at_depth(inner, { subject: item, depth: depth + 1 })
+				"(Array.isArray(${subject}) && ${subject}.every((${item}) => ${each}))"
+			}
+			Record(fields) => {
+				names = fields.map(|(field_name, _)| "\"${field_name}\"")
+				checks = fields.map(
+					|(field_name, field)| KavaTypes.check_at_depth(
+						field,
+						{ subject: "${subject}.${field_name}", depth: depth },
+					),
+				)
+				whole = ["$kava_is_record(${subject}, [${Str.join_with(names, ", ")}])"]
+				"(${Str.join_with(List.concat(whole, checks), " && ")})"
+			}
+			Instance(class_name) => "${subject} instanceof ${class_name}"
 		}
-		Record(fields) => {
-			names = fields.map(|(field_name, _)| "\"${field_name}\"")
-			checks = fields.map(
-				|(field_name, field)| KavaTypes.check_at_depth(
-					field,
-					"${subject}.${field_name}",
-					depth,
-				),
-			)
-			whole = ["$kava_is_record(${subject}, [${Str.join_with(names, ", ")}])"]
-			"(${Str.join_with(List.concat(whole, checks), " && ")})"
-		}
-		Instance(class_name) => "${subject} instanceof ${class_name}"
 	}
 
 	expect KavaTypes.check_of(Whole32, "x") == "$kava_is_i32(x)"
