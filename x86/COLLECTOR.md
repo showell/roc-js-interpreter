@@ -182,3 +182,24 @@ The two count different things, so neither number checks the other directly; eac
 - **The collections differ by the triggers:** the VM collects at twice what it kept and at least 1,024 cells (`Machine.roc`'s `is_collection_due`), so a program of a few thousand cells collects a few times; the compiled program first collects past 8 MiB, which these four corpus programs never take.
 
 Both are stable: each compiled line came out the same in 5 runs, the heap's address moving with each. x86/programs.shale holds the four corpus programs' lines exactly (HEAP_HELD).
+
+## Cheaper allocation (2026-11-28)
+
+Item 3 of x86/bigdaddy/README.md's ranked next work: two general rules, neither shaped to a race.
+
+- **The one-byte strings are made once.** The 256 strings of one byte lie in the read-only segment, each its length (1) in 8 bytes then its byte, 9 bytes apart (`RuntimeBuilders.one_byte_texts`, laid down by RuntimeTexts; 2,304 bytes). An index or `charAt` of a string, a walk of its characters (`runtime_items_of`: `for ... of`, a spread, `Array.from`), a split piece of one byte (and one of none, which is the empty literal), a slice or `substring` of one byte, a number of one digit and `String.fromCharCode` of one code answer one of them, and allocate nothing. `runtime_concat` answers a string and the empty string with the string itself, since a string never changes once made. The collector needs no change: a static string is outside the heap, as every literal is, so `Heap.block_start` finds no block for it, and nothing marks or frees it. Equality and Map, Set and object keys compare a string's bytes, so the table's string, a literal and a built string of the same byte are the same key (x86/tests/one-byte-strings.js).
+- **An allocation whose size is known is in line** (`Heap.allocate_known_items`). The size class and the header are chosen when the runtime is built; the code in line adds the class's block size to the bytes in use and compares it with the threshold, pops the class's free list or bumps its page (a next block at a page's start, low 16 bits 0, means full or none), then writes the header and the count of allocations, as the shared path does, changing `rax` and `rdi` alone. Past the threshold, on a full page, or for a block past a page of blocks, it calls the shared path, which counts the block from the start, so the counts, the trigger, the free lists and the pages are kept exactly. The torture tier needs nothing: its threshold is 0, so every allocation takes the shared path and collects. Used by `runtime_new_array` (and its Int32 and Numbers twins) for at most 4 items, `runtime_new_object` and `runtime_new_cell`.
+
+**The counts** (`shale x86/cost.shale counted=1`, master fa2fda0 against this lane). "In the allocator" is every place of `runtime_allocate_*`, `runtime_take_pages*` and `runtime_block_start*`, and the in-line paths' own places (`*_alloc`, `_alloc_bump`, `_alloc_header`, `_alloc_shared`):
+
+| race | instructions run, before | after | in the allocator, before | after | predicted cycles, before | after |
+|---|---|---|---|---|---|---|
+| fib 100,000 | 9,415,873,498 | 9,415,728,206 | 245,889 | 130,983 | 3,348,651,132 | 3,348,617,166 |
+| bank 2,000,000 | 2,760,324,551 | 2,760,319,429 | 86,982 | 78,241 | 770,806,566 | 770,805,550 |
+| fourteen 300 | 1,984,730,118 | 1,984,730,119 | 798 | 747 | 895,982,651 | 895,982,652 |
+| big daddy 300 | 4,085,933,251 | 3,873,443,548 | 569,726,016 | 418,723,214 | 1,186,109,055 | 1,142,105,776 |
+| SAT small | 2,723,707,216 | 2,719,317,407 | 40,443,665 | 37,398,155 | 823,841,432 | 822,929,487 |
+
+Big daddy runs 5.2% fewer instructions, 26% fewer in the allocator, and the model predicts 3.7% fewer cycles. The shared path ran about 14.7 million times before and 5.8 million after (its `runtime_allocate_kind` block, 21 instructions); string blocks fell from about 5.5 million to 4.5 million. The sweep (`runtime_gc_sweep_*`) is now the runtime's biggest cost there.
+
+**The bytes:** every executable carries the table and the longer routines, 3,037 bytes more: fib 31,328 to 34,365, bank 44,956 to 47,993, fourteen 30,094 to 33,131, big daddy 91,226 to 94,263, SAT small 247,938 to 250,975.
