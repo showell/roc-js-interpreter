@@ -1178,7 +1178,13 @@ operator_items = {
 		])
 		.concat(RuntimeBuilders.stopping_items("runtime_text_not_a_function"))
 	cell = [Emit.mark(Runtime.new_cell)]
-		.concat(Heap.allocate_known_items({ kind: Cell, size: 8, label: Runtime.new_cell }))
+		.concat(
+			Heap.allocate_known_items({
+				kind: Cell,
+				size: 8,
+				label: Runtime.new_cell,
+			}),
+		)
 		.concat([Emit.store(Emit.mem(Rax, 0), Rsi), Emit.ret])
 	# The constants' payloads are 0 to 3: `undefined` NaN, `null` and
 	# `false` 0, `true` 1.
@@ -1382,7 +1388,7 @@ number_items = {
 			Emit.jcc(Ne, "runtime_number_made"),
 			Emit.byte_load(Rax, Emit.mem(Rsi, 0)),
 		])
-		.concat(RuntimeBuilders.one_byte_text_items({ byte: Rax, temp: Rcx }))
+		.concat(RuntimeBuilders.one_byte_text_items)
 		.concat([
 			Emit.plus_imm(Rsp, 32),
 			Emit.ret,
@@ -1455,7 +1461,13 @@ container_items = {
 			Emit.cmp(Rdi, Rcx),
 			Emit.jcc(A, "${label}_sized"),
 		]
-			.concat(Heap.allocate_known_items({ kind, size: 24 + 4 * 8, label }))
+			.concat(
+				Heap.allocate_known_items({
+					kind,
+					size: 24 + 4 * 8,
+					label,
+				}),
+			)
 			.concat([
 				Emit.jmp("${label}_made"),
 				Emit.mark("${label}_sized"),
@@ -1875,7 +1887,7 @@ container_items = {
 			Emit.mov(R8, Rcx),
 			RuntimeBuilders.text_byte_item({ reg: Rax, base: Rdi }),
 		])
-		.concat(RuntimeBuilders.one_byte_text_items({ byte: Rax, temp: Rcx }))
+		.concat(RuntimeBuilders.one_byte_text_items)
 		.concat(RuntimeBuilders.boxed_string_items)
 		.concat([Emit.ret, Emit.mark("runtime_get_index_object")])
 		.concat(RuntimeBuilders.unboxed_items(Rdi))

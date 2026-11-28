@@ -191,7 +191,7 @@ language_items = {
 			Emit.jcc(E, "runtime_items_of_made"),
 			RuntimeBuilders.text_byte_item({ reg: Rax, base: R10 }),
 		])
-		.concat(RuntimeBuilders.one_byte_text_items({ byte: Rax, temp: Rcx }))
+		.concat(RuntimeBuilders.one_byte_text_items)
 		.concat(RuntimeBuilders.boxed_string_items)
 		.concat([
 			Emit.store(
@@ -598,7 +598,7 @@ string_method_items = {
 		Emit.mov(R8, Rcx),
 		RuntimeBuilders.text_byte_item({ reg: Rax, base: Rsi }),
 	]
-		.concat(RuntimeBuilders.one_byte_text_items({ byte: Rax, temp: Rcx }))
+		.concat(RuntimeBuilders.one_byte_text_items)
 		.concat([
 			Emit.jmp("runtime_split_piece_boxed"),
 			Emit.mark("runtime_split_piece_made"),

@@ -40,9 +40,10 @@ RuntimeTexts :: [].{
 ## length then its byte, 9 bytes apart.
 one_byte_data : List(U8)
 one_byte_data = {
+	one_length = [1, 0, 0, 0, 0, 0, 0, 0]
 	var $out = List.with_capacity(256 * 9)
 	for byte in 0..<256 {
-		$out = $out.concat([1, 0, 0, 0, 0, 0, 0, 0, byte.to_u8_wrap()])
+		$out = $out.concat(one_length).append(byte.to_u8_wrap())
 	}
 	$out
 }

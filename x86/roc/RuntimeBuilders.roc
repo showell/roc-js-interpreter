@@ -50,19 +50,19 @@ RuntimeBuilders :: [].{
 	one_byte_texts = "runtime_text_one_byte"
 
 	## The statements that put the address of the one-byte string of the
-	## byte in `byte` (0 to 255) in `byte`. They change `temp` too.
-	one_byte_text_items : { byte : X86.Register, temp : X86.Register } -> List(Assembly.Statement)
-	one_byte_text_items = |{ byte, temp }| [
+	## byte in `rax` (0 to 255) in `rax`. They change `rcx` too.
+	one_byte_text_items : List(Assembly.Statement)
+	one_byte_text_items = [
 		Emit.lea(
-			byte,
+			Rax,
 			Based({
-				base: byte,
-				index: Scaled({ reg: byte, scale: Times8 }),
+				base: Rax,
+				index: Scaled({ reg: Rax, scale: Times8 }),
 				displacement: 0,
 			}),
 		),
-		Emit.address_of(temp, RuntimeBuilders.one_byte_texts),
-		Emit.plus(byte, temp),
+		Emit.address_of(Rcx, RuntimeBuilders.one_byte_texts),
+		Emit.plus(Rax, Rcx),
 	]
 
 	## The statements that jump to `label` when the object at `rdi`

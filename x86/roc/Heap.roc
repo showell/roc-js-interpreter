@@ -550,7 +550,11 @@ class_of = |asked| {
 		$power = $power * 2
 		$class = $class + 1
 	}
-	if $class < least_class { least_class } else { $class }
+	if $class < least_class {
+		least_class
+	} else {
+		$class
+	}
 }
 
 ## The block size of a class: 2 times 2 to its power.

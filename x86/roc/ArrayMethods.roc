@@ -425,7 +425,7 @@ slice_items = {
 				}),
 			),
 		])
-		.concat(RuntimeBuilders.one_byte_text_items({ byte: Rax, temp: Rcx }))
+		.concat(RuntimeBuilders.one_byte_text_items)
 		.concat([
 			Emit.jmp("runtime_slice_string_boxed"),
 			Emit.mark("runtime_slice_string_made"),
@@ -1343,7 +1343,7 @@ edit_items = {
 				Emit.cmp_imm(Rax, 0x80),
 				Emit.jcc(Ae, "runtime_from_char_codes_wide"),
 			])
-			.concat(RuntimeBuilders.one_byte_text_items({ byte: Rax, temp: Rcx }))
+			.concat(RuntimeBuilders.one_byte_text_items)
 			.concat(RuntimeBuilders.boxed_string_items)
 			.concat([
 				Emit.ret,
