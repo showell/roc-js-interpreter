@@ -83,7 +83,7 @@ const SAMPLED = "gcsample"
 -- with HEAP_WALK; `flipped.count` counts those whose bytes differ.
 const FLIP = "guardsflip"
 const flipped = {count = 0}
-const TORTURE_SAMPLED = {"x86/tests/join.js", "x86/satrace/sat.js"}
+const TORTURE_SAMPLED = {"x86/tests/join.js", "x86/tests/lazy-sweep-churn.js", "x86/satrace/sat.js"}
 -- The heapstat lines of four corpus programs that make garbage, held
 -- exactly: what each allocates, collects and keeps live to its exit
 -- (x86/COLLECTOR.md, "Lane 3", reads them beside the interpreter's). A

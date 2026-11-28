@@ -9,12 +9,15 @@
 ## block bigger than 32768 bytes takes whole pages of its own, as many as
 ## it needs, its block starting at its first page. Every block starts with
 ## its **header**, 8 bytes: its kind (`Heap.BlockKind`'s code, 1 to 15) in the
-## top 16 bits, the collector's mark in bit 47 (set only while a collection
-## runs), and the bytes asked for, rounded up to 8, in the low 47. What the
+## top 16 bits, the collector's mark in bit 47 (set from a collection's mark
+## until its page is swept), and the bytes asked for, rounded up to 8, in the low 47. What the
 ## allocator answers is the address past the header, so a string's length
 ## is at the answer, as before, and its header 8 bytes below it. **A block
-## not taken has the header 0**, and its contents are 0 but for the free
-## list's link 8 bytes in, so a block the allocator answers is all 0.
+## not taken has the header 0**, its free list's link 8 bytes in, and past
+## that whatever it held when it died: **a block is zeroed when it is handed
+## out**, its bytes asked alone, so a block the allocator answers is all 0.
+## A page a class takes has the header of each of its blocks cleared then,
+## since a free page is left as it was.
 ##
 ## **AN ARRAY'S HEADER SAYS WHAT ITS ITEMS ARE** (`Heap.ElementKind`): its
 ## record's block is an `Int32Array` (every item a double holding a whole
@@ -31,11 +34,13 @@
 ## `r15` holds the heap's state for the whole run (`state_size` bytes,
 ## mapped with the rest), laid out as these places say: the next free page,
 ## the first page, the walk's mode, the walk's counts, the collector's
-## counts and its threshold, the free pages' runs, then each size class's
-## next block, block size and free list, 32 bytes a class, then the page
-## table, one byte a page: 0 a page not taken, 3 to 14 a page of blocks of
-## 2 << that many bytes, `large_first` a large block's first page and
-## `large_rest` each page after it. The pages start at the first multiple
+## counts and its threshold, the free pages' runs, the walk's two places
+## for a page not swept yet, then each size class's next block, block size,
+## free list and sweep's cursor, 32 bytes a class, then the page table, one
+## byte a page: 0 a page not taken, 3 to 14 a page of blocks of 2 << that
+## many bytes, `large_first` a large block's first page and `large_rest`
+## each page after it; then the page counts, 8 bytes a page, the blocks the
+## last collection marked in a page not swept yet. The pages start at the first multiple
 ## of 64 KiB past the state; `r14` is the end of the heap, and the mark
 ## stack lies past it, in the same mapping.
 ##
@@ -45,9 +50,10 @@
 ## size, so the block's header is the address and-ed with minus the block
 ## size. A large block's later page walks back the table to its first.
 ##
-## The allocator takes the head of its size class's free list, else the
-## next block of the class's page, a bump; a class whose page is full (or
-## that has none) takes a free page. Each kind has its own entry
+## The allocator takes the head of its size class's free list, else sweeps
+## the class's next page not swept yet onto it, else the next block of the
+## class's page, a bump; a class whose page is full (or that has none) takes
+## a free page. Each kind has its own entry
 ## (`Heap.allocate`), which puts the kind's header bits in `rax` before the
 ## shared path. Pages are taken from the free pages' runs, first fit, before
 ## the heap's end is bumped.
@@ -67,21 +73,24 @@
 ##   pointer's tag (0xFFFA and up); `Heap.block_start` finds its block, or
 ##   none.
 ## - **The mark is the header's bit 47**, beside the kind and the size a
-##   trace reads anyway, so marking a block touches nothing else, and the
-##   sweep, which reads every header, clears it. A block marked for the
+##   trace reads anyway, and the sweep, which reads every header, clears it.
+##   A block marked is counted in its page's count. A block marked for the
 ##   first time goes on the mark stack, past `r14`, unless its kind holds no
 ##   pointer; the stack has room for every block the heap could hold, so it
 ##   never overflows, and no trace recurses.
 ## - **A block is traced by its kind** (`trace_from`): every word of its
 ##   bytes asked, from the first that may hold a value or a raw address, is
 ##   a possible pointer, as a root is. A string and a table hold none.
-## - **The sweep** goes page by page. Each class's free list and its bump
-##   page are dropped and the lists built again: a marked block is kept and
-##   its mark cleared; an unmarked one is zeroed and goes on its class's free
-##   list, with the blocks already free. A page of blocks with none kept
-##   becomes a free page, and so do a large block's pages when it is not
-##   marked. Free pages next to each other make one run, and a run at the
-##   heap's end gives its pages back to the bump.
+## - **The sweep is lazy.** After the mark, each class's free list and its
+##   bump page are dropped, and the pages are read by their counts alone: a
+##   page of blocks with none marked becomes a free page, as it is, and so
+##   do a large block's pages when it is not marked; a page with a block
+##   marked is left, to be swept when its class next needs a block
+##   (`lazy_sweep_items`): its marks cleared, every other block's header
+##   zeroed and put on the class's free list. Free pages next to each other
+##   make one run, and a run at the heap's end gives its pages back to the
+##   bump. A collection first finishes the sweep the last one left
+##   (`finish_items`), so its mark meets no mark and no dead block.
 import Assembly
 import Boxing
 import Emit
@@ -291,7 +300,7 @@ Heap :: [].{
 	find_element_kind = "runtime_find_element_kind"
 
 	## The routine that takes `rdi` bytes of the heap for a block of `kind`,
-	## the address past its header in `rax`, the block's bytes all 0. It
+	## the address past its header in `rax`, the bytes asked all 0. It
 	## changes `rax` and `rdi` alone, and may collect.
 	allocate : Heap.BlockKind -> Str
 	allocate = |kind| "runtime_allocate_${kind_word(kind)}"
@@ -302,8 +311,8 @@ Heap :: [].{
 	## known before the program runs. The block's class and its header are
 	## chosen here, so the usual way is in line: the bytes counted against
 	## the threshold, then the class's free list popped or its page bumped,
-	## and the header and the count of allocations written, as the shared path
-	## writes them. A block past the threshold (always, in the torture tier,
+	## the bytes asked zeroed, and the header and the count of allocations
+	## written, as the shared path writes them. A block past the threshold (always, in the torture tier,
 	## whose threshold is 0), or a class whose page is full or that has none,
 	## calls the shared path, which counts it from the start; so does a block
 	## too big for a page of blocks. `label` starts their labels' names. They
@@ -340,8 +349,6 @@ Heap :: [].{
 				Emit.store(in_use_place, Rax),
 				Emit.load(Rax, Emit.mem(Rdi, 8)),
 				Emit.store(free_place, Rax),
-				Emit.zero(Rax),
-				Emit.store(Emit.mem(Rdi, 8), Rax),
 				Emit.jmp(header),
 				# The page is full, or the class has none, when its next block
 				# lies at a page's start: its low 16 bits are 0.
@@ -353,16 +360,22 @@ Heap :: [].{
 				Emit.load(Rdi, next_place),
 				Emit.lea(Rax, Emit.mem(Rdi, block)),
 				Emit.store(next_place, Rax),
+				# The block's bytes asked are zeroed as it is handed out: a
+				# block swept lazily still holds what it held when it died.
 				Emit.mark(header),
-				Emit.load(Rax, Heap.allocations_place),
-				Emit.plus_imm(Rax, 1),
-				Emit.store(Heap.allocations_place, Rax),
-				Emit.imm(Rax, Heap.kind_code(kind) * kind_place + asked),
-				Emit.store(Emit.mem(Rdi, 0), Rax),
-				Emit.lea(Rax, Emit.mem(Rdi, 8)),
-				Emit.jmp(done),
-				Emit.mark(slow),
+				Emit.zero(Rax),
 			]
+				.concat(zeroed_words_items({ base: Rdi, words: asked // 8 }))
+				.concat([
+					Emit.load(Rax, Heap.allocations_place),
+					Emit.plus_imm(Rax, 1),
+					Emit.store(Heap.allocations_place, Rax),
+					Emit.imm(Rax, Heap.kind_code(kind) * kind_place + asked),
+					Emit.store(Emit.mem(Rdi, 0), Rax),
+					Emit.lea(Rax, Emit.mem(Rdi, 8)),
+					Emit.jmp(done),
+					Emit.mark(slow),
+				])
 				.concat(called)
 				.append(Emit.mark(done))
 		}
@@ -370,8 +383,8 @@ Heap :: [].{
 
 	## The routine that gives the address of the header of the block that
 	## holds the address in `rdi` (its header, its contents or the room past
-	## them), or 0 when no block taken holds it. It changes `rax`, `rcx` and
-	## `rdx`.
+	## them), or 0 when no block taken holds it; with a block, `rcx` holds the
+	## number of its header's page. It changes `rax`, `rcx` and `rdx`.
 	block_start : Str
 	block_start = "runtime_block_start"
 
@@ -483,6 +496,16 @@ Heap :: [].{
 		Emit.plus(Rax, Rax),
 		Emit.cmp_imm(Rax, most_block),
 		Emit.jcc(Be, "runtime_heap_class_sized"),
+		# No page is left to sweep before the first collection.
+		Emit.imm(Rax, swept_all),
+		Emit.lea(Rcx, Emit.mem(R15, classes_place + 24)),
+		Emit.mark("runtime_heap_class_swept"),
+		Emit.store(Emit.mem(Rcx, 0), Rax),
+		Emit.plus_imm(Rcx, class_bytes),
+		Emit.lea(Rax, Emit.mem(R15, table_place + 24)),
+		Emit.cmp(Rcx, Rax),
+		Emit.imm(Rax, swept_all),
+		Emit.jcc(B, "runtime_heap_class_swept"),
 		Emit.load(Rcx, Emit.mem(Rsp, 0)),
 		Emit.cmp_imm(Rcx, 2),
 		Emit.jcc(B, "runtime_heap_moded"),
@@ -534,7 +557,9 @@ Heap :: [].{
 		block_start_items,
 		collect_items,
 		consider_items,
+		finish_items,
 		sweep_items,
+		lazy_sweep_items,
 		walk_items,
 	].join()
 }
@@ -555,6 +580,17 @@ class_of = |asked| {
 	} else {
 		$class
 	}
+}
+
+## The stores of `rax`, which holds 0, to the first `words` words past the
+## header of the block whose header is at `base`.
+zeroed_words_items : { base : X86.Register, words : I64 } -> List(Assembly.Statement)
+zeroed_words_items = |{ base, words }| {
+	var $out = []
+	for word in 0..<words {
+		$out = $out.append(Emit.store(Emit.mem(base, 8 + 8 * word), Rax))
+	}
+	$out
 }
 
 ## The block size of a class: 2 times 2 to its power.
@@ -736,10 +772,25 @@ free_pages_place = Emit.mem(R15, 128)
 stack_base_place : X86.Mem
 stack_base_place = Emit.mem(R15, 136)
 
-## Each class's 32 bytes: its next block (0), its block size (8) and its
-## free list's first block (16).
+## The walk's two places for a page of blocks not swept yet: its count of
+## marked blocks, and how many of them the walk has still to meet.
+walk_unswept_place : X86.Mem
+walk_unswept_place = Emit.mem(R15, 152)
+
+walk_marks_left_place : X86.Mem
+walk_marks_left_place = Emit.mem(R15, 160)
+
+## Each class's 32 bytes: its next block (0), its block size (8), its free
+## list's first block (16) and its sweep's cursor (24), the number of the
+## page the lazy sweep looks at next for a page of the class not swept yet,
+## or `swept_all` once it has found none left.
 classes_place : I64
-classes_place = 152
+classes_place = 168
+
+## The sweep's cursor of a class that has no page left to sweep: past every
+## page the heap could hold.
+swept_all : I64
+swept_all = table_size
 
 class_bytes : I64
 class_bytes = 32
@@ -757,8 +808,23 @@ table_place = classes_place + class_bytes * class_count
 table_size : I64
 table_size = Heap.mapped_size // page_size
 
+## The page counts' room: 8 bytes for each page the heap could hold, the
+## marked blocks the last collection found in the page and the lazy sweep
+## has yet to sweep (0 once the page is swept, and for any page but a page
+## of blocks).
+counts_place : I64
+counts_place = table_place + table_size
+
 state_size : I64
-state_size = table_place + table_size
+state_size = counts_place + table_size * 8
+
+## The count of the page whose number is in `index`.
+count_entry : X86.Register -> X86.Mem
+count_entry = |index| Based({
+	base: R15,
+	index: Scaled({ reg: index, scale: Times8 }),
+	displacement: counts_place.to_i32_wrap(),
+})
 
 ## The place of a class's next block, the class's offset (its highest bit
 ## times 32) in `offset`; its block size is 8 bytes on, its free list 16.
@@ -920,10 +986,13 @@ entry_items = {
 ## `rax` make, and the class whose block holds them both (the highest bit
 ## of `rdi + 7`, at least 3). The block's bytes are counted as taken, and
 ## past the threshold the heap is collected first. The class's free list's
-## first block is taken, else its next block, unless that lies at a page's
-## start, which says its page is full or it has none: then a page is taken
-## first. A block past the most a page of blocks holds takes pages of its
-## own. It keeps every register but `rax` and `rdi`.
+## first block is taken; with none, the class's next page not swept yet is
+## swept onto the list (unless its sweep's cursor says none is left); else
+## its next block, unless that lies at a page's start, which says its page
+## is full or it has none: then a page is taken first, and each of its
+## blocks' headers cleared. A block past the most a page of blocks holds
+## takes pages of its own. The header is written and the bytes asked zeroed.
+## It keeps every register but `rax` and `rdi`.
 allocate_items : List(Assembly.Statement)
 allocate_items = [
 	Emit.mark("runtime_allocate_kind"),
@@ -957,12 +1026,20 @@ allocate_items = [
 	Emit.mark("runtime_allocate_small"),
 	Emit.load(Rax, class_place({ offset: Rcx, past: 16 })),
 	Emit.test(Rax, Rax),
-	Emit.jcc(E, "runtime_allocate_bump"),
+	Emit.jcc(E, "runtime_allocate_sweep"),
+	Emit.mark("runtime_allocate_pop"),
 	Emit.load(Rdx, Emit.mem(Rax, 8)),
 	Emit.store(class_place({ offset: Rcx, past: 16 }), Rdx),
-	Emit.zero(Rdx),
-	Emit.store(Emit.mem(Rax, 8), Rdx),
 	Emit.jmp("runtime_allocate_header"),
+	# The free list is empty: the class's next page not swept yet, if it
+	# has one, is swept for it.
+	Emit.mark("runtime_allocate_sweep"),
+	Emit.load(Rdx, class_place({ offset: Rcx, past: 24 })),
+	Emit.cmp_imm(Rdx, swept_all),
+	Emit.jcc(E, "runtime_allocate_bump"),
+	Emit.call(lazy_sweep),
+	Emit.test(Rax, Rax),
+	Emit.jcc(Ne, "runtime_allocate_pop"),
 	Emit.mark("runtime_allocate_bump"),
 	Emit.load(Rax, class_place({ offset: Rcx, past: 0 })),
 	Emit.mov(Rdx, Rax),
@@ -972,8 +1049,27 @@ allocate_items = [
 	Emit.load(Rdx, class_place({ offset: Rcx, past: 8 })),
 	Emit.plus(Rdx, Rax),
 	Emit.store(class_place({ offset: Rcx, past: 0 }), Rdx),
+	# The header written, then the bytes asked zeroed, last first: a block
+	# swept lazily still holds what it held when it died.
 	Emit.mark("runtime_allocate_header"),
 	Emit.store(Emit.mem(Rax, 0), Rdi),
+	Emit.mov(Rdx, Rdi),
+	Emit.shl(Rdx, 16),
+	Emit.shr(Rdx, 16),
+	Emit.jcc(E, "runtime_allocate_zeroed"),
+	Emit.zero(Rcx),
+	Emit.mark("runtime_allocate_zero"),
+	Emit.store(
+		Emit.mem_index({
+			base: Rax,
+			index: Rdx,
+			displacement: 0,
+		}),
+		Rcx,
+	),
+	Emit.minus_imm(Rdx, 8),
+	Emit.jcc(Ne, "runtime_allocate_zero"),
+	Emit.mark("runtime_allocate_zeroed"),
 	Emit.plus_imm(Rax, 8),
 	Emit.restore(Rdx),
 	Emit.restore(Rcx),
@@ -994,6 +1090,19 @@ allocate_items = [
 	Emit.mov(Rdx, Rcx),
 	Emit.shr(Rdx, class_shift),
 	Emit.byte_store(table_entry(Rsi), Dl),
+	# A page taken may hold what it held before it was freed, so the header
+	# of each of its blocks, at the class's stride, is cleared, last first:
+	# a block not taken yet must read as none to `Heap.block_start`.
+	Emit.load(Rdx, class_place({ offset: Rcx, past: 8 })),
+	Emit.lea(Rsi, Emit.mem(Rax, page_size)),
+	Emit.save(Rdi),
+	Emit.zero(Rdi),
+	Emit.mark("runtime_allocate_page_clear"),
+	Emit.minus(Rsi, Rdx),
+	Emit.store(Emit.mem(Rsi, 0), Rdi),
+	Emit.cmp(Rsi, Rax),
+	Emit.jcc(Ne, "runtime_allocate_page_clear"),
+	Emit.restore(Rdi),
 	Emit.restore(Rsi),
 	Emit.jmp("runtime_allocate_block"),
 	# A large block: the pages its header and its bytes fill, counted as
@@ -1033,7 +1142,24 @@ allocate_items = [
 	Emit.plus_imm(Rax, 1),
 	Emit.byte_store(table_entry(Rax), Dl),
 	Emit.jmp("runtime_allocate_large_page"),
+	# Its bytes asked zeroed, last first: its pages may hold what they held
+	# before they were freed.
 	Emit.mark("runtime_allocate_large_done"),
+	Emit.mov(Rdx, Rdi),
+	Emit.shl(Rdx, 16),
+	Emit.shr(Rdx, 16),
+	Emit.zero(Rcx),
+	Emit.mark("runtime_allocate_large_zero"),
+	Emit.store(
+		Emit.mem_index({
+			base: Rsi,
+			index: Rdx,
+			displacement: 0,
+		}),
+		Rcx,
+	),
+	Emit.minus_imm(Rdx, 8),
+	Emit.jcc(Ne, "runtime_allocate_large_zero"),
 	Emit.lea(Rax, Emit.mem(Rsi, 8)),
 	Emit.restore(Rsi),
 	Emit.restore(Rdx),
@@ -1046,8 +1172,8 @@ allocate_items = [
 ## holding the next run's address and its count of pages: a run of just
 ## that many is taken whole, its words cleared, and a longer one gives its
 ## last pages. With none, the heap's end is bumped, and the most pages
-## reached kept. A free page is 0 but for a run's two words, so the pages
-## taken are 0. It keeps every register but `rax`.
+## reached kept. A page taken holds what it held when it was freed, if it
+## was: its taker clears what it needs. It keeps every register but `rax`.
 take_pages_items : List(Assembly.Statement)
 take_pages_items = [
 	Emit.mark("runtime_take_pages"),
@@ -1154,8 +1280,9 @@ block_start_items = [
 	Emit.cmp_imm(Rdx, large_first),
 	Emit.jmp("runtime_block_start_large"),
 	Emit.mark("runtime_block_start_first"),
-	Emit.shl(Rcx, page_bits),
-	Emit.plus(Rax, Rcx),
+	Emit.mov(Rdx, Rcx),
+	Emit.shl(Rdx, page_bits),
+	Emit.plus(Rax, Rdx),
 	Emit.ret,
 	Emit.mark("runtime_block_start_none"),
 	Emit.zero(Rax),
@@ -1198,8 +1325,9 @@ backwards = |list| {
 	$out
 }
 
-## `runtime_gc_collect`: every register pushed, the roots read, the mark
-## stack traced to its bottom, the sweep, the threshold set again, and in
+## `runtime_gc_collect`: every register pushed, the last collection's sweep
+## finished, the roots read, the mark stack traced to its bottom, the pages
+## read by their counts, the threshold set again, and in
 ## the torture tier a walk; then every register put back. While it marks,
 ## `rbp` holds the mark bit and `r8` the mark stack's top, which starts at
 ## `r14`; `runtime_gc_scan` reads the words from `r9` to `r10`.
@@ -1217,6 +1345,7 @@ collect_items = {
 		xmm_pushes.join(),
 		[
 			Emit.imm(Rbp, mark_bit),
+			Emit.call("runtime_gc_finish"),
 			Emit.mov(R8, R14),
 			Emit.mov(R9, Rsp),
 			Emit.load(R10, stack_base_place),
@@ -1317,17 +1446,21 @@ consider_items = {
 			Emit.call(Heap.block_start),
 			Emit.test(Rax, Rax),
 			Emit.jcc(E, "runtime_gc_considered"),
-			Emit.load(Rcx, Emit.mem(Rax, 0)),
-			Emit.test(Rcx, Rbp),
+			Emit.load(Rdx, Emit.mem(Rax, 0)),
+			Emit.test(Rdx, Rbp),
 			Emit.jcc(Ne, "runtime_gc_considered"),
-			or_item(Rcx, Rbp),
-			Emit.store(Emit.mem(Rax, 0), Rcx),
-			Emit.shr(Rcx, 48),
+			or_item(Rdx, Rbp),
+			Emit.store(Emit.mem(Rax, 0), Rdx),
+			# Counted in its page's count, which the sweep reads.
+			Emit.load(Rdi, count_entry(Rcx)),
+			Emit.plus_imm(Rdi, 1),
+			Emit.store(count_entry(Rcx), Rdi),
+			Emit.shr(Rdx, 48),
 		],
 		untraced
 			.map(
 				|kind| [
-					Emit.cmp_imm(Rcx, Heap.kind_code(kind)),
+					Emit.cmp_imm(Rdx, Heap.kind_code(kind)),
 					Emit.jcc(E, "runtime_gc_considered"),
 				],
 			)
@@ -1341,15 +1474,148 @@ consider_items = {
 	].join()
 }
 
-## `runtime_gc_sweep`: every class's free list and bump page dropped, then
-## each page from the first to the next free one, by the table. On a page of
-## blocks (`r9` the block, `r10` the block size, `r11` the page's end), a
-## marked block is kept, its mark cleared, and counted in `rbx`; an unmarked
-## one is zeroed and joins the free blocks, linked from `rsi` (the first)
-## to `rdi` (the last). A page with a block kept gives its free blocks to
-## its class's list (the class's offset in `rdx`); one with none becomes a
-## free page, its links cleared. A large block's pages are kept or freed
-## with it. Free pages make runs (`runtime_gc_run_extend` and
+## `runtime_gc_finish`, run before the mark: the sweep left undone. Every
+## page of blocks whose count says it is not swept yet has its marks
+## cleared and every other header zeroed, so the mark starts from blocks
+## all unmarked and takes no dead block for a live one; its count is set to
+## 0. Its free blocks join no list: the sweep after the mark frees the page,
+## or leaves it to be swept again. `rsi` is the page's number, `rdi` the
+## next free page's, `r9` the block, `r10` its block size, `r11` the page's
+## end and `rcx` 0; `rbp` holds the mark.
+finish_items : List(Assembly.Statement)
+finish_items = [
+	Emit.mark("runtime_gc_finish"),
+	Emit.zero(Rsi),
+	Emit.load(Rdi, next_page_place),
+	Emit.load(Rax, first_page_place),
+	Emit.minus(Rdi, Rax),
+	Emit.shr(Rdi, page_bits),
+	Emit.zero(Rcx),
+	Emit.mark("runtime_gc_finish_page"),
+	Emit.cmp(Rsi, Rdi),
+	Emit.jcc(Ae, "runtime_gc_finished"),
+	Emit.load(Rax, count_entry(Rsi)),
+	Emit.test(Rax, Rax),
+	Emit.jcc(E, "runtime_gc_finish_next"),
+	Emit.store(count_entry(Rsi), Rcx),
+	Emit.mov(R9, Rsi),
+	Emit.shl(R9, page_bits),
+	Emit.load(Rax, first_page_place),
+	Emit.plus(R9, Rax),
+	Emit.lea(R11, Emit.mem(R9, page_size)),
+	Emit.byte_load(Rdx, table_entry(Rsi)),
+	Emit.shl(Rdx, class_shift),
+	Emit.load(R10, class_place({ offset: Rdx, past: 8 })),
+	Emit.mark("runtime_gc_finish_block"),
+	Emit.load(Rax, Emit.mem(R9, 0)),
+	Emit.test(Rax, Rbp),
+	Emit.jcc(E, "runtime_gc_finish_dead"),
+	unmark_item,
+	Emit.store(Emit.mem(R9, 0), Rax),
+	Emit.jmp("runtime_gc_finish_step"),
+	Emit.mark("runtime_gc_finish_dead"),
+	Emit.store(Emit.mem(R9, 0), Rcx),
+	Emit.mark("runtime_gc_finish_step"),
+	Emit.plus(R9, R10),
+	Emit.cmp(R9, R11),
+	Emit.jcc(B, "runtime_gc_finish_block"),
+	Emit.mark("runtime_gc_finish_next"),
+	Emit.plus_imm(Rsi, 1),
+	Emit.jmp("runtime_gc_finish_page"),
+	Emit.mark("runtime_gc_finished"),
+	Emit.ret,
+]
+
+## The routine that sweeps a class's pages, as `lazy_sweep_items` says.
+lazy_sweep : Str
+lazy_sweep = "runtime_gc_lazy_sweep"
+
+## `runtime_gc_lazy_sweep`: the pages of the class whose offset is in `rcx`,
+## from the class's sweep's cursor on, until one gives a free block or none
+## is left (the cursor then `swept_all`). A page the last collection left
+## not swept (its count not 0, its table's byte the class's) has its marks
+## cleared and every other block's header zeroed and put on the class's free
+## list, which is empty when it is called; its count is set to 0, and the
+## cursor to the page after it. The free list's first block is in `rax`, or
+## 0. `rsi` is the page's number, `rdi` the next free page's, `rdx` the
+## mark, `r8` the block, `r9` the page's end, `r10` the block size. It keeps
+## every register but `rax`.
+lazy_sweep_items : List(Assembly.Statement)
+lazy_sweep_items = {
+	saved = [Rdx, Rsi, Rdi, R8, R9, R10, R11]
+	[
+		[Emit.mark(lazy_sweep)],
+		saved.map(Emit.save),
+		[
+			Emit.zero(Rax),
+			Emit.load(Rsi, class_place({ offset: Rcx, past: 24 })),
+			Emit.load(Rdi, next_page_place),
+			Emit.load(Rdx, first_page_place),
+			Emit.minus(Rdi, Rdx),
+			Emit.shr(Rdi, page_bits),
+			Emit.imm(Rdx, mark_bit),
+			Emit.load(R10, class_place({ offset: Rcx, past: 8 })),
+			Emit.mark("runtime_gc_lazy_page"),
+			Emit.cmp(Rsi, Rdi),
+			Emit.jcc(Ae, "runtime_gc_lazy_none"),
+			Emit.load(R11, count_entry(Rsi)),
+			Emit.test(R11, R11),
+			Emit.jcc(E, "runtime_gc_lazy_next"),
+			Emit.byte_load(R11, table_entry(Rsi)),
+			Emit.shl(R11, class_shift),
+			Emit.cmp(R11, Rcx),
+			Emit.jcc(Ne, "runtime_gc_lazy_next"),
+			Emit.zero(R11),
+			Emit.store(count_entry(Rsi), R11),
+			Emit.mov(R8, Rsi),
+			Emit.shl(R8, page_bits),
+			Emit.load(R11, first_page_place),
+			Emit.plus(R8, R11),
+			Emit.lea(R9, Emit.mem(R8, page_size)),
+			Emit.mark("runtime_gc_lazy_block"),
+			Emit.load(R11, Emit.mem(R8, 0)),
+			Emit.test(R11, Rdx),
+			Emit.jcc(E, "runtime_gc_lazy_free"),
+			Instruction(Alu({ operation: Xor, to: R11, from: Rdx })),
+			Emit.store(Emit.mem(R8, 0), R11),
+			Emit.jmp("runtime_gc_lazy_step"),
+			# Dead, or free already: its header 0, and first on the list.
+			Emit.mark("runtime_gc_lazy_free"),
+			Emit.zero(R11),
+			Emit.store(Emit.mem(R8, 0), R11),
+			Emit.store(Emit.mem(R8, 8), Rax),
+			Emit.mov(Rax, R8),
+			Emit.mark("runtime_gc_lazy_step"),
+			Emit.plus(R8, R10),
+			Emit.cmp(R8, R9),
+			Emit.jcc(B, "runtime_gc_lazy_block"),
+			Emit.plus_imm(Rsi, 1),
+			Emit.test(Rax, Rax),
+			Emit.jcc(E, "runtime_gc_lazy_page"),
+			Emit.jmp("runtime_gc_lazy_found"),
+			Emit.mark("runtime_gc_lazy_next"),
+			Emit.plus_imm(Rsi, 1),
+			Emit.jmp("runtime_gc_lazy_page"),
+			Emit.mark("runtime_gc_lazy_none"),
+			Emit.imm(Rsi, swept_all),
+			Emit.mark("runtime_gc_lazy_found"),
+			Emit.store(class_place({ offset: Rcx, past: 24 }), Rsi),
+			Emit.store(class_place({ offset: Rcx, past: 16 }), Rax),
+		],
+		backwards(saved.map(Emit.restore)),
+		[Emit.ret],
+	].join()
+}
+
+## `runtime_gc_sweep`, run once the mark is done, which sweeps no block:
+## every class's free list and bump page dropped and its sweep's cursor set
+## to the first page, then each page from the first to the next free one,
+## by the table (`r8` the page, `rcx` its number). A page of blocks with a
+## block marked is left as it is, to be swept when its class next needs a
+## block (`lazy_sweep_items`): its count times its block size is the bytes
+## it keeps. One with none becomes a free page as it is, since a page is
+## cleared when it is taken. A large block is kept, its mark cleared, or its
+## pages are freed. Free pages make runs (`runtime_gc_run_extend` and
 ## `runtime_gc_run_close`), the last given back to the bump. Then the bytes
 ## kept are the bytes taken, and the threshold is set again from them.
 sweep_items : List(Assembly.Statement)
@@ -1367,6 +1633,7 @@ sweep_items =
 			Emit.mark("runtime_gc_sweep_class"),
 			Emit.store(Emit.mem(Rcx, 0), Rax),
 			Emit.store(Emit.mem(Rcx, 16), Rax),
+			Emit.store(Emit.mem(Rcx, 24), Rax),
 			Emit.plus_imm(Rcx, class_bytes),
 			Emit.minus_imm(Rdx, 1),
 			Emit.jcc(Ne, "runtime_gc_sweep_class"),
@@ -1382,96 +1649,32 @@ sweep_items =
 			Emit.jcc(E, "runtime_gc_sweep_free_page"),
 			Emit.cmp_imm(Rdx, large_first),
 			Emit.jcc(E, "runtime_gc_sweep_large"),
-			Emit.shl(Rdx, class_shift),
-			Emit.load(R10, class_place({ offset: Rdx, past: 8 })),
-			Emit.mov(R9, R8),
-			Emit.lea(R11, Emit.mem(R8, page_size)),
-			Emit.zero(Rbx),
-			Emit.zero(Rsi),
-			Emit.zero(Rdi),
-			Emit.mark("runtime_gc_sweep_block"),
-			Emit.cmp(R9, R11),
-			Emit.jcc(Ae, "runtime_gc_sweep_paged"),
-			Emit.load(Rax, Emit.mem(R9, 0)),
+			Emit.load(Rax, count_entry(Rcx)),
 			Emit.test(Rax, Rax),
-			Emit.jcc(E, "runtime_gc_sweep_link"),
-			Emit.test(Rax, Rbp),
-			Emit.jcc(E, "runtime_gc_sweep_dead"),
-			unmark_item,
-			Emit.store(Emit.mem(R9, 0), Rax),
-			Emit.plus_imm(Rbx, 1),
-			Emit.plus(R9, R10),
-			Emit.jmp("runtime_gc_sweep_block"),
-			Emit.mark("runtime_gc_sweep_dead"),
-			Emit.zero(Rax),
-			Emit.mov(Rcx, R10),
-			Emit.mark("runtime_gc_sweep_zero"),
-			Emit.minus_imm(Rcx, 8),
-			Emit.store(
-				Emit.mem_index({
-					base: R9,
-					index: Rcx,
-					displacement: 0,
-				}),
-				Rax,
-			),
-			Emit.jcc(Ne, "runtime_gc_sweep_zero"),
-			Emit.mark("runtime_gc_sweep_link"),
-			Emit.store(Emit.mem(R9, 8), Rsi),
-			Emit.mov(Rsi, R9),
-			Emit.test(Rdi, Rdi),
-			Emit.jcc(Ne, "runtime_gc_sweep_linked"),
-			Emit.mov(Rdi, R9),
-			Emit.mark("runtime_gc_sweep_linked"),
-			Emit.plus(R9, R10),
-			Emit.jmp("runtime_gc_sweep_block"),
-			Emit.mark("runtime_gc_sweep_paged"),
-			Emit.test(Rbx, Rbx),
 			Emit.jcc(E, "runtime_gc_sweep_emptied"),
+			Emit.shl(Rdx, class_shift),
+			Emit.load(Rdx, class_place({ offset: Rdx, past: 8 })),
+			Instruction(Imul({ to: Rax, from: Rdx })),
+			Emit.load(Rdx, live_place),
+			Emit.plus(Rdx, Rax),
+			Emit.store(live_place, Rdx),
 			Emit.call("runtime_gc_run_close"),
-			Instruction(Imul({ to: Rbx, from: R10 })),
-			Emit.load(Rax, live_place),
-			Emit.plus(Rax, Rbx),
-			Emit.store(live_place, Rax),
-			Emit.test(Rsi, Rsi),
-			Emit.jcc(E, "runtime_gc_sweep_spliced"),
-			Emit.load(Rax, class_place({ offset: Rdx, past: 16 })),
-			Emit.store(Emit.mem(Rdi, 8), Rax),
-			Emit.store(class_place({ offset: Rdx, past: 16 }), Rsi),
-			Emit.mark("runtime_gc_sweep_spliced"),
-			Emit.mov(R8, R11),
+			Emit.plus_imm(R8, page_size),
 			Emit.jmp("runtime_gc_sweep_page"),
-			# No block kept: the links cleared, and the page free.
+			# No block marked: the page is free.
 			Emit.mark("runtime_gc_sweep_emptied"),
 			Emit.zero(Rax),
-			Emit.mark("runtime_gc_sweep_unlink"),
-			Emit.test(Rsi, Rsi),
-			Emit.jcc(E, "runtime_gc_sweep_unlinked"),
-			Emit.load(Rcx, Emit.mem(Rsi, 8)),
-			Emit.store(Emit.mem(Rsi, 8), Rax),
-			Emit.mov(Rsi, Rcx),
-			Emit.jmp("runtime_gc_sweep_unlink"),
-			Emit.mark("runtime_gc_sweep_unlinked"),
-		],
-		page_number_items({ to: Rcx, from: R8 }),
-		[
-			Emit.zero(Rax),
 			Emit.byte_store(table_entry(Rcx), Al),
-			Emit.imm(Rax, 1),
-			Emit.call("runtime_gc_run_extend"),
-			Emit.mov(R8, R11),
-			Emit.jmp("runtime_gc_sweep_page"),
-			# A free page: a run's words, if it held them, cleared.
 			Emit.mark("runtime_gc_sweep_free_page"),
-			Emit.zero(Rax),
-			Emit.store(Emit.mem(R8, 0), Rax),
-			Emit.store(Emit.mem(R8, 8), Rax),
 			Emit.imm(Rax, 1),
 			Emit.call("runtime_gc_run_extend"),
 			Emit.plus_imm(R8, page_size),
 			Emit.jmp("runtime_gc_sweep_page"),
-			# A large block, its pages' bytes in `r10`.
+			# A large block, its pages' bytes in `r10`; the count the mark
+			# gave its first page cleared.
 			Emit.mark("runtime_gc_sweep_large"),
+			Emit.zero(Rax),
+			Emit.store(count_entry(Rcx), Rax),
 			Emit.load(Rax, Emit.mem(R8, 0)),
 			Emit.mov(R10, Rax),
 			Emit.shl(R10, asked_shift),
@@ -1488,27 +1691,8 @@ sweep_items =
 			Emit.store(live_place, Rax),
 			Emit.plus(R8, R10),
 			Emit.jmp("runtime_gc_sweep_page"),
-			# Its header and its bytes asked zeroed, its pages free.
+			# Its pages free, as they are: a page is cleared when it is taken.
 			Emit.mark("runtime_gc_sweep_large_dead"),
-			Emit.mov(Rcx, Rax),
-			Emit.shl(Rcx, asked_shift),
-			Emit.shr(Rcx, asked_shift),
-			Emit.plus_imm(Rcx, 8),
-			Emit.zero(Rax),
-			Emit.mark("runtime_gc_sweep_large_zero"),
-			Emit.minus_imm(Rcx, 8),
-			Emit.store(
-				Emit.mem_index({
-					base: R8,
-					index: Rcx,
-					displacement: 0,
-				}),
-				Rax,
-			),
-			Emit.jcc(Ne, "runtime_gc_sweep_large_zero"),
-		],
-		page_number_items({ to: Rcx, from: R8 }),
-		[
 			Emit.mov(Rdx, R10),
 			Emit.shr(Rdx, page_bits),
 			Emit.zero(Rax),
@@ -1573,12 +1757,15 @@ sweep_items =
 
 ## `runtime_heap_walk`: each page from the first to the next free one, by
 ## the table. A page of blocks is walked block by block: each header taken
-## is checked (`runtime_heap_block`), and a block not taken must be 0 but
-## for its link, and is counted free unless it lies in its class's bump
-## page at or past the class's next block, where its link must be 0 too. A
-## large block's header is checked, and each page after its first must be
-## marked `large_rest`. A free page is counted. Any other mark stops the
-## program. Then `runtime_heap_lists` checks the free lists and the runs.
+## is checked (`runtime_heap_block`), and a block not taken must find no
+## block, and is counted free unless it lies in its class's bump page at or
+## past the class's next block. In a page not swept yet (its count not 0),
+## the marked blocks are checked with their marks cleared, and must be as
+## many as its count; its other blocks, dead or free, are on no list and are
+## passed by. Anywhere else a mark stops the program, and so does a count
+## not 0. A large block's header is checked, and each page after its first
+## must be marked `large_rest`. A free page is counted. Any other mark stops
+## the program. Then `runtime_heap_lists` checks the free lists and the runs.
 ## The walk holds the page in `r8`, the block in `r9`, its block size in
 ## `r10` and the page's end in `r11`.
 walk_items : List(Assembly.Statement)
@@ -1602,6 +1789,9 @@ walk_items = [
 	[
 		Emit.test(Rdx, Rdx),
 		Emit.jcc(Ne, "runtime_heap_walk_taken"),
+		Emit.load(Rax, count_entry(Rcx)),
+		Emit.test(Rax, Rax),
+		Emit.jcc(Ne, "runtime_heap_bad"),
 		Emit.load(Rax, free_pages_place),
 		Emit.plus_imm(Rax, 1),
 		Emit.store(free_pages_place, Rax),
@@ -1617,6 +1807,9 @@ walk_items = [
 		Emit.jcc(B, "runtime_heap_bad"),
 		Emit.cmp_imm(Rdx, most_class),
 		Emit.jcc(A, "runtime_heap_bad"),
+		Emit.load(Rax, count_entry(Rcx)),
+		Emit.store(walk_unswept_place, Rax),
+		Emit.store(walk_marks_left_place, Rax),
 		Emit.shl(Rdx, class_shift),
 		Emit.load(R10, class_place({ offset: Rdx, past: 8 })),
 		Emit.mov(R9, R8),
@@ -1627,7 +1820,25 @@ walk_items = [
 		Emit.load(Rax, Emit.mem(R9, 0)),
 		Emit.test(Rax, Rax),
 		Emit.jcc(E, "runtime_heap_walk_free"),
+		# A marked block lies only in a page not swept yet, as many as its
+		# count; it is checked with its mark cleared. An unmarked block there
+		# is dead, and passed by.
+		Emit.imm(Rdi, mark_bit),
+		Emit.test(Rax, Rdi),
+		Emit.jcc(E, "runtime_heap_walk_unmarked"),
+		Emit.load(Rsi, walk_marks_left_place),
+		Emit.test(Rsi, Rsi),
+		Emit.jcc(E, "runtime_heap_bad"),
+		Emit.minus_imm(Rsi, 1),
+		Emit.store(walk_marks_left_place, Rsi),
+		Instruction(Alu({ operation: Xor, to: Rax, from: Rdi })),
+		Emit.jmp("runtime_heap_walk_check"),
+		Emit.mark("runtime_heap_walk_unmarked"),
+		Emit.load(Rsi, walk_unswept_place),
+		Emit.test(Rsi, Rsi),
+		Emit.jcc(Ne, "runtime_heap_walk_passed"),
 		# Asked for more than half the block, but in the least class.
+		Emit.mark("runtime_heap_walk_check"),
 		Emit.mov(Rdi, R10),
 		Emit.shr(Rdi, 1),
 		Emit.cmp_imm(R10, least_block),
@@ -1635,28 +1846,16 @@ walk_items = [
 		Emit.zero(Rdi),
 		Emit.mark("runtime_heap_walk_least"),
 		Emit.call("runtime_heap_block"),
+		Emit.mark("runtime_heap_walk_passed"),
 		Emit.plus(R9, R10),
 		Emit.jmp("runtime_heap_walk_block"),
-		# A block not taken: 0 past its link, in no block, and free or in
-		# its class's bump.
+		# A block not taken: in no block, and free or in its class's bump;
+		# its bytes past its header are whatever it held when it died. In a
+		# page not swept yet it is on no list, and passed by.
 		Emit.mark("runtime_heap_walk_free"),
-		Emit.mov(Rcx, R10),
-		Emit.mark("runtime_heap_walk_zero"),
-		Emit.minus_imm(Rcx, 8),
-		Emit.cmp_imm(Rcx, 8),
-		Emit.jcc(Be, "runtime_heap_walk_zeroed"),
-		Emit.load(
-			Rax,
-			Emit.mem_index({
-				base: R9,
-				index: Rcx,
-				displacement: 0,
-			}),
-		),
-		Emit.test(Rax, Rax),
-		Emit.jcc(Ne, "runtime_heap_bad"),
-		Emit.jmp("runtime_heap_walk_zero"),
-		Emit.mark("runtime_heap_walk_zeroed"),
+		Emit.load(Rsi, walk_unswept_place),
+		Emit.test(Rsi, Rsi),
+		Emit.jcc(Ne, "runtime_heap_walk_passed"),
 		Emit.lea(Rdi, Emit.mem(R9, 8)),
 		Emit.call(Heap.block_start),
 		Emit.test(Rax, Rax),
@@ -1670,9 +1869,6 @@ walk_items = [
 		Emit.jcc(B, "runtime_heap_walk_listed"),
 		Emit.cmp(Rax, R9),
 		Emit.jcc(A, "runtime_heap_walk_listed"),
-		Emit.load(Rax, Emit.mem(R9, 8)),
-		Emit.test(Rax, Rax),
-		Emit.jcc(Ne, "runtime_heap_bad"),
 		Emit.jmp("runtime_heap_walk_freed"),
 		Emit.mark("runtime_heap_walk_listed"),
 		Emit.load(Rax, free_blocks_place),
@@ -1682,12 +1878,18 @@ walk_items = [
 		Emit.plus(R9, R10),
 		Emit.jmp("runtime_heap_walk_block"),
 		Emit.mark("runtime_heap_walk_paged"),
+		Emit.load(Rax, walk_marks_left_place),
+		Emit.test(Rax, Rax),
+		Emit.jcc(Ne, "runtime_heap_bad"),
 		Emit.mov(R8, R11),
 		Emit.jmp("runtime_heap_walk_page"),
 		# A large block: its pages, which must lie below the next free one,
 		# and asked for more than a page of blocks holds and more than the
 		# pages but its last.
 		Emit.mark("runtime_heap_walk_large"),
+		Emit.load(Rax, count_entry(Rcx)),
+		Emit.test(Rax, Rax),
+		Emit.jcc(Ne, "runtime_heap_bad"),
 		Emit.load(Rax, Emit.mem(R8, 0)),
 		Emit.mov(R10, Rax),
 		Emit.shl(R10, 16),
@@ -1736,7 +1938,7 @@ walk_items = [
 
 ## `runtime_heap_lists`: each class's free list (its offset in `r10`), every
 ## block on it below the next free page, its header 0, in a page of its
-## class, at a multiple of its size, and the lists' blocks, counted in `r9`,
+## class that is swept (its count 0), at a multiple of its size, and the lists' blocks, counted in `r9`,
 ## as many as the free blocks the walk saw (never more, so a list that
 ## loops stops); then each run of free pages, at a page's start, of at least
 ## a page, each page marked 0 in the table, and their pages as many as the
@@ -1771,6 +1973,9 @@ lists_check_items = [
 		Emit.byte_load(Rdx, table_entry(Rcx)),
 		Emit.shl(Rdx, class_shift),
 		Emit.cmp(Rdx, R10),
+		Emit.jcc(Ne, "runtime_heap_bad"),
+		Emit.load(Rax, count_entry(Rcx)),
+		Emit.test(Rax, Rax),
 		Emit.jcc(Ne, "runtime_heap_bad"),
 		Emit.load(Rax, class_place({ offset: R10, past: 8 })),
 		Emit.minus_imm(Rax, 1),
@@ -1937,7 +2142,7 @@ expect {
 expect word_bits("heapwalk") == 0x6b6c617770616568
 # The state's places fit before the first page's room, and every
 # displacement past `r15` fits 32 bits.
-expect state_size == 152 + 32 * 12 + 32768
+expect state_size == 168 + 32 * 12 + 32768 + 32768 * 8
 # A header's bytes asked lie below its mark: the heap holds no block of
 # 2^47 bytes.
 expect Heap.mapped_size < mark_bit
