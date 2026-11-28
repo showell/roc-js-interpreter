@@ -15,6 +15,8 @@ size_given = |arguments, place|
 		Err(_) => crash "usage: give the kernel's sizes"
 	}
 
+## The value under `key`, a function of its own because the JS reads it in
+## one expression, so the two loops keep one shape.
 value_at : Dict(U64, U64), U64 -> U64
 value_at = |values, key|
 	match values.get(key) {
@@ -24,19 +26,19 @@ value_at = |values, key|
 
 main! = |arguments| {
 	keys = size_given(arguments, 0)
-	n = size_given(arguments, 1)
-	var $m = Dict.empty()
+	lookups = size_given(arguments, 1)
+	var $values = Dict.empty()
 	var $k = 0
 	while $k < keys {
-		$m = $m.insert($k, $k * 3)
+		$values = $values.insert($k, $k * 3)
 		$k = $k + 1
 	}
-	var $s = 0
+	var $sum = 0
 	var $i = 0
-	while $i < n {
-		$s = $s + value_at($m, $i % keys)
+	while $i < lookups {
+		$sum = $sum + value_at($values, $i % keys)
 		$i = $i + 1
 	}
-	echo!("${$s.to_str()}\n")
+	echo!("${$sum.to_str()}\n")
 	Ok({})
 }

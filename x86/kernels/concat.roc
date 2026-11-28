@@ -21,13 +21,13 @@ main! = |arguments| {
 	var $total = 0
 	var $r = 0
 	while $r < rounds {
-		var $s = ""
+		var $text = ""
 		var $i = 0
 		while $i < size {
-			$s = Str.concat($s, "ab")
+			$text = Str.concat($text, "ab")
 			$i = $i + 1
 		}
-		$total = $total + $s.count_utf8_bytes()
+		$total = $total + $text.count_utf8_bytes()
 		$r = $r + 1
 	}
 	echo!("${$total.to_str()}\n")

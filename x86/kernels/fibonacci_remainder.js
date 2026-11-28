@@ -1,6 +1,6 @@
-// fib_mod.js: Fibonacci numbers modulo a prime, N steps. The plain
+// fibonacci_remainder.js: Fibonacci numbers modulo a prime, N steps. The plain
 // integer path: three locals, an add and a remainder by a constant a trip.
-// fib_mod.roc is its twin.
+// fibonacci_remainder.roc is its twin.
 const N = 50000000;
 const M = 1000000007;
 

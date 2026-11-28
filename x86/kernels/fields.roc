@@ -16,14 +16,14 @@ size_given = |arguments, place|
 	}
 
 main! = |arguments| {
-	n = size_given(arguments, 0)
-	var $p = { x: 0, y: 0 }
+	steps = size_given(arguments, 0)
+	var $point = { x: 0, y: 0 }
 	var $i = 0
-	while $i < n {
-		$p = { ..$p, x: $p.x + $i % 7 }
-		$p = { ..$p, y: $p.y + $p.x % 5 }
+	while $i < steps {
+		$point = { ..$point, x: $point.x + $i % 7 }
+		$point = { ..$point, y: $point.y + $point.x % 5 }
 		$i = $i + 1
 	}
-	echo!("${($p.x + $p.y).to_str()}\n")
+	echo!("${($point.x + $point.y).to_str()}\n")
 	Ok({})
 }

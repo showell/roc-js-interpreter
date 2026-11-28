@@ -29,7 +29,7 @@ shale x86/cost.shale native=<Roc's executable> range=14c0-14e1  # one loop, read
 |---|---|---|---|---|---|---|---|---|
 | sum_array | 39 | 39.0 | 8.0 | Port0 8.99 | 5 | 1.0 | Port0/Port6 1.27 | 3,126 / 1,554 / 70 |
 | dot | 56 | 56.0 | 10.0 | Port0 10.01 | 8 | 1.5 | Port0/Port1 1.96 | 1,788 / 1,584 / 683 |
-| fib_mod | 40 | 40.0 | 7.3 | Port0 11.02 | 44 per 8 trips | 16.0 per 8 trips | Port1 16.00 | 2,716 / 1,467 / 286 |
+| fibonacci_remainder | 40 | 40.0 | 7.3 | Port0 11.02 | 44 per 8 trips | 16.0 per 8 trips | Port1 16.00 | 2,716 / 1,467 / 286 |
 | call | 46 | 46.0 | 8.5 | Port0 13.02 | 7 per 8 trips | 1.3 per 8 trips | Port1 1.79 | 2,155 / 942 / 12 |
 | fields | 157 | 157.0 | 27.2 | Port0 38.00 | 24 | 4.7 | Port5 6.61 | 893 / 427 / 83 |
 | push | 23 | 66.1 all | 6.0 | Port4 6.00 | 10 | 1.7 | Port6 2.26 | 497 / 644 / 236 |
@@ -120,7 +120,7 @@ Roc (8 instructions):
 
 **The gap:** the double counter, the reloads and the bounds checks as in sum_array. **Doubles live in general registers and in the frame**: the item, the product and `d` each go through `movq` or a stack place between operations, so one `mulsd` and one `addsd` cost 9 instructions, where Roc keeps `d` in `xmm0` and folds the load into `vmulsd`.
 
-## fib_mod: Fibonacci modulo a prime
+## fibonacci_remainder: Fibonacci modulo a prime
 
 `t = (a + b) % M; a = b; b = t`, 50 million steps.
 
@@ -165,7 +165,7 @@ From the third step of each eight on, LLVM drops the `shr` (a different magic co
 
 `s = mix(s, i)`, `mix(x, k) = (x * 31 + k) % 65536`, 50 million calls.
 
-Ours (46 instructions): `mix` is inlined (Inlining.roc), so there is no call, but `s` is a double for the same reason as fib_mod's `a`. `x * 31` is a `mulsd` by `movabs rbx,0x403f000000000000` (31.0), `k` is converted with `cvtsi2sd`, and `% 65536` of a double goes through the same whole-number check and a signed magic multiply. A power of two would be an `and` for an `Integer`.
+Ours (46 instructions): `mix` is inlined (Inlining.roc), so there is no call, but `s` is a double for the same reason as fibonacci_remainder's `a`. `x * 31` is a `mulsd` by `movabs rbx,0x403f000000000000` (31.0), `k` is converted with `cvtsi2sd`, and `% 65536` of a double goes through the same whole-number check and a signed magic multiply. A power of two would be an `and` for an `Integer`.
 
 Roc (7 instructions for 8 calls):
 
@@ -181,7 +181,7 @@ Roc (7 instructions for 8 calls):
 
 Its loop for one call at a time is 9 instructions: `shl rdx,5; sub rdx,rax` for `* 31`, an `add`, `movzx eax,dx`.
 
-**The gap:** the widening that makes `s` a double, as in fib_mod; with `s` an `Integer` of 0 to 65535 the body would be a multiply, an add and an `and`. Roc's composition of eight steps into one multiply is LLVM's induction and recurrence rewriting, well past what a baseline compiler does, so call's timing (12 ms) overstates the gap that matters.
+**The gap:** the widening that makes `s` a double, as in fibonacci_remainder; with `s` an `Integer` of 0 to 65535 the body would be a multiply, an add and an `and`. Roc's composition of eight steps into one multiply is LLVM's induction and recurrence rewriting, well past what a baseline compiler does, so call's timing (12 ms) overstates the gap that matters.
 
 ## fields: two fields of one object
 
@@ -315,10 +315,10 @@ Roc (12 instructions and a call): `Str.concat` of a string only this loop holds 
 
 Ranked by how many kernels pay each gap and how much it costs them.
 
-1. **Values proved whole are kept as doubles.** This hits five of the eight kernels: sum_array, dot, fib_mod, call and fields. It costs 3 instructions a use for the whole-number check (`cvttsd2si`, `cvtsi2sd`, `ucomisd`, plus `jp` and `jne`), 5 for `i++`, and about 20 for a `%` (the signed fix-up, the convert back, -0's sign). Two causes:
+1. **Values proved whole are kept as doubles.** This hits five of the eight kernels: sum_array, dot, fibonacci_remainder, call and fields. It costs 3 instructions a use for the whole-number check (`cvttsd2si`, `cvtsi2sd`, `ucomisd`, plus `jp` and `jne`), 5 for `i++`, and about 20 for a `%` (the signed fix-up, the convert back, -0's sign). Two causes:
    - a counter compared with `a.length` in its loop's condition stays a double (sum_array, dot), though `const n = a.length` keeps it an `Integer`. **Fix:** find where the `Integer` that `GetProperty "length"` gives is lost before `OperatorLowering.integer_jump_items` narrows the counter. This is the most common loop in JavaScript.
-   - the loop head's widening sends a value straight to ±2^53 when its range first grows, so `(a + b) % M` and `(x * 31 + k) % 65536` stay doubles (fib_mod, call). **Fix:** widening with thresholds in Lowering's loop-head widening: widen to the next bound the program's own `%`, `&` and comparisons supply (M - 1, 65535) before ±2^53, or allow a few passes before widening. The fixpoint here is reached in two passes.
-2. **Doubles live in general registers and the frame, not in `xmm` registers.** This hits six kernels (sum_array, dot, fib_mod, call, fields, map_get). One `addsd` is `movq xmm0,rbx; movq xmm1,rax; addsd; movq r11,xmm0`, and dot's product makes two round trips through `[rbp-0x50]`. Roc keeps `d` in `xmm0` and folds the load into `vmulsd`. **Fix:** let Registers (or a pass after FrameValues) rename a place whose kind is `Number` to an `xmm` register, and let operations take a memory operand.
+   - the loop head's widening sends a value straight to ±2^53 when its range first grows, so `(a + b) % M` and `(x * 31 + k) % 65536` stay doubles (fibonacci_remainder, call). **Fix:** widening with thresholds in Lowering's loop-head widening: widen to the next bound the program's own `%`, `&` and comparisons supply (M - 1, 65535) before ±2^53, or allow a few passes before widening. The fixpoint here is reached in two passes.
+2. **Doubles live in general registers and the frame, not in `xmm` registers.** This hits six kernels (sum_array, dot, fibonacci_remainder, call, fields, map_get). One `addsd` is `movq xmm0,rbx; movq xmm1,rax; addsd; movq r11,xmm0`, and dot's product makes two round trips through `[rbp-0x50]`. Roc keeps `d` in `xmm0` and folds the load into `vmulsd`. **Fix:** let Registers (or a pass after FrameValues) rename a place whose kind is `Number` to an `xmm` register, and let operations take a memory operand.
 3. **Loop-invariant work runs every trip.** This hits sum_array, dot, fields and push. An array is reloaded from the frame and untagged (`shl 0x10; shr 0x10`) at each use, its length and items' address are loaded again at each read, an object's shape guard runs at each field access, and a bounds check that the loop's own `i < a.length` proves runs every trip. **Fix:** a loop-invariant pass after the kinds settle, which keeps the untagged record, the length and the items' address in registers across the loop and drops checks the loop's condition implies. For a `const` object with no call or foreign write in the loop, it checks the shape once before the loop. COST.md's lane 4 notes already name the first part ("Keeping the untagged record across the iteration would need a register held across the loop").
 4. **A runtime call costs saves and layers.** This hits push, map_get and concat. The four spare registers (`r9`, `r10`, `r11`, `rbx`) are stored before every call and reloaded after, live or not, and the routines nest three or four deep (`runtime_push` to `runtime_push_item_kind_kept`). **Fix:** an append fast path in line (a capacity compare, a store, a length increment, with a call only to grow), saving only the places live after a call, and flattening the push and collection routines in Runtime.roc.
 5. **A known Map's `get` and `set` go through the generic method dispatch.** This hits map_get: an argument array is allocated per call, the method is found by its name, and the lookup reaches the find after about 50 instructions. **Fix:** a guarded fast path in the lowering of a method call on a collection: test the tag (0xFFFE) and the record's first word, then call `runtime_collection_find_hashed` with the key in a register, no array and no name.
@@ -331,4 +331,4 @@ Ranked by how many kernels pay each gap and how much it costs them.
 
    Each kernel pays a few instructions a trip for these. **Fix:** Moves' joins extended to immediates, and FrameValues' forwarding over the bytecode stack's places within a straight run.
 
-LLVM also unrolls loops (fib_mod by 8), reduces strength (`i % keys` as a counter that wraps), and composes recurrences (call's eight steps in one `imul`). Those come after the gaps above: each gap above costs more per trip than unrolling would save.
+LLVM also unrolls loops (fibonacci_remainder by 8), reduces strength (`i % keys` as a counter that wraps), and composes recurrences (call's eight steps in one `imul`). Those come after the gaps above: each gap above costs more per trip than unrolling would save.

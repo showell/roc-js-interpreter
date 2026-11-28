@@ -15,17 +15,19 @@ size_given = |arguments, place|
 		Err(_) => crash "usage: give the kernel's sizes"
 	}
 
+## One step of the mix, a function of its own because the kernel is a
+## small function called in a loop.
 mix : U64, U64 -> U64
-mix = |x, k| (x * 31 + k) % 65536
+mix = |state, step| (state * 31 + step) % 65536
 
 main! = |arguments| {
-	n = size_given(arguments, 0)
-	var $s = 0
+	calls = size_given(arguments, 0)
+	var $state = 0
 	var $i = 0
-	while $i < n {
-		$s = mix($s, $i)
+	while $i < calls {
+		$state = mix($state, $i)
 		$i = $i + 1
 	}
-	echo!("${$s.to_str()}\n")
+	echo!("${$state.to_str()}\n")
 	Ok({})
 }

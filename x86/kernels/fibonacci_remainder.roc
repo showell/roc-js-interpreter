@@ -1,5 +1,5 @@
-# fib_mod.roc: x86/kernels/fib_mod.js in Roc, its loop as `var` and
-# `while`, so the shapes match.
+# fibonacci_remainder.roc: x86/kernels/fibonacci_remainder.js in Roc, its
+# loop as `var` and `while`, so the shapes match.
 # Each size comes from the command line, in the order of the JS file's
 # `const` lines, so nothing of the work is known when Roc compiles it: Roc
 # runs at compile time any call whose arguments are all known then.
@@ -19,16 +19,16 @@ prime : U64
 prime = 1000000007
 
 main! = |arguments| {
-	n = size_given(arguments, 0)
-	var $a = 0
-	var $b = 1
+	steps = size_given(arguments, 0)
+	var $older = 0
+	var $newer = 1
 	var $i = 0
-	while $i < n {
-		t = ($a + $b) % prime
-		$a = $b
-		$b = t
+	while $i < steps {
+		next = ($older + $newer) % prime
+		$older = $newer
+		$newer = next
 		$i = $i + 1
 	}
-	echo!("${$a.to_str()}\n")
+	echo!("${$older.to_str()}\n")
 	Ok({})
 }

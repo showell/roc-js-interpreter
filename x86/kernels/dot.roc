@@ -33,17 +33,17 @@ main! = |arguments| {
 		$y = $y.append(($i % 13).to_f64() * 0.25)
 		$i = $i + 1
 	}
-	var $d = 0.0
+	var $total = 0.0
 	var $r = 0
 	while $r < rounds {
 		var $j = 0
 		while $j < $x.len() {
-			$d = $d + real_at($x, $j) * real_at($y, $j)
+			$total = $total + real_at($x, $j) * real_at($y, $j)
 			$j = $j + 1
 		}
 		$r = $r + 1
 	}
-	eighths = match ($d * 8.0).to_u64_try() {
+	eighths = match ($total * 8.0).to_u64_try() {
 		Ok(whole) => whole
 		Err(_) => crash "the total times 8 is no whole number"
 	}

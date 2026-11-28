@@ -15,6 +15,8 @@ size_given = |arguments, place|
 		Err(_) => crash "usage: give the kernel's sizes"
 	}
 
+## The item at `place`, a function of its own because the JS reads the
+## item in one expression, so the two loops keep one shape.
 item_at : List(U64), U64 -> U64
 item_at = |items, place|
 	match items.get(place) {
@@ -28,13 +30,13 @@ main! = |arguments| {
 	var $total = 0
 	var $r = 0
 	while $r < rounds {
-		var $a = []
+		var $items = []
 		var $i = 0
 		while $i < size {
-			$a = $a.append($i + $r)
+			$items = $items.append($i + $r)
 			$i = $i + 1
 		}
-		$total = $total + $a.len() + item_at($a, size - 1)
+		$total = $total + $items.len() + item_at($items, size - 1)
 		$r = $r + 1
 	}
 	echo!("${$total.to_str()}\n")

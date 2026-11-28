@@ -22,11 +22,11 @@ const WHO = "x86/kernels.shale"
 const DIR = "x86/kernels"
 const WANT_KERNEL = "x86: a kernel's Roc twin, built by the release build, run to check it"
 
-const KERNELS = {"sum_array", "dot", "fib_mod", "call", "fields", "push", "map_get", "concat"}
+const KERNELS = {"sum_array", "dot", "fibonacci_remainder", "call", "fields", "push", "map_get", "concat"}
 const SIZES = {
   sum_array = {"SIZE", "ROUNDS"},
   dot = {"SIZE", "ROUNDS"},
-  fib_mod = {"N"},
+  fibonacci_remainder = {"N"},
   call = {"N"},
   fields = {"N"},
   push = {"SIZE", "ROUNDS"},

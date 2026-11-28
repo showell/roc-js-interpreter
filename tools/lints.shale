@@ -105,11 +105,11 @@ const HELD = {
   -- default platform calls and the recipe doesn't know of (x86's below).
   ["js/find_functions_and_parameters_that_dont_earn_their_keep/dead"] = 4,
   -- x86/roc/Hello.roc's, x86/race/fibonacci_race.roc's,
-  -- x86/bank/bank_race.roc's and x86/fourteen/fourteen.roc's `main!`, which
-  -- Roc's default platform calls and the recipe doesn't know of: the finding
+  -- x86/bank/bank_race.roc's and x86/fourteen/fourteen.roc's `main!`, and
+  -- the eight kernels' in x86/kernels/, which Roc's default platform calls and the recipe doesn't know of: the finding
   -- js's three are too. They go when the recipe learns a headerless app's
   -- entry.
-  ["x86/find_functions_and_parameters_that_dont_earn_their_keep/dead"] = 4,
+  ["x86/find_functions_and_parameters_that_dont_earn_their_keep/dead"] = 12,
 }
 
 -- The number a summary gives for a check: "check N", or "N check" for
