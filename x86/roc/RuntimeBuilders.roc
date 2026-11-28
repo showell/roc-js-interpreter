@@ -38,6 +38,33 @@ RuntimeBuilders :: [].{
 	instance_mark : Str
 	instance_mark = "runtime_text_instance_mark"
 
+	## The label of the one-byte strings, made once in the read-only segment
+	## (RuntimeTexts lays them down): the string of each byte from 0 to 255,
+	## in order, each its length (1) in 8 bytes then its byte, so the string
+	## of byte `b` is at the label plus `9 * b`. A one-byte string made as the
+	## program runs (an index or `charAt` of a string, a walk of its
+	## characters, a split piece, a slice) is one of them, so it takes no
+	## block; the collector never marks one, as it never marks a literal,
+	## since `Heap.block_start` finds no block outside the heap.
+	one_byte_texts : Str
+	one_byte_texts = "runtime_text_one_byte"
+
+	## The statements that put the address of the one-byte string of the
+	## byte in `byte` (0 to 255) in `byte`. They change `temp` too.
+	one_byte_text_items : { byte : X86.Register, temp : X86.Register } -> List(Assembly.Statement)
+	one_byte_text_items = |{ byte, temp }| [
+		Emit.lea(
+			byte,
+			Based({
+				base: byte,
+				index: Scaled({ reg: byte, scale: Times8 }),
+				displacement: 0,
+			}),
+		),
+		Emit.address_of(temp, RuntimeBuilders.one_byte_texts),
+		Emit.plus(byte, temp),
+	]
+
 	## The statements that jump to `label` when the object at `rdi`
 	## (unboxed) is an instance of a class. They change `rcx` and `rdx`.
 	instance_jump_items : Str -> List(Assembly.Statement)

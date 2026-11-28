@@ -26,12 +26,25 @@ RuntimeTexts :: [].{
 		# holds, since a string here is ASCII.
 		# An instance's key, 0xFE, the same way.
 		$out.concat([
+			Mark(RuntimeBuilders.one_byte_texts),
+			Data(one_byte_data),
 			Mark(RuntimeBuilders.error_mark),
 			Data([1, 0, 0, 0, 0, 0, 0, 0, 0xFF]),
 			Mark(RuntimeBuilders.instance_mark),
 			Data([1, 0, 0, 0, 0, 0, 0, 0, 0xFE]),
 		])
 	}
+}
+
+## The 256 one-byte strings (`RuntimeBuilders.one_byte_texts`), each its
+## length then its byte, 9 bytes apart.
+one_byte_data : List(U8)
+one_byte_data = {
+	var $out = List.with_capacity(256 * 9)
+	for byte in 0..<256 {
+		$out = $out.concat([1, 0, 0, 0, 0, 0, 0, 0, byte.to_u8_wrap()])
+	}
+	$out
 }
 
 ## Every text, with its label.

@@ -413,6 +413,22 @@ slice_items = {
 			Instruction(RepMovsb),
 			Emit.ret,
 			Emit.mark("runtime_slice_string"),
+			# A cut of one byte is its string of the table's, no block.
+			Emit.cmp_imm(Rdx, 1),
+			Emit.jcc(Ne, "runtime_slice_string_made"),
+			Emit.byte_load(
+				Rax,
+				Emit.mem_index({
+					base: R10,
+					index: Rsi,
+					displacement: 8,
+				}),
+			),
+		])
+		.concat(RuntimeBuilders.one_byte_text_items({ byte: Rax, temp: Rcx }))
+		.concat([
+			Emit.jmp("runtime_slice_string_boxed"),
+			Emit.mark("runtime_slice_string_made"),
 			Emit.save(R10),
 			Emit.save(Rsi),
 			Emit.save(Rdx),
@@ -432,6 +448,7 @@ slice_items = {
 				}),
 			),
 			Instruction(RepMovsb),
+			Emit.mark("runtime_slice_string_boxed"),
 		])
 		.concat(RuntimeBuilders.boxed_string_items)
 		.concat([Emit.ret, Emit.mark("runtime_slice_not_a_number")])
@@ -1302,10 +1319,35 @@ edit_items = {
 			])
 	# Each number made a whole one and its low 16 bits taken, as
 	# JavaScript's ToUint16 does; one past ASCII stops the program.
+	# One code is its one-byte string of the table's, no block.
 	from_char_codes =
 		[Emit.mark(Runtime.from_char_codes)]
 			.concat(RuntimeBuilders.unboxed_items(Rdi))
 			.concat([
+				Emit.load(R9, Emit.mem(Rdi, 0)),
+				Emit.cmp_imm(R9, 1),
+				Emit.jcc(Ne, "runtime_from_char_codes_many"),
+				Emit.load(R8, Emit.mem(Rdi, 16)),
+				Emit.load(Rdx, Emit.mem(R8, 0)),
+			])
+			.concat(
+				RuntimeBuilders.unless_number_items({
+					reg: Rdx,
+					label: "runtime_not_a_number_stop",
+				}),
+			)
+			.concat([
+				Emit.to_xmm(Xmm0, Rdx),
+				Instruction(Cvttsd2si({ to: Rax, from: Xmm0 })),
+				Emit.bit_and_imm(Rax, 0xFFFF),
+				Emit.cmp_imm(Rax, 0x80),
+				Emit.jcc(Ae, "runtime_from_char_codes_wide"),
+			])
+			.concat(RuntimeBuilders.one_byte_text_items({ byte: Rax, temp: Rcx }))
+			.concat(RuntimeBuilders.boxed_string_items)
+			.concat([
+				Emit.ret,
+				Emit.mark("runtime_from_char_codes_many"),
 				Emit.save(Rdi),
 				Emit.load(Rdi, Emit.mem(Rdi, 0)),
 				Emit.plus_imm(Rdi, 8),

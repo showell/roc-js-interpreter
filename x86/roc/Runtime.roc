@@ -790,7 +790,8 @@ write_value_items = {
 
 ## `runtime_text_of`, JavaScript's `String(v)` of the value in `rdi`, the
 ## string's address in `rax`; `runtime_concat`, the string at `rdi` then
-## the one at `rsi`, a new string's address in `rax`; `runtime_text_equal`,
+## the one at `rsi`, a new string's address in `rax` (or the other's, when
+## one is empty); `runtime_text_equal`,
 ## 1 in `rax` when the strings at `rdi` and `rsi` hold the same bytes,
 ## else 0, changing `rax`, `rcx`, `rdx` and `r8` alone; and
 ## `runtime_template`.
@@ -887,6 +888,16 @@ string_items = {
 		])
 	concat = [
 		Emit.mark("runtime_concat"),
+		# A string and the empty string are the string itself, no block: a
+		# string never changes once made, so the two may share it.
+		Emit.mov(Rax, Rdi),
+		Emit.load(Rcx, Emit.mem(Rsi, 0)),
+		Emit.test(Rcx, Rcx),
+		Emit.jcc(E, "runtime_concat_same"),
+		Emit.mov(Rax, Rsi),
+		Emit.load(Rcx, Emit.mem(Rdi, 0)),
+		Emit.test(Rcx, Rcx),
+		Emit.jcc(E, "runtime_concat_same"),
 		Emit.save(Rdi),
 		Emit.save(Rsi),
 		Emit.load(Rax, Emit.mem(Rdi, 0)),
@@ -908,6 +919,8 @@ string_items = {
 		Emit.lea(Rsi, Emit.mem(R10, 8)),
 		Emit.mov(Rcx, R8),
 		Instruction(RepMovsb),
+		Emit.ret,
+		Emit.mark("runtime_concat_same"),
 		Emit.ret,
 	]
 	equal = [
@@ -1148,13 +1161,9 @@ operator_items = {
 			Emit.mark("runtime_not_a_function_stop"),
 		])
 		.concat(RuntimeBuilders.stopping_items("runtime_text_not_a_function"))
-	cell = [
-		Emit.mark(Runtime.new_cell),
-		Emit.imm(Rdi, 8),
-		Emit.call(Heap.allocate(Cell)),
-		Emit.store(Emit.mem(Rax, 0), Rsi),
-		Emit.ret,
-	]
+	cell = [Emit.mark(Runtime.new_cell)]
+		.concat(Heap.allocate_known_items({ kind: Cell, size: 8, label: Runtime.new_cell }))
+		.concat([Emit.store(Emit.mem(Rax, 0), Rsi), Emit.ret])
 	# The constants' payloads are 0 to 3: `undefined` NaN, `null` and
 	# `false` 0, `true` 1.
 	to_number = [Emit.mark(Runtime.to_number), Emit.mov(Rax, Rdi)]
@@ -1293,7 +1302,8 @@ bits_case_items = |{ bits, label }| [
 ## converted to an integer and back, and is written only when that gives it
 ## back exactly and its size is at most 2^53. Its digits are made from the
 ## last, by division by ten, into 32 bytes of the stack, then copied to a
-## string on the heap.
+## string on the heap, or, for one digit, given as its one-byte string
+## (`RuntimeBuilders.one_byte_texts`).
 number_items : List(Assembly.Statement)
 number_items = {
 	buffer_end = Emit.mem(Rsp, 32)
@@ -1351,6 +1361,16 @@ number_items = {
 			Emit.mark("runtime_number_copy"),
 			Emit.lea(Rdx, buffer_end),
 			Emit.minus(Rdx, Rsi),
+			# One digit is its string of the table's, no block.
+			Emit.cmp_imm(Rdx, 1),
+			Emit.jcc(Ne, "runtime_number_made"),
+			Emit.byte_load(Rax, Emit.mem(Rsi, 0)),
+		])
+		.concat(RuntimeBuilders.one_byte_text_items({ byte: Rax, temp: Rcx }))
+		.concat([
+			Emit.plus_imm(Rsp, 32),
+			Emit.ret,
+			Emit.mark("runtime_number_made"),
 			Emit.lea(Rdi, Emit.mem(Rdx, 8)),
 			Emit.call(Heap.allocate(String)),
 			Emit.store(Emit.mem(Rax, 0), Rdx),
@@ -1408,27 +1428,32 @@ container_items : List(Assembly.Statement)
 container_items = {
 	# The record's block is the array's kind; the two routines differ only
 	# in it.
+	# An array of at most 4 items takes the room for 4, a block whose size
+	# is known here, so its allocation is in line. The capacity stays in
+	# `rcx`, which the allocator keeps.
 	new_array_of = |{ label, kind }|
 		[
 			Emit.mark(label),
 			Emit.save(Rdi),
-			Emit.mov(Rcx, Rdi),
-			Emit.cmp_imm(Rcx, 4),
-			Emit.jcc(Ae, "${label}_sized"),
 			Emit.imm(Rcx, 4),
-			Emit.mark("${label}_sized"),
-			Emit.save(Rcx),
-			Emit.mov(Rdi, Rcx),
-			Emit.shl(Rdi, 3),
-			Emit.plus_imm(Rdi, 24),
-			Emit.call(Heap.allocate(kind)),
-			Emit.restore(Rcx),
-			Emit.restore(Rdx),
-			Emit.store(Emit.mem(Rax, 0), Rdx),
-			Emit.store(Emit.mem(Rax, 8), Rcx),
-			Emit.lea(Rdx, Emit.mem(Rax, 24)),
-			Emit.store(Emit.mem(Rax, 16), Rdx),
+			Emit.cmp(Rdi, Rcx),
+			Emit.jcc(A, "${label}_sized"),
 		]
+			.concat(Heap.allocate_known_items({ kind, size: 24 + 4 * 8, label }))
+			.concat([
+				Emit.jmp("${label}_made"),
+				Emit.mark("${label}_sized"),
+				Emit.mov(Rcx, Rdi),
+				Emit.shl(Rdi, 3),
+				Emit.plus_imm(Rdi, 24),
+				Emit.call(Heap.allocate(kind)),
+				Emit.mark("${label}_made"),
+				Emit.restore(Rdx),
+				Emit.store(Emit.mem(Rax, 0), Rdx),
+				Emit.store(Emit.mem(Rax, 8), Rcx),
+				Emit.lea(Rdx, Emit.mem(Rax, 24)),
+				Emit.store(Emit.mem(Rax, 16), Rdx),
+			])
 			.concat(RuntimeBuilders.boxed_items(Boxing.array_tag))
 			.append(Emit.ret)
 	new_array = [
@@ -1436,19 +1461,24 @@ container_items = {
 		new_array_of({ label: Runtime.new_int32_array, kind: Int32Array }),
 		new_array_of({ label: Runtime.new_numbers_array, kind: NumbersArray }),
 	].join()
-	new_object = [
-		Emit.mark(Runtime.new_object),
-		Emit.imm(Rdi, 40 + 4 * 16),
-		Emit.call(Heap.allocate(Object)),
-		Emit.zero(Rcx),
-		Emit.store(Emit.mem(Rax, 0), Rcx),
-		Emit.store(Emit.mem(Rax, 24), Rcx),
-		Emit.store(Emit.mem(Rax, 32), Rcx),
-		Emit.imm(Rcx, 4),
-		Emit.store(Emit.mem(Rax, 8), Rcx),
-		Emit.lea(Rdx, Emit.mem(Rax, 40)),
-		Emit.store(Emit.mem(Rax, 16), Rdx),
-	]
+	new_object = [Emit.mark(Runtime.new_object)]
+		.concat(
+			Heap.allocate_known_items({
+				kind: Object,
+				size: 40 + 4 * 16,
+				label: Runtime.new_object,
+			}),
+		)
+		.concat([
+			Emit.zero(Rcx),
+			Emit.store(Emit.mem(Rax, 0), Rcx),
+			Emit.store(Emit.mem(Rax, 24), Rcx),
+			Emit.store(Emit.mem(Rax, 32), Rcx),
+			Emit.imm(Rcx, 4),
+			Emit.store(Emit.mem(Rax, 8), Rcx),
+			Emit.lea(Rdx, Emit.mem(Rax, 40)),
+			Emit.store(Emit.mem(Rax, 16), Rdx),
+		])
 		.concat(RuntimeBuilders.boxed_items(Boxing.object_tag))
 		.append(Emit.ret)
 	entry = [
@@ -1826,17 +1856,10 @@ container_items = {
 			Emit.load(Rdx, Emit.mem(Rdi, 0)),
 			Emit.cmp(Rcx, Rdx),
 			Emit.jcc(Ae, "runtime_get_undefined"),
-			Emit.save(Rdi),
-			Emit.save(Rcx),
-			Emit.imm(Rdi, 9),
-			Emit.call(Heap.allocate(String)),
-			Emit.restore(R8),
-			Emit.restore(Rdi),
-			Emit.imm(Rdx, 1),
-			Emit.store(Emit.mem(Rax, 0), Rdx),
-			RuntimeBuilders.text_byte_item({ reg: Rdx, base: Rdi }),
-			Emit.byte_store(Emit.mem(Rax, 8), Dl),
+			Emit.mov(R8, Rcx),
+			RuntimeBuilders.text_byte_item({ reg: Rax, base: Rdi }),
 		])
+		.concat(RuntimeBuilders.one_byte_text_items({ byte: Rax, temp: Rcx }))
 		.concat(RuntimeBuilders.boxed_string_items)
 		.concat([Emit.ret, Emit.mark("runtime_get_index_object")])
 		.concat(RuntimeBuilders.unboxed_items(Rdi))

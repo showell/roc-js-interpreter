@@ -294,6 +294,78 @@ Heap :: [].{
 	allocate : Heap.BlockKind -> Str
 	allocate = |kind| "runtime_allocate_${kind_word(kind)}"
 
+	## The statements that take `size` bytes of the heap for a block of
+	## `kind`, as a call of `Heap.allocate(kind)` with `rdi` holding `size`
+	## does, the address past the header in `rax`, for a site whose size is
+	## known before the program runs. The block's class and its header are
+	## chosen here, so the usual way is in line: the bytes counted against
+	## the threshold, then the class's free list popped or its page bumped,
+	## and the header and the count of allocations written, as the shared path
+	## writes them. A block past the threshold (always, in the torture tier,
+	## whose threshold is 0), or a class whose page is full or that has none,
+	## calls the shared path, which counts it from the start; so does a block
+	## too big for a page of blocks. `label` starts their labels' names. They
+	## change `rax` and `rdi` alone, as the call does, and may collect.
+	allocate_known_items : {
+		kind : Heap.BlockKind,
+		size : I64,
+		label : Str,
+	} -> List(Assembly.Statement)
+	allocate_known_items = |{ kind, size, label }| {
+		asked = (size + 7) // 8 * 8
+		class = class_of(asked)
+		block = class_block(class)
+		slow = "${label}_alloc_shared"
+		bump = "${label}_alloc_bump"
+		header = "${label}_alloc_header"
+		done = "${label}_alloc_done"
+		called = [Emit.imm(Rdi, size), Emit.call(Heap.allocate(kind))]
+		if class > most_class {
+			called
+		} else {
+			next_place = known_class_place({ class, past: 0 })
+			free_place = known_class_place({ class, past: 16 })
+			[
+				Emit.mark("${label}_alloc"),
+				Emit.load(Rax, in_use_place),
+				Emit.plus_imm(Rax, block),
+				Emit.load(Rdi, threshold_place),
+				Emit.cmp(Rax, Rdi),
+				Emit.jcc(A, slow),
+				Emit.load(Rdi, free_place),
+				Emit.test(Rdi, Rdi),
+				Emit.jcc(E, bump),
+				Emit.store(in_use_place, Rax),
+				Emit.load(Rax, Emit.mem(Rdi, 8)),
+				Emit.store(free_place, Rax),
+				Emit.zero(Rax),
+				Emit.store(Emit.mem(Rdi, 8), Rax),
+				Emit.jmp(header),
+				# The page is full, or the class has none, when its next block
+				# lies at a page's start: its low 16 bits are 0.
+				Emit.mark(bump),
+				Emit.load(Rdi, next_place),
+				Emit.shl(Rdi, 64 - page_bits),
+				Emit.jcc(E, slow),
+				Emit.store(in_use_place, Rax),
+				Emit.load(Rdi, next_place),
+				Emit.lea(Rax, Emit.mem(Rdi, block)),
+				Emit.store(next_place, Rax),
+				Emit.mark(header),
+				Emit.load(Rax, Heap.allocations_place),
+				Emit.plus_imm(Rax, 1),
+				Emit.store(Heap.allocations_place, Rax),
+				Emit.imm(Rax, Heap.kind_code(kind) * kind_place + asked),
+				Emit.store(Emit.mem(Rdi, 0), Rax),
+				Emit.lea(Rax, Emit.mem(Rdi, 8)),
+				Emit.jmp(done),
+				Emit.mark(slow),
+			]
+				.concat(called)
+				.append(Emit.mark(done))
+		}
+	}
+
 	## The routine that gives the address of the header of the block that
 	## holds the address in `rdi` (its header, its contents or the room past
 	## them), or 0 when no block taken holds it. It changes `rax`, `rcx` and
@@ -464,6 +536,45 @@ Heap :: [].{
 		walk_items,
 	].join()
 }
+
+## The class of a block of `asked` bytes, rounded to 8, as the shared path
+## takes it: the highest bit of `asked + 7`, or-ed with 8 so it is at least
+## `least_class`.
+class_of : I64 -> I64
+class_of = |asked| {
+	var $class = 0
+	var $power = 1
+	while $power * 2 <= asked + 7 {
+		$power = $power * 2
+		$class = $class + 1
+	}
+	if $class < least_class { least_class } else { $class }
+}
+
+## The block size of a class: 2 times 2 to its power.
+class_block : I64 -> I64
+class_block = |class| {
+	var $block = 2
+	for _ in 0..<class {
+		$block = $block * 2
+	}
+	$block
+}
+
+## The place `past` bytes into `class`'s places in the heap's state.
+known_class_place : { class : I64, past : I64 } -> X86.Mem
+known_class_place = |{ class, past }| Emit.mem(
+	R15,
+	classes_place + class_bytes * (class - least_class) + past,
+)
+
+expect class_block(class_of(0)) == 16
+expect class_block(class_of(8)) == 16
+expect class_block(class_of(16)) == 32
+expect class_block(class_of(56)) == 64
+expect class_block(class_of(104)) == 128
+expect class_of(32760) == most_class
+expect class_of(32768) == most_class + 1
 
 ## A kind's word in its entry's label.
 kind_word : Heap.BlockKind -> Str

@@ -189,13 +189,9 @@ language_items = {
 			Emit.mark("runtime_items_of_next"),
 			Emit.cmp(R8, R9),
 			Emit.jcc(E, "runtime_items_of_made"),
-			Emit.imm(Rdi, 9),
-			Emit.call(Heap.allocate(String)),
-			Emit.imm(Rcx, 1),
-			Emit.store(Emit.mem(Rax, 0), Rcx),
-			RuntimeBuilders.text_byte_item({ reg: Rcx, base: R10 }),
-			Emit.byte_store(Emit.mem(Rax, 8), Cl),
+			RuntimeBuilders.text_byte_item({ reg: Rax, base: R10 }),
 		])
+		.concat(RuntimeBuilders.one_byte_text_items({ byte: Rax, temp: Rcx }))
 		.concat(RuntimeBuilders.boxed_string_items)
 		.concat([
 			Emit.store(
@@ -591,18 +587,34 @@ string_method_items = {
 		Emit.load(Rdx, RuntimeBuilders.local(40)),
 		Emit.load(Rcx, RuntimeBuilders.local(32)),
 		Emit.minus(Rdx, Rcx),
-		Emit.save(Rdx),
-		Emit.lea(Rdi, Emit.mem(Rdx, 8)),
-		Emit.call(Heap.allocate(String)),
-		Emit.restore(Rcx),
-		Emit.store(Emit.mem(Rax, 0), Rcx),
-		Emit.lea(Rdi, Emit.mem(Rax, 8)),
+		# A piece of no byte is the empty string and one of one byte its
+		# string of the table's: neither takes a block.
+		Emit.cmp_imm(Rdx, 1),
+		Emit.jcc(A, "runtime_split_piece_made"),
+		Emit.address_of(Rax, "runtime_text_empty"),
+		Emit.test(Rdx, Rdx),
+		Emit.jcc(E, "runtime_split_piece_boxed"),
 		Emit.load(Rsi, RuntimeBuilders.local(8)),
-		Emit.load(Rdx, RuntimeBuilders.local(32)),
-		Emit.plus(Rsi, Rdx),
-		Emit.plus_imm(Rsi, 8),
-		Instruction(RepMovsb),
+		Emit.mov(R8, Rcx),
+		RuntimeBuilders.text_byte_item({ reg: Rax, base: Rsi }),
 	]
+		.concat(RuntimeBuilders.one_byte_text_items({ byte: Rax, temp: Rcx }))
+		.concat([
+			Emit.jmp("runtime_split_piece_boxed"),
+			Emit.mark("runtime_split_piece_made"),
+			Emit.save(Rdx),
+			Emit.lea(Rdi, Emit.mem(Rdx, 8)),
+			Emit.call(Heap.allocate(String)),
+			Emit.restore(Rcx),
+			Emit.store(Emit.mem(Rax, 0), Rcx),
+			Emit.lea(Rdi, Emit.mem(Rax, 8)),
+			Emit.load(Rsi, RuntimeBuilders.local(8)),
+			Emit.load(Rdx, RuntimeBuilders.local(32)),
+			Emit.plus(Rsi, Rdx),
+			Emit.plus_imm(Rsi, 8),
+			Instruction(RepMovsb),
+			Emit.mark("runtime_split_piece_boxed"),
+		])
 		.concat(RuntimeBuilders.boxed_string_items)
 		.concat([Emit.mov(Rsi, Rax), Emit.load(Rdi, RuntimeBuilders.local(24))])
 		.concat(RuntimeBuilders.unboxed_items(Rdi))
