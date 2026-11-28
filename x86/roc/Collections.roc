@@ -31,9 +31,9 @@
 ##   found by its identity.
 ## - **The index** is a Table block: its mask (its slots less one, a power
 ##   of two), the count of its slots taken, then its slots, an entry's
-##   place plus one, or 0 for none, probed linearly. It is brought up to date when a key is looked up,
-##   never when one is set: the entries past those it covers are put in
-##   it then.
+##   place plus one, or 0 for none, probed linearly. It is brought up to
+##   date when a key is looked up, never when one is set: the entries past
+##   those it covers are put in it then.
 ## - **A deleted entry keeps its slot**, its key `Boxing.gone_bits`, which
 ##   no key matches, so it is a tombstone a probe passes; `clear` deletes
 ##   every entry so. A new index leaves the deleted entries out.
@@ -75,7 +75,7 @@ Collections :: [].{
 			Emit.ret,
 		]
 		# The key in `rsi` made its one SameValueZero form, as every key is
-		# stored and looked up: -0 is 0 and every NaN is `canonical_nan`, so
+		# stored and looked up: -0 is 0 and every NaN is `canonical_not_a_number`, so
 		# two numbers are the same key exactly when their bits are. It changes
 		# `rax` and `rcx`.
 		canonical_key = |label| [
@@ -85,12 +85,12 @@ Collections :: [].{
 			Emit.jcc(Ae, "${label}_done"),
 			Emit.imm(Rax, 0x7FFFFFFFFFFFFFFF),
 			Emit.mov(Rcx, Rsi),
-			Instruction(Alu({ operation: And, to: Rcx, from: Rax })),
+			bitwise_and(Rcx, Rax),
 			Emit.jcc(E, "${label}_zero"),
 			Emit.imm(Rax, 0x7FF0000000000000),
 			Emit.cmp(Rcx, Rax),
 			Emit.jcc(Be, "${label}_done"),
-			Emit.imm(Rsi, canonical_nan),
+			Emit.imm(Rsi, canonical_not_a_number),
 			Emit.jmp("${label}_done"),
 			Emit.mark("${label}_zero"),
 			Emit.zero(Rsi),
@@ -163,7 +163,7 @@ Collections :: [].{
 					Emit.call("runtime_collection_hash"),
 					Emit.load(R11, Emit.mem(Rdi, index_place)),
 					Emit.load(Rcx, Emit.mem(R11, 0)),
-					Instruction(Alu({ operation: And, to: Rax, from: Rcx })),
+					bitwise_and(Rax, Rcx),
 					Emit.store(RuntimeBuilders.local(24), Rax),
 					Emit.mark("runtime_collection_find_probe"),
 					Emit.load(R10, RuntimeBuilders.local(8)),
@@ -193,7 +193,7 @@ Collections :: [].{
 					Emit.load(R8, Emit.mem(R11, 0)),
 					Emit.load(Rcx, RuntimeBuilders.local(24)),
 					Emit.plus_imm(Rcx, 1),
-					Instruction(Alu({ operation: And, to: Rcx, from: R8 })),
+					bitwise_and(Rcx, R8),
 					Emit.store(RuntimeBuilders.local(24), Rcx),
 					Emit.jmp("runtime_collection_find_probe"),
 					Emit.mark("runtime_collection_find_none"),
@@ -273,13 +273,13 @@ Collections :: [].{
 				Emit.jcc(E, "runtime_collection_index_next"),
 				Emit.call("runtime_collection_hash"),
 				Emit.load(Rcx, Emit.mem(R11, 0)),
-				Instruction(Alu({ operation: And, to: Rax, from: Rcx })),
+				bitwise_and(Rax, Rcx),
 				Emit.mark("runtime_collection_index_probe"),
 				Emit.load(R8, index_slot(Rax)),
 				Emit.test(R8, R8),
 				Emit.jcc(E, "runtime_collection_index_put"),
 				Emit.plus_imm(Rax, 1),
-				Instruction(Alu({ operation: And, to: Rax, from: Rcx })),
+				bitwise_and(Rax, Rcx),
 				Emit.jmp("runtime_collection_index_probe"),
 				Emit.mark("runtime_collection_index_put"),
 				Emit.mov(R8, R9),
@@ -319,12 +319,12 @@ Collections :: [].{
 				Emit.mov(Rax, Rdx),
 				Emit.mov(Rcx, Rdx),
 				Emit.shr(Rcx, 32),
-				Instruction(Alu({ operation: Xor, to: Rax, from: Rcx })),
+				fold_rcx,
 				Emit.imm(Rcx, bits_multiplier),
 				Instruction(Imul({ to: Rax, from: Rcx })),
 				Emit.mov(Rcx, Rax),
 				Emit.shr(Rcx, 32),
-				Instruction(Alu({ operation: Xor, to: Rax, from: Rcx })),
+				fold_rcx,
 				Emit.restore(Rcx),
 				Emit.ret,
 			])
@@ -896,13 +896,28 @@ record_size : I64
 record_size = 56
 
 ## The one NaN a key is stored and looked up as.
-canonical_nan : I64
-canonical_nan = 0x7FF8000000000000
+canonical_not_a_number : I64
+canonical_not_a_number = 0x7FF8000000000000
 
 ## The odd constant a key that is no string is multiplied by in its hash:
 ## 2^64 over the golden ratio.
 bits_multiplier : I64
 bits_multiplier = (0x9E3779B97F4A7C15).to_i64_wrap()
+
+## `to` made `to` and `from`, bit by bit: a key's slot kept to an index's
+## mask, or a number's sign cleared.
+bitwise_and : X86.Register, X86.Register -> Assembly.Statement
+bitwise_and = |to, from| Instruction(Alu({ operation: And, to, from }))
+
+## `rax` made `rax` xor `rcx`, a step of a hash's folding.
+fold_rcx : Assembly.Statement
+fold_rcx = Instruction(
+	Alu({
+		operation: Xor,
+		to: Rax,
+		from: Rcx,
+	}),
+)
 
 ## Slot `reg` of the index at `r11`.
 index_slot : X86.Register -> X86.Mem

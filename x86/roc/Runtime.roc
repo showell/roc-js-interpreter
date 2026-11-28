@@ -788,6 +788,11 @@ write_value_items = {
 		])
 }
 
+## The 8 bytes `offset` bytes from the start of the string at `base`, its
+## length's word at 0, its bytes from 8.
+text_word : X86.Register, X86.Register -> X86.Mem
+text_word = |base, offset| Emit.mem_index({ base, index: offset, displacement: 0 })
+
 ## `runtime_text_of`, JavaScript's `String(v)` of the value in `rdi`, the
 ## string's address in `rax`; `runtime_concat`, the string at `rdi` then
 ## the one at `rsi`, a new string's address in `rax`; `runtime_text_equal`,
@@ -928,15 +933,15 @@ string_items = {
 		Emit.mark("runtime_text_equal_word"),
 		Emit.cmp(R8, Rcx),
 		Emit.jcc(A, "runtime_text_equal_tail"),
-		Emit.load(Rax, Emit.mem_index({ base: Rdi, index: R8, displacement: 0 })),
-		Emit.load(Rdx, Emit.mem_index({ base: Rsi, index: R8, displacement: 0 })),
+		Emit.load(Rax, text_word(Rdi, R8)),
+		Emit.load(Rdx, text_word(Rsi, R8)),
 		Emit.cmp(Rax, Rdx),
 		Emit.jcc(Ne, "runtime_text_equal_no"),
 		Emit.plus_imm(R8, 8),
 		Emit.jmp("runtime_text_equal_word"),
 		Emit.mark("runtime_text_equal_tail"),
-		Emit.load(Rax, Emit.mem_index({ base: Rdi, index: Rcx, displacement: 0 })),
-		Emit.load(Rdx, Emit.mem_index({ base: Rsi, index: Rcx, displacement: 0 })),
+		Emit.load(Rax, text_word(Rdi, Rcx)),
+		Emit.load(Rdx, text_word(Rsi, Rcx)),
 		Emit.cmp(Rax, Rdx),
 		Emit.jcc(Ne, "runtime_text_equal_no"),
 		Emit.mark("runtime_text_equal_yes"),
