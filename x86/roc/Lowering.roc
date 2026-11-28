@@ -3219,7 +3219,8 @@ integers_widened = |head, { met, thresholds }| {
 ## by a whole constant at least 0, the most it leaves. An ordering's constant
 ## is none: the ordering narrows its counter already, and each threshold a
 ## counter climbs through costs a walk. A function with neither operator has
-## 0 alone, so its heads widen as they did before thresholds. A constant is the literal or the number held for good
+## 0 alone, so its heads widen as before but that a side falling to 0 or
+## more stops at 0. A constant is the literal or the number held for good
 ## (`KnownFunctions.constant_numbers`) just before the operator, its right
 ## side. At most `most_thresholds` of them are kept, the smallest in size,
 ## so a head widens a side at most that many times more than it did
