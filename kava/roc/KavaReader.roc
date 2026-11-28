@@ -247,6 +247,9 @@ KavaReader :: [].{
 				KavaReader.ghost_statement(reader)
 			}
 			Name("law") if on_line => KavaReader.law(reader)
+			Name("size") if on_line and KavaReader.is_size_start(reader) => {
+				KavaReader.size_generator(reader)
+			}
 			Name("requires") if on_line and KavaReader.is_clause_start(next_kind) => {
 				Err(
 					KavaState.fault_here(
@@ -612,7 +615,8 @@ KavaReader :: [].{
 	## Past one piece of an expression: a token, or a bracket and all it
 	## holds, or a function.
 	term : KavaState.State, KavaReader.Stop -> Try(KavaState.State, Lexer.Fault)
-	term = |reader, stop| {
+	term = |unrecorded, stop| {
+		reader = KavaReader.with_site(unrecorded)
 		current = KavaState.token(reader)
 		next = KavaState.next_token(reader)
 		# `own` or `lent` before a name, outside a call's arguments.
@@ -663,6 +667,107 @@ KavaReader :: [].{
 			Name(word) if KavaReader.is_keyword(word) => Ok(KavaState.advance(reader))
 			Name(word) => Ok(KavaState.advance(KavaReader.name_met(reader, word)))
 			_ => Ok(KavaState.advance(reader))
+		}
+	}
+
+	## The reader with the place here recorded when counted mode charges it
+	## (KavaState.Site): in ordinary code, a method's call (`.m(`), or a
+	## string grown by name, `s += e` where a statement starts, or the second
+	## `s` of `s = s + e`.
+	with_site : KavaState.State -> KavaState.State
+	with_site = |reader| {
+		current = KavaState.token(reader)
+		previous = if reader.at == 0 {
+			Punct(";")
+		} else {
+			KavaState.previous_token(reader).kind
+		}
+		after = KavaState.next_token(reader).kind
+		is_member = previous == Punct(".") or previous == Punct("?.")
+		# `super.m()` calls the parent's `m` on `this`, which the counter's
+		# key would find on `this` itself: it is no site.
+		is_super = KavaState.token_at(reader, reader.at.minus_saturated(2)).kind == Name("super")
+		kind = match current.kind {
+			Name(word) if is_member and after == Punct("(") and !is_super => Called(word)
+			Name(word) if !is_member and !KavaReader.is_keyword(word) and after == Punct("+=") => {
+				if KavaReader.is_statement_start(previous, current.before) {
+					Grown(word)
+				} else {
+					Uncharged
+				}
+			}
+			Name(word) if previous == Punct("=") and after == Punct("+") => {
+				target = KavaState.token_at(reader, reader.at.minus_saturated(2)).kind
+				before_target = KavaState.token_at(reader, reader.at.minus_saturated(3)).kind
+				is_field = before_target == Punct(".") or before_target == Punct("?.")
+				if reader.at >= 2 and target == Name(word) and !is_field {
+					GrownBy(word)
+				} else {
+					Uncharged
+				}
+			}
+			_ => Uncharged
+		}
+		match (reader.code, kind) {
+			(Ordinary, Called(word)) => KavaReader.with_charged(reader, Called(word))
+			(Ordinary, Grown(word)) => KavaReader.with_charged(reader, Grown(word))
+			(Ordinary, GrownBy(word)) => KavaReader.with_charged(reader, GrownBy(word))
+			_ => reader
+		}
+	}
+
+	with_charged : KavaState.State,
+	[
+		Called(Str),
+		Spread,
+		Grown(Str),
+		GrownBy(Str),
+	] -> KavaState.State
+	with_charged = |reader, kind| {
+		..reader,
+		sites: reader.sites.append({ index: reader.at, kind: kind }),
+	}
+
+	## Whether a statement can start at a name after `previous`, which stands
+	## before it across a line break or on its line (`before`): a counted
+	## `s += e` becomes `$kava_grow(...), s += e` there, which a statement can
+	## be and an operand can't.
+	is_statement_start : Lexer.TokenKind, Lexer.Break -> Bool
+	is_statement_start = |previous, before| match previous {
+		Punct(";") => True
+		Punct("{") => True
+		Punct("}") => True
+		Punct(")") => True
+		Name("else") => True
+		Name("do") => True
+		Punct("]") => before == NewLine
+		Name(_) => before == NewLine
+		Number(_) => before == NewLine
+		Text(_) => before == NewLine
+		_ => False
+	}
+
+	## The reader at a `...` spread, recorded in ordinary code, and past it.
+	spread_met : KavaState.State -> KavaState.State
+	spread_met = |reader| {
+		met = match reader.code {
+			Ordinary => KavaReader.with_charged(reader, Spread)
+			_ => reader
+		}
+		KavaState.advance(met)
+	}
+
+	## The reader past a bracket read from `first`, without the spreads
+	## recorded inside it when it was a pattern, a destructuring's target
+	## (`[a, ...rest] = xs`), whose `...` is a rest, no spread.
+	without_pattern_spreads : KavaState.State, U64 -> KavaState.State
+	without_pattern_spreads = |reader, first| {
+		next = KavaState.token(reader).kind
+		if next == Punct("=") or next == Name("of") or next == Name("in") {
+			kept = reader.sites.keep_if(|site| site.index < first or site.kind != Spread)
+			{ ..reader, sites: kept }
+		} else {
+			reader
 		}
 	}
 
@@ -763,7 +868,7 @@ KavaReader :: [].{
 			) and on_line and KavaReader.is_clause_start(next.kind) {
 				KavaReader.lending($reader)?
 			} else if KavaState.is_punct($reader, "...") {
-				KavaReader.expression(KavaState.advance($reader), AtElementEnd)?
+				KavaReader.expression(KavaReader.spread_met($reader), AtElementEnd)?
 			} else {
 				KavaReader.expression($reader, AtElementEnd)?
 			}
@@ -851,12 +956,13 @@ KavaReader :: [].{
 			$reader = if KavaState.is_punct($reader, ",") {
 				KavaState.advance($reader)
 			} else if KavaState.is_punct($reader, "...") {
-				KavaReader.expression(KavaState.advance($reader), AtElementEnd)?
+				KavaReader.expression(KavaReader.spread_met($reader), AtElementEnd)?
 			} else {
 				KavaReader.skip_comma(KavaReader.expression($reader, AtElementEnd)?, "]")?
 			}
 		}
-		KavaState.expect_punct($reader, "]")
+		closed = KavaState.expect_punct($reader, "]")?
+		Ok(KavaReader.without_pattern_spreads(closed, reader.at))
 	}
 
 	template : KavaState.State -> Try(KavaState.State, Lexer.Fault)
@@ -895,18 +1001,18 @@ KavaReader :: [].{
 			current = KavaState.token($reader)
 			after = KavaState.next_token($reader).kind
 			$reader = if KavaState.is_punct($reader, "...") {
-				KavaReader.expression(KavaState.advance($reader), AtElementEnd)?
+				KavaReader.expression(KavaReader.spread_met($reader), AtElementEnd)?
 			} else if after == Punct(":") {
 				KavaReader.expression(KavaState.advance(KavaState.advance($reader)), AtElementEnd)?
 			} else if after == Punct("(") {
 				KavaReader.method(
 					KavaState.advance($reader),
-					{ contract_of: Plain, invariants: [] },
+					{ contract_of: Plain, invariants: [], name: "" },
 				)?
 			} else if KavaState.is_punct($reader, "[") {
 				keyed = KavaReader.skip_brackets($reader)?
 				if KavaState.is_punct(keyed, "(") {
-					KavaReader.method(keyed, { contract_of: Plain, invariants: [] })?
+					KavaReader.method(keyed, { contract_of: Plain, invariants: [], name: "" })?
 				} else {
 					KavaReader.expression(KavaState.expect_punct(keyed, ":")?, AtElementEnd)?
 				}
@@ -934,7 +1040,8 @@ KavaReader :: [].{
 			}
 			$reader = KavaReader.skip_comma($reader, "}")?
 		}
-		KavaState.expect_punct($reader, "}")
+		closed = KavaState.expect_punct($reader, "}")?
+		Ok(KavaReader.without_pattern_spreads(closed, reader.at))
 	}
 
 	# ---- functions -------------------------------------------------------------
@@ -943,12 +1050,22 @@ KavaReader :: [].{
 	## constructor, or a method its class's invariants hold after.
 	Member : [Plain, Constructor, Method]
 
-	Placing : { contract_of : KavaReader.Member, invariants : List(KavaChecks.Clause) }
+	## Where a function stands: what its checks hold it to, and its name, ""
+	## for none, which a cost claim is measured by.
+	Placing : {
+		contract_of : KavaReader.Member,
+		invariants : List(KavaChecks.Clause),
+		name : Str,
+	}
 
 	## A function after its `function` keyword: an optional name, then the
 	## rest as every function has it.
 	function_rest : KavaState.State -> Try(KavaState.State, Lexer.Fault)
 	function_rest = |reader| {
+		name = match KavaState.token(reader).kind {
+			Name(word) if !KavaReader.is_keyword(word) => word
+			_ => ""
+		}
 		named = match KavaState.token(reader).kind {
 			Name(word) if !KavaReader.is_keyword(word) => KavaState.advance(
 				KavaState.with_use(
@@ -962,7 +1079,7 @@ KavaReader :: [].{
 			)
 			_ => reader
 		}
-		KavaReader.method(named, { contract_of: Plain, invariants: [] })
+		KavaReader.method(named, { contract_of: Plain, invariants: [], name: name })
 	}
 
 	## A function from its parameters' `(` to its body's `}`.
@@ -981,7 +1098,14 @@ KavaReader :: [].{
 			invariants: invariants,
 		}
 		contract = KavaReader.contract_of(clauses.parsed, signature)
-		KavaReader.function_body(clauses.reader, contract)
+		KavaReader.function_body(
+			clauses.reader,
+			{
+				contract: contract,
+				name: placing.name,
+				claims: clauses.parsed.claims,
+			},
+		)
 	}
 
 	## The rest of an arrow function, after its parameters: its result's
@@ -999,7 +1123,14 @@ KavaReader :: [].{
 		contract = KavaReader.contract_of(clauses.parsed, signature)
 		arrow = KavaState.expect_punct(clauses.reader, "=>")?
 		if KavaState.is_punct(arrow, "{") {
-			KavaReader.function_body(arrow, contract)
+			KavaReader.function_body(
+				arrow,
+				{
+					contract: contract,
+					name: "",
+					claims: clauses.parsed.claims,
+				},
+			)
 		} else {
 			first = arrow.at
 			framed = { ..arrow, frames: arrow.frames.append([]) }
@@ -1007,10 +1138,18 @@ KavaReader :: [].{
 			stretch = { first: first, past: body.at }
 			start = KavaState.token_at(body, first).start
 			end = KavaState.previous_token(body).end
+			unframed = clauses.parsed.claims.map(
+				|claim| {
+					name: "",
+					claim: claim,
+					body: Unframed,
+				},
+			)
 			closed = {
 				..body,
 				frames: body.frames.drop_last(1),
 				bodies: body.bodies.append(stretch),
+				cost_claims: List.concat(body.cost_claims, unframed),
 			}
 			entry = KavaChecks.entry_checks(closed.file, contract)
 			exits = KavaChecks.exit_checks(closed.file, contract)
@@ -1124,6 +1263,7 @@ KavaReader :: [].{
 		required : List(KavaChecks.Clause),
 		ensured : List(KavaChecks.Clause),
 		olds : List(KavaChecks.Old),
+		claims : List(KavaState.Claim),
 	}
 
 	## A function's parts that make its contract, read apart.
@@ -1150,10 +1290,15 @@ KavaReader :: [].{
 	function_clauses : KavaState.State -> Try(KavaReader.Parsed(KavaReader.Clauses), Lexer.Fault)
 	function_clauses = |reader| {
 		var $reader = reader
-		var $clauses = { required: [], ensured: [], olds: [] }
+		var $clauses = { required: [], ensured: [], olds: [], claims: [] }
 		while KavaReader.is_clause_word(KavaState.token($reader).kind) {
 			if KavaState.is_word($reader, "cost") {
-				$reader = KavaReader.cost_clause($reader)?
+				if !$clauses.claims.is_empty() {
+					return Err(KavaState.fault_here($reader, "a function takes one `cost` clause"))
+				}
+				read = KavaReader.cost_clause($reader)?
+				$reader = read.reader
+				$clauses = { ..$clauses, claims: $clauses.claims.append(read.parsed) }
 			} else {
 				is_ensures = KavaState.is_word($reader, "ensures")
 				read = KavaReader.clause($reader, AtClauseEnd)?
@@ -1254,10 +1399,10 @@ KavaReader :: [].{
 		}
 	}
 
-	## `cost O(...) [where n = e, ...]`, read and carried, never checked
-	## here: strip mode deletes it, and a checked build keeps it as a
-	## comment.
-	cost_clause : KavaState.State -> Try(KavaState.State, Lexer.Fault)
+	## `cost O(...) [where n = e, ...]`, read and carried, and its claim
+	## given for counted mode (KavaCost) to measure: strip mode deletes it,
+	## and a checked build keeps it as a comment.
+	cost_clause : KavaState.State -> Try(KavaReader.Parsed(KavaState.Claim), Lexer.Fault)
 	cost_clause = |reader| {
 		if KavaState.next_token(reader).kind != Name("O") or KavaState.token_at(
 			reader,
@@ -1265,19 +1410,35 @@ KavaReader :: [].{
 		).kind != Punct("(") {
 			return Err(KavaState.fault_here(reader, "expected `O(...)` after `cost`"))
 		}
-		var $reader = { ..reader, at: KavaState.past_closing(reader, reader.at + 2) }
+		past_claim = KavaState.past_closing(reader, reader.at + 2)
+		var $reader = { ..reader, at: past_claim }
 		code = reader.code
+		var $wheres = []
 		if KavaState.is_word($reader, "where") {
 			$reader = KavaState.with_code(KavaState.advance($reader), Clausal)
 			var $more = True
 			while $more {
-				$reader = match KavaState.token($reader).kind {
-					Name(_) => KavaState.advance($reader)
+				name = match KavaState.token($reader).kind {
+					Name(word) => word
 					_ => {
 						return Err(KavaState.fault_here($reader, "expected a name after `where`"))
 					}
 				}
-				$reader = KavaReader.expression(KavaState.expect_punct($reader, "=")?, AtWhereEnd)?
+				first = $reader.at + 2
+				$reader = KavaReader.expression(
+					KavaState.expect_punct(KavaState.advance($reader), "=")?,
+					AtWhereEnd,
+				)?
+				if $reader.at == first {
+					return Err(
+						KavaState.fault_here(
+							$reader,
+							"expected an expression after `where ${name} =`",
+						),
+					)
+				}
+				code_read = KavaState.one_line($reader, { first: first, past: $reader.at })
+				$wheres = $wheres.append({ name: name, code: code_read })
 				if KavaState.is_punct($reader, ",") {
 					$reader = KavaState.advance($reader)
 				} else {
@@ -1286,14 +1447,20 @@ KavaReader :: [].{
 			}
 			$reader = KavaState.with_code($reader, code)
 		}
-		KavaReader.carry(
+		claim = {
+			claim: KavaState.one_line(reader, { first: reader.at + 3, past: past_claim - 1 }),
+			wheres: $wheres,
+			line: KavaState.token(reader).line,
+		}
+		carried = KavaReader.carry(
 			$reader,
 			{
 				first: reader.at,
 				past: $reader.at,
 				side: SpacesBefore,
 			},
-		)
+		)?
+		Ok({ reader: carried, parsed: claim })
 	}
 
 	## The reader having carried the addition `first` up to `past`: deleted
@@ -1347,11 +1514,20 @@ KavaReader :: [].{
 		)
 	}
 
+	## A function's contract, and its name, "" for none, and its cost claims,
+	## for counted mode.
+	Costing : {
+		contract : KavaChecks.Contract,
+		name : Str,
+		claims : List(KavaState.Claim),
+	}
+
 	## A function's body, from its `{`, then its checks: those at its entry
 	## after the `{`, and those at its ways out at each `return` and before
 	## the `}`.
-	function_body : KavaState.State, KavaChecks.Contract -> Try(KavaState.State, Lexer.Fault)
-	function_body = |reader, contract| {
+	function_body : KavaState.State, KavaReader.Costing -> Try(KavaState.State, Lexer.Fault)
+	function_body = |reader, costing| {
+		contract = costing.contract
 		opened = KavaState.expect_punct({ ..reader, frames: reader.frames.append([]) }, "{")?
 		open = KavaState.previous_token(opened).end
 		first = opened.at
@@ -1360,10 +1536,18 @@ KavaReader :: [].{
 		closed = KavaState.expect_punct(inside, "}")?
 		returns = closed.frames.last() ?? []
 		stretch = { first: first, past: inside.at }
+		claimed = costing.claims.map(
+			|claim| {
+				name: costing.name,
+				claim: claim,
+				body: Framed({ open: open, close: closing.start }),
+			},
+		)
 		framed = {
 			..closed,
 			frames: closed.frames.drop_last(1),
 			bodies: closed.bodies.append(stretch),
+			cost_claims: List.concat(closed.cost_claims, claimed),
 		}
 		entry = KavaChecks.entry_checks(framed.file, contract)
 		exits = KavaChecks.exit_checks(framed.file, contract)
@@ -1528,7 +1712,11 @@ KavaReader :: [].{
 				)
 				$invariants = $invariants.append(read.parsed.clause)
 			} else if KavaState.is_word($reader, "cost") and on_line and next_kind == Name("O") {
-				$reader = KavaReader.cost_clause($reader)?
+				read = KavaReader.cost_clause($reader)?
+				$reader = {
+					..read.reader,
+					loop_claims: read.reader.loop_claims.append(read.parsed.line),
+				}
 			} else {
 				$reading = False
 			}
@@ -1559,7 +1747,27 @@ KavaReader :: [].{
 			$reader = KavaState.with_edits($reader, { strip_edits: [], checked_edits: [checked] })
 		}
 		looped = KavaReader.statement($reader)?
-		Ok({ ..looped, loops: looped.loops.append({ first: first, past: looped.at }) })
+		body = {
+			line: KavaState.token_at(looped, first).line,
+			first: $reader.at,
+			past: looped.at,
+		}
+		Ok({
+			..KavaReader.with_loop_body(looped, { code: $reader.code, body: body }),
+			loops: looped.loops.append({ first: first, past: looped.at }),
+		})
+	}
+
+	## The reader having read a loop's body in `code`'s code: counted mode
+	## counts the trips of ordinary code's loops alone.
+	with_loop_body : KavaState.State,
+	{
+		code : KavaState.Code,
+		body : KavaState.LoopBody,
+	} -> KavaState.State
+	with_loop_body = |reader, read| match read.code {
+		Ordinary => { ..reader, loop_bodies: reader.loop_bodies.append(read.body) }
+		_ => reader
 	}
 
 	do_while : KavaState.State -> Try(KavaState.State, Lexer.Fault)
@@ -1574,7 +1782,13 @@ KavaReader :: [].{
 		} else {
 			tested
 		}
-		Ok({ ..ended, loops: ended.loops.append({ first: reader.at, past: ended.at }) })
+		do_body = {
+			line: KavaState.token(reader).line,
+			first: reader.at + 1,
+			past: body.at,
+		}
+		looped = KavaReader.with_loop_body(ended, { code: reader.code, body: do_body })
+		Ok({ ..looped, loops: looped.loops.append({ first: reader.at, past: ended.at }) })
 	}
 
 	# ---- classes ---------------------------------------------------------------
@@ -1743,7 +1957,14 @@ KavaReader :: [].{
 			} else {
 				Method
 			}
-			KavaReader.method(named, { contract_of: placing, invariants: invariants })
+			KavaReader.method(
+				named,
+				{
+					contract_of: placing,
+					invariants: invariants,
+					name: "",
+				},
+			)
 		} else {
 			typed = if KavaState.is_punct(named, ":") {
 				KavaReader.annotation(named)?.reader
@@ -1839,6 +2060,58 @@ KavaReader :: [].{
 		}
 		ended = KavaReader.statement_end(valued)?
 		KavaReader.ghost_deleted(KavaState.with_code(ended, code), keyword)
+	}
+
+	## Whether the `size` here starts a size generator, `size name(`.
+	is_size_start : KavaState.State -> Bool
+	is_size_start = |reader| {
+		is_named = match KavaState.next_token(reader).kind {
+			Name(word) => !KavaReader.is_keyword(word)
+			_ => False
+		}
+		is_named and KavaState.token_at(reader, reader.at + 2).kind == Punct("(")
+	}
+
+	## `size name(n) { ... }`, the generator of `name`'s arguments at size
+	## `n`, which the cost runner measures `name`'s claim with: an array of
+	## them, `return [xs]`. Strip mode deletes it whole; a checked build
+	## writes it as the function `$kava_size_name`, which nothing calls but
+	## counted mode's measurement.
+	size_generator : KavaState.State -> Try(KavaState.State, Lexer.Fault)
+	size_generator = |reader| {
+		keyword = KavaState.token(reader)
+		named = KavaState.next_token(reader)
+		name = KavaState.one_line(reader, { first: reader.at + 1, past: reader.at + 2 })
+		if reader.code != Ordinary or !reader.frames.is_empty() {
+			return Err(KavaState.fault_here(reader, "a `size` generator stands at the top level"))
+		}
+		if reader.sizes.contains(name) {
+			return Err(KavaState.fault_here(reader, "a second `size` generator for `${name}`"))
+		}
+		kept = reader.strip_edits.len()
+		renamed = {
+			start: keyword.start,
+			end: named.end,
+			text: "function $kava_size_${name}",
+		}
+		at_parameters = KavaState.with_edits(
+			{ ..reader, at: reader.at + 2 },
+			{ strip_edits: [], checked_edits: [renamed] },
+		)
+		read = KavaReader.method(at_parameters, { contract_of: Plain, invariants: [], name: "" })?
+		whole = Edits.deletion(
+			reader.src,
+			{
+				start: keyword.start,
+				end: KavaState.previous_token(read).end,
+				side: SpacesAfter,
+			},
+		)
+		Ok({
+			..read,
+			strip_edits: read.strip_edits.take_first(kept).append(whole),
+			sizes: read.sizes.append(name),
+		})
 	}
 
 	## `law name(...) { ... }`, carried whole: no part of it is read.
