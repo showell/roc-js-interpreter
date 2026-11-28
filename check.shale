@@ -34,7 +34,11 @@
 --     x86/programs.shale, which holds each program in x86/tests/ to node and
 --     each in x86/tests/refused/ to its refusal;
 --   - x86/cost.shale proof=1, which holds js-x86's `counted` mode to a
---     loop's counts worked out by hand.
+--     loop's counts worked out by hand;
+--   - kava/programs.shale, which holds KavaScript's front end: its strip and
+--     checked modes the identity on every program of js/tests/ and
+--     x86/tests/, each program of kava/tests/ in both modes to node, and
+--     each of kava/tests/refused/ to its refusal.
 --
 -- `js=1` is the allocation tier, kept out of the default run for its time
 -- (about two minutes when js-vm's release build compiles; seconds when
@@ -47,15 +51,17 @@
 -- own gate.
 
 const WANT = "roc-pin: the repository's pinned nightly"
-const ROOTS = {"js-book/app/main.roc", "js/roc/JsApp.roc", "js/roc/JsCanvas.roc", "js/roc/JsDump.roc", "js/roc/JsMachineSize.roc", "js/roc/JsVm.roc", "x86/bank/bank_race.roc", "x86/fourteen/fourteen.roc", "x86/race/fibonacci_race.roc", "x86/roc/Hello.roc", "x86/roc/JsToX86.roc"}
+const ROOTS = {"js-book/app/main.roc", "js/roc/JsApp.roc", "js/roc/JsCanvas.roc", "js/roc/JsDump.roc", "js/roc/JsMachineSize.roc", "js/roc/JsVm.roc", "kava/roc/Kava.roc", "x86/bank/bank_race.roc", "x86/fourteen/fourteen.roc", "x86/race/fibonacci_race.roc", "x86/roc/Hello.roc", "x86/roc/JsToX86.roc"}
 -- The expects `roc test` runs from each of js/'s roots: Canvas.roc's 8 and
 -- NumberText.roc's 11, and NumberText.roc's alone from JsDump.roc, which
--- imports no Canvas.
+-- imports no Canvas; and kava's, its own 10 and the 11 of NumberText, which
+-- js/'s parser brings.
 const EXPECTS = {
   {root = "js/roc/JsApp.roc", count = 20},
   {root = "js/roc/JsCanvas.roc", count = 20},
   {root = "js/roc/JsDump.roc", count = 11},
   {root = "js/roc/JsVm.roc", count = 20},
+  {root = "kava/roc/Kava.roc", count = 21},
 }
 
 const board = {lines = {}, failed = 0}
@@ -176,6 +182,7 @@ function all()
   script_check("x86/fib.shale", "the compiler's expects and fib, compiled and held to node", {"timing=0"})
   script_check("x86/programs.shale", "the compiled programs held to node, and the refused to their refusals")
   script_check("x86/cost.shale", "the counter held to a loop's counts, worked out by hand", {"proof=1"})
+  script_check("kava/programs.shale", "KavaScript's front end: the identity on the corpus, its tests held to node and its refusals")
   return nil
 end
 

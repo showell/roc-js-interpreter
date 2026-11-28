@@ -1,0 +1,4 @@
+// refused: expected a type (line 2, column 15)
+function f(x: 3) {
+  return x;
+}

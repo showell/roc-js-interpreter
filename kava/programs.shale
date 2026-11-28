@@ -1,0 +1,174 @@
+-- budget: steps=300000000
+-- kava/programs.shale: KavaScript's front end held to node, its oracle. From
+-- the repository's root:
+--
+--   shale kava/programs.shale            build kava, then every check below
+--   shale kava/programs.shale freeze=1   the same, writing each test's expected outputs anew
+--
+-- It holds, each a line, PASS or FAIL with its count:
+--   - **strip and checked are the identity on JavaScript:** every program
+--     in js/tests/ and x86/tests/ (the `.js` files, the corpus and the
+--     compiler's programs) comes out of `kava strip` and `kava checked` byte
+--     for byte as it went in, so node prints for each exactly what it
+--     printed before (the same bytes run the same, so node isn't run on
+--     them again);
+--   - **kava/tests/:** each `.kava` program is written in both modes and run
+--     by node, and what node printed and its exit code are held exactly to
+--     `<name>.strip.out` and `<name>.checked.out`: passing contracts, each
+--     kind of violation with the message it throws, the sketch's two
+--     `dedupe`s;
+--   - **kava/tests/refused/:** each program names in its first line, `//
+--     refused: <text>`, what kava's last line must say, a static rule's
+--     fault (a ghost read by ordinary code, a use after a hand-over) or a
+--     reading's, and kava must exit 1.
+--
+-- A moved expected output moves only by `freeze=1`, in a commit that says
+-- why each moved. kava is built on the dev backend by tools/roc_build.shale
+-- (the prelude's built_roc), only when its cache holds no build of these
+-- inputs. node runs niced, each program on node_clock's virtual timers as
+-- js/oracle.shale runs it, and the written JavaScript goes under the build
+-- mount.
+
+const WHO = "kava/programs.shale"
+const WANT_KAVA = "kava: the KavaScript front end, built here"
+const WANT_NODE = "kava: node is KavaScript's oracle"
+const NODE_CLOCK = "js/node_clock.cjs"
+const RUN_CPU_MS = 20000
+const RUN_MS = 120000
+const IDENTITY_DIRS = {"js/tests", "x86/tests"}
+const MODES = {"strip", "checked"}
+const FREEZE = arg("freeze", false)
+
+const board = {lines = {}, failed = 0}
+
+function say(ok, what)
+  local mark = "FAIL"
+  if ok then mark = "PASS" else board.failed = board.failed + 1 end
+  push(board.lines, mark)
+  print(mark .. " " .. what)
+  return nil
+end
+
+function files_in(dir, ext)
+  local out = {}
+  for name in ls(dir) do
+    if ends_with(name, ext) then push(out, dir .. "/" .. name) end
+  end
+  sort(out)
+  if #out == 0 then fail(WHO .. ": " .. dir .. " holds no " .. ext .. " program") end
+  return out
+end
+
+function kava_run(exe, mode, path)
+  return run({exe, mode, basename(path), read(path)}, {timeout_ms = RUN_MS, cpu_budget_ms = RUN_CPU_MS, stage = "kava " .. mode .. " " .. path, whole = 4000000, want = WANT_KAVA})
+end
+
+-- Every corpus program, written by both modes, is its own text.
+function identity(exe)
+  local n = 0
+  local wrong = {}
+  for dir in IDENTITY_DIRS do
+    for f in files_in(dir, ".js") do
+      local text = read(f)
+      for mode in MODES do
+        n = n + 1
+        local r = kava_run(exe, mode, f)
+        if r.code ~= 0 then
+          push(wrong, f .. " (" .. mode .. "): " .. trim(r.out))
+        elseif r.out ~= text then
+          push(wrong, f .. " (" .. mode .. "): its text changed")
+        end
+      end
+    end
+    yield()
+  end
+  for w in wrong do print("  " .. w) end
+  say(#wrong == 0, "identity: " .. (n - #wrong) .. " of " .. n .. " writings of js/tests/ and x86/tests/ (strip and checked) are their programs' own bytes")
+  return nil
+end
+
+-- What node printed for the JavaScript at `path`, and how it ended.
+function node_transcript(path)
+  local r = run({"node", "--require", real(NODE_CLOCK), real(path)}, {timeout_ms = RUN_MS, cpu_budget_ms = RUN_CPU_MS, stage = "node " .. path, whole = 4000000, want = WANT_NODE, nice = 19})
+  if r.ended ~= "exit" then return r.out .. "[ended: " .. r.ended .. "]\n" end
+  return r.out .. "[exit " .. r.code .. "]\n"
+end
+
+function first_difference(want, got)
+  local a = lines(want)
+  local b = lines(got)
+  local i = 1
+  while i <= #a or i <= #b do
+    local x = get(a, i, "<none>")
+    local y = get(b, i, "<none>")
+    if x ~= y then return "line " .. i .. ": expected `" .. x .. "`, node printed `" .. y .. "`" end
+    i = i + 1
+  end
+  return "the same lines"
+end
+
+function tests(exe, out_dir)
+  local n = 0
+  local bad = 0
+  for f in files_in("kava/tests", ".kava") do
+    local name = sub(basename(f), 1, #basename(f) - 5)
+    for mode in MODES do
+      n = n + 1
+      local r = kava_run(exe, mode, f)
+      local expected_path = "kava/tests/" .. name .. "." .. mode .. ".out"
+      if r.code ~= 0 then
+        bad = bad + 1
+        print("FAIL " .. f .. " (" .. mode .. "): " .. trim(r.out))
+      else
+        local js = out_dir .. "/" .. name .. "." .. mode .. ".js"
+        replace(js, r.out)
+        local got = node_transcript(js)
+        if FREEZE then replace(expected_path, got) end
+        local want = "<no " .. expected_path .. ">"
+        if exists(expected_path) then want = read(expected_path) end
+        if got == want then
+          print("PASS " .. f .. " (" .. mode .. ")")
+        else
+          bad = bad + 1
+          print("FAIL " .. f .. " (" .. mode .. "): " .. first_difference(want, got))
+        end
+      end
+    end
+  end
+  say(bad == 0, "kava/tests: " .. (n - bad) .. " of " .. n .. " writings (strip and checked) print what their .out files hold, under node")
+  return nil
+end
+
+function refused(exe)
+  local n = 0
+  local bad = 0
+  for f in files_in("kava/tests/refused", ".kava") do
+    n = n + 1
+    local m = re_find(lines(read(f))[1], "^// refused: (.+)$")
+    if m == nil then fail(WHO .. ": " .. f .. " has no first line `// refused: <text>`") end
+    local r = kava_run(exe, "checked", f)
+    local said = lines(trim(r.out))
+    local last = get(said, #said, "")
+    if r.code == 1 and starts_with(last, "kava: ") and contains(last, m.group) then
+      print("PASS " .. f)
+    else
+      bad = bad + 1
+      print("FAIL " .. f .. ": wanted `" .. m.group .. "`, kava said `" .. last .. "` (exit " .. r.code .. ")")
+    end
+  end
+  say(bad == 0, "kava/tests/refused: " .. (n - bad) .. " of " .. n .. " refused as they must be")
+  return nil
+end
+
+function main()
+  local exe = built_roc(WHO, "kava/roc/Kava.roc", "kava", "dev")
+  local out_dir = "build:roc-js-interpreter/gen/kava/" .. basename(real("."))
+  mkdir(out_dir)
+  identity(exe)
+  tests(exe, out_dir)
+  refused(exe)
+  if board.failed > 0 then fail(WHO .. ": " .. board.failed .. " of " .. #board.lines .. " checks failed") end
+  print("kava: " .. #board.lines .. " of " .. #board.lines .. " checks passed")
+end
+
+main()

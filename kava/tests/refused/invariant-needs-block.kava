@@ -1,0 +1,4 @@
+// refused: a loop with an invariant takes a block as its body (line 3, column 34)
+let i = 0;
+while (i < 3) invariant i < 4 i++;
+console.log(i);

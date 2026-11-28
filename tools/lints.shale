@@ -27,7 +27,7 @@
 --
 -- budget: steps=400000000 arena_bytes=1000000000 output_bytes=1000000
 
-const SETTINGS_SOURCES = {"js/lints.shale", "x86/lints.shale"}
+const SETTINGS_SOURCES = {"js/lints.shale", "kava/lints.shale", "x86/lints.shale"}
 const FINDING_RE = "^([^ :]+\\.roc):[0-9]+(?::[0-9]+)?: ([a-z_]+(?: [a-z_]+)?): "
 
 -- Each recipe, with each count's name in its summary and the name its

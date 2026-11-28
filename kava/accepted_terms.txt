@@ -1,0 +1,5 @@
+-- Short terms KavaScript's Roc names may hold though no word list has them,
+-- one a line, each with its reason after `--`. tools/lints.shale hands it to
+-- find_names_and_docs_that_say_too_little (`accepted=`), through
+-- kava/lints.shale.
+kava   -- KavaScript's code name, which every module of its front end carries

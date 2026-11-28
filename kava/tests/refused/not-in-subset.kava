@@ -1,0 +1,6 @@
+// refused: the program without its additions is not in the JavaScript subset
+function f(x: number) requires x > 0 {
+  var y = x;
+  return y;
+}
+console.log(f(1));

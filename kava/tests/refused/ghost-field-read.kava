@@ -1,0 +1,10 @@
+// refused: ordinary code may not read the ghost field `total` (line 10, column 20)
+class Ledger {
+  ghost total = 0;
+  constructor() { this.balance = 0; }
+  post(amount) { this.balance += amount; ghost this.total += amount; }
+}
+const ledger = new Ledger();
+ledger.post(3);
+// Ordinary code reading a ghost field: stripped, it would print undefined.
+console.log(ledger.total);

@@ -1,0 +1,46 @@
+-- kava/kava.shale: one KavaScript program to JavaScript, by `kava`
+-- (kava/roc/Kava.roc, its header says what each mode writes). From the
+-- repository's root:
+--
+--   shale kava/kava.shale file=kava/tests/dedupe.kava mode=strip
+--   shale kava/kava.shale file=kava/tests/dedupe.kava mode=checked out=build:kava/dedupe.js
+--
+-- `mode` is `strip` (every addition taken out) or `checked` (the checks
+-- written in). The JavaScript goes to `out` when it is given, a path under
+-- the root or a mount, and to the console otherwise. A `.js` file is taken
+-- as it is: every program the subset accepts is KavaScript unchanged. A
+-- program kava refuses stops the run with kava's line, `kava: <why> (line
+-- <n>, column <n>)`.
+--
+-- kava is built on the dev backend by tools/roc_build.shale (the prelude's
+-- built_roc), only when its cache holds no build of these inputs. The
+-- messages name the file by its last part, so they read the same wherever
+-- the file is.
+
+const WHO = "kava/kava.shale"
+const WANT = "kava: the KavaScript front end, built here"
+
+-- kava's output for the program at `path` in `mode`: `{code, out}`.
+function kava_output(exe, path, mode)
+  return run({exe, mode, basename(path), read(path)}, {timeout_ms = 60000, whole = 4000000, want = WANT})
+end
+
+function main()
+  local file = arg("file", "")
+  local mode = arg("mode", "")
+  local out = arg("out", "")
+  if file == "" then fail(WHO .. ": file= names the program") end
+  if mode ~= "strip" and mode ~= "checked" then fail(WHO .. ": mode= is strip or checked, not `" .. mode .. "`") end
+  local exe = built_roc(WHO, "kava/roc/Kava.roc", "kava", "dev")
+  local r = kava_output(exe, file, mode)
+  if r.code ~= 0 then fail(WHO .. ": " .. trim(r.out)) end
+  if out == "" then
+    print(r.out)
+  else
+    mkdir(dirname(out))
+    replace(out, r.out)
+    print(WHO .. ": wrote " .. out)
+  end
+end
+
+main()

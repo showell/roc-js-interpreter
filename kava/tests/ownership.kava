@@ -1,0 +1,56 @@
+// own and lent at run time. A use after a hand-over in another block is
+// not seen statically (kava/tests/refused/ holds the ones that are), so a
+// checked build's poison meets it; a write to a lent value throws.
+function attempt(what, run) {
+  try {
+    console.log(what, "gave", run());
+  } catch (e) {
+    console.log(what, "threw:", e.message);
+  }
+}
+
+function keep(own xs) {
+  return xs.length;
+}
+
+function sum(lent xs: number[]): number {
+  let s = 0;
+  for (const x of xs) s += x;
+  return s;
+}
+
+function sneaky(lent xs) {
+  xs.push(99);
+  return xs.length;
+}
+
+function rename(lent person) {
+  person.name = "someone else";
+  return person.name;
+}
+
+function count(lent m) {
+  return m.get("a") + m.size;
+}
+
+function grow(m) {
+  m.set("b", 2);
+  return m.size;
+}
+
+let items = [1, 2, 3];
+let handed = false;
+if (items.length > 2) {
+  keep(own items);
+  handed = true;
+}
+attempt("use after hand-over", () => items.length);
+attempt("printing it", () => typeof items);
+items = [4, 5];
+attempt("a new value", () => items.length);
+attempt("lent reads", () => sum(lent items));
+attempt("lent parameter written", () => sneaky([1]));
+attempt("lent argument written", () => grow(lent new Map([["a", 1]])));
+attempt("lent nested write", () => rename({ name: "ada" }));
+attempt("lent map read", () => count(new Map([["a", 1]])));
+console.log(handed, items);

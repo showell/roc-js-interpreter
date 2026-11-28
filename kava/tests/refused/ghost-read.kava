@@ -1,0 +1,10 @@
+// refused: ordinary code may not read or write the ghost `total` (line 7, column 15)
+function post(amounts) {
+  let balance = 0;
+  ghost let total = 0;
+  for (const a of amounts) { balance += a; ghost total += a; }
+  // An ordinary read of the ghost: deleting the ghost would change this.
+  console.log(total);
+  return balance;
+}
+console.log(post([1, 2, 3]));

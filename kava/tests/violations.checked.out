@@ -1,0 +1,14 @@
+requires threw: kava: requires amount > 0 failed (violations.kava, line 13)
+ensures threw: kava: ensures result >= 0 failed (violations.kava, line 14)
+old threw: kava: ensures result === old(balance) - amount failed (violations.kava, line 15)
+passes gave 60
+loop invariant threw: kava: invariant i < 3 failed (violations.kava, line 23)
+class invariant threw: kava: invariant this.balance >= 0 failed (violations.kava, line 30)
+constructor invariant threw: kava: invariant this.balance >= 0 failed (violations.kava, line 30)
+i32 parameter threw: kava: type n: i32 failed (violations.kava, line 40)
+i32 result threw: kava: type result: i32 failed (violations.kava, line 40)
+number parameter threw: kava: type balance: number failed (violations.kava, line 12)
+record shape threw: kava: type who: { first: string, last: string } failed (violations.kava, line 44)
+record field threw: kava: type who: { first: string, last: string } failed (violations.kava, line 44)
+declared type threw: kava: type big: i32 failed (violations.kava, line 61)
+[exit 0]

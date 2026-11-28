@@ -1,0 +1,6 @@
+// refused: `xs` is handed over on every pass of the loop at line 4, and nothing in it gives `xs` a new value (line 5, column 12)
+function keep(own list) { return list.length; }
+let xs = [1, 2];
+for (let i = 0; i < 3; i++) {
+  keep(own xs);
+}

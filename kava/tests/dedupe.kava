@@ -1,0 +1,24 @@
+// The sketch's two dedupes: one with a Set, which holds its cost, and the
+// classic cliff, `includes` inside a loop over n. Cost isn't checked yet, so
+// both run, in strip mode and checked.
+function dedupe(xs: string[]): string[] cost O(n) where n = xs.length {
+  const seen = new Set();
+  const out = [];
+  for (const x of xs) {
+    if (!seen.has(x)) { seen.add(x); out.push(x); }
+  }
+  return out;
+}
+
+function dedupeSlowly(xs: string[]): string[] cost O(n) where n = xs.length {
+  const out = [];
+  for (const x of xs) {
+    if (!out.includes(x)) out.push(x);
+  }
+  return out;
+}
+
+const words = ["kava", "java", "kava", "roc", "java", "node"];
+console.log(dedupe(words));
+console.log(dedupeSlowly(words));
+console.log(dedupe([]).length, dedupeSlowly(["a", "a", "a"]));

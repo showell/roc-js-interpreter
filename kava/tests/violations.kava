@@ -1,0 +1,63 @@
+// Each kind of violation a checked build throws, caught and printed, so
+// node's output holds each message exactly. In strip mode nothing is
+// checked, so each call runs on and prints what it made.
+function attempt(what, run) {
+  try {
+    console.log(what, "gave", run());
+  } catch (e) {
+    console.log(what, "threw:", e.message);
+  }
+}
+
+function withdraw(balance: number, amount: number): number
+  requires amount > 0
+  ensures result >= 0
+  ensures result === old(balance) - amount
+{
+  if (amount > 50) return balance - amount + 1;
+  return balance - amount;
+}
+
+function steps(n: number): number {
+  let i = 0;
+  while (i < n) invariant i < 3 {
+    i++;
+  }
+  return i;
+}
+
+class Account {
+  invariant this.balance >= 0;
+  constructor(balance) {
+    this.balance = balance;
+  }
+  take(amount) {
+    this.balance -= amount;
+    return this.balance;
+  }
+}
+
+function half(n: i32): i32 {
+  return n / 2;
+}
+
+function named(who: { first: string, last: string }): string {
+  return who.first + " " + who.last;
+}
+
+attempt("requires", () => withdraw(10, -1));
+attempt("ensures", () => withdraw(10, 20));
+attempt("old", () => withdraw(100, 60));
+attempt("passes", () => withdraw(100, 40));
+attempt("loop invariant", () => steps(5));
+attempt("class invariant", () => new Account(5).take(9));
+attempt("constructor invariant", () => new Account(-1).balance);
+attempt("i32 parameter", () => half(2147483648));
+attempt("i32 result", () => half(7));
+attempt("number parameter", () => withdraw("10", 5));
+attempt("record shape", () => named({ first: "Ada", last: "Lovelace", born: 1815 }));
+attempt("record field", () => named({ first: "Ada", last: 7 }));
+attempt("declared type", () => {
+  const big: i32 = 2 ** 40;
+  return big;
+});
