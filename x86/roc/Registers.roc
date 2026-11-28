@@ -574,3 +574,57 @@ expect {
 	)
 	promotes_to(body, body) and kept == Assembly.assemble(unlooped)
 }
+
+expect {
+	# Only a versioned loop's hot copy is counted when the four spare
+	# registers are given out. Its generic copy (the place `code_0_2`, which
+	# is cold) loads its one place more often than the hot copy loads any of
+	# its four, yet the hot copy's four places get the registers, and every
+	# load of the cold place stays in the frame. Counting the cold copy too
+	# would give its place a register and leave one of the hot ones out.
+	load = |displacement| Assembly.Statement.Instruction(
+		MovRegMem({ to: Rcx, from: place(displacement) }),
+	)
+	hot = [-8, -16, -24, -32].join_map(|displacement| List.repeat(load(displacement), 4))
+	generic = List.repeat(load(-40), 6)
+	entry = [
+		Assembly.Statement.Instruction(Push(Rbp)),
+		Instruction(MovRegReg({ to: Rbp, from: Rsp })),
+		Instruction(
+			AluImm({
+				operation: Sub,
+				to: Rsp,
+				value: 64,
+			}),
+		),
+		Mark("code_0_1"),
+	]
+	exit = [
+		Assembly.Statement.Instruction(MovRegReg({ to: Rsp, from: Rbp })),
+		Instruction(Pop(Rbp)),
+		Instruction(Ret),
+	]
+	statements = entry.concat(hot).append(Mark("code_0_2")).concat(generic).concat(exit)
+	promoted = Registers.promote_statements({
+		statements,
+		frame_bytes: 64,
+		worth_renaming: True,
+		cold: Set.empty().insert("code_0_2"),
+	})
+	# The places of the frame that plain moves still name (the registers'
+	# saves lie below the frame's 64 bytes).
+	var $in_frame = []
+	for statement in promoted {
+		match statement {
+			Instruction(instruction) =>
+				match plain_place(instruction) {
+					Ok(displacement) if displacement > -64 => {
+						$in_frame = $in_frame.append(displacement)
+					}
+					_ => {}
+				}
+			_ => {}
+		}
+	}
+	$in_frame == List.repeat(-40, 6)
+}
