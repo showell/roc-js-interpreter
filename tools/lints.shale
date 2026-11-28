@@ -110,6 +110,23 @@ const HELD = {
   -- js's three are too. They go when the recipe learns a headerless app's
   -- entry.
   ["x86/find_functions_and_parameters_that_dont_earn_their_keep/dead"] = 4,
+  -- kava/'s findings at its first commit (the KavaScript front end's lane,
+  -- 2026-11-28): new code's debt, held so the lane's first step is green,
+  -- and to be brought to zero by the lane before it merges.
+  ["kava/find_awkward_names/command_tense"] = 1,
+  ["kava/find_awkward_names/container"] = 2,
+  ["kava/find_awkward_names/worker_name"] = 2,
+  ["kava/find_awkward_names/bare_participle"] = 12,
+  ["kava/find_awkward_names/phrase_name"] = 2,
+  ["kava/find_awkward_names/singular_list"] = 2,
+  ["kava/check_and_fix_group_stacking/to stack"] = 19,
+  ["kava/check_and_fix_group_stacking/long"] = 16,
+  ["kava/check_and_fix_group_stacking/wide string"] = 24,
+  ["kava/find_and_remove_extra_parentheses/lambda_if"] = 2,
+  ["kava/check_how_failure_is_reported/number_fallback"] = 2,
+  ["kava/find_names_and_docs_that_say_too_little/abbreviation"] = 15,
+  ["kava/find_functions_and_parameters_that_dont_earn_their_keep/fixed"] = 1,
+  ["kava/find_functions_and_parameters_that_dont_earn_their_keep/entry"] = 1,
 }
 
 -- The number a summary gives for a check: "check N", or "N check" for
