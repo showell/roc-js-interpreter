@@ -33,6 +33,10 @@
 -- term pulls a ratio under the class's; a negative one, as n - 1, pushes it
 -- over by 1/(m - 1), far inside 1/(2K).
 --
+-- **THE CHECK CAN SEE:** with `within` planted to take every ratio as 2,
+-- kava/programs.shale went red, the cliff and composed.kava's helper both
+-- passing against their .cost.out files (2026-11-28), and was put back.
+--
 -- Each claim prints PASS or FAIL with its counts and ratios, and a failing
 -- one names the site whose count grows fastest: its line, what it is, and
 -- the loop it is in. A claim the runner can't measure fails too, saying
