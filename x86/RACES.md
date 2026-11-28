@@ -8,7 +8,7 @@ Each race has its own README, which says what it runs and how (x86/race for fib,
 
 ## 2026-11-27, 17:22 to 17:47, master 6949841, load about 1.0
 
-Master 6949841 is lane 3 of milestone 6 (guarded arrays and side exits in versioned loops), the head of master in that window by its log.
+Master 6949841 is lane 3 of milestone 6 (guarded arrays and side exits in versioned loops), the head of master in that window by its log. The run's commit was not written down at the time, so this is inferred, not recorded.
 
 **The SAT race** (x86/satrace, the race workload):
 
