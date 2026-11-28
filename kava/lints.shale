@@ -1,0 +1,25 @@
+-- This script holds KavaScript's own settings for Shale's Roc lints: the
+-- terms in kava/accepted_terms.txt (`kava`, the dialect's code name), which
+-- find_names_and_docs_that_say_too_little would read as an abbreviation.
+--
+--   cd <roc-js-interpreter checkout> && shale kava/lints.shale reads=settings
+--
+-- It prints one line `SETTING<tab>recipe<tab>folder<tab>arg` an argument,
+-- paths from the checkout's root, for tools/lints.shale, which runs the
+-- recipes over every project and so must judge kava's files with kava's
+-- terms. This table stays their one home.
+
+-- The folder the settings judge is kava/roc, the front end's Roc:
+-- tools/lints.shale runs a folder with settings on its own and leaves it out
+-- of its project's run, which it can only do for a folder inside the
+-- project.
+const HERE = "kava/roc"
+const SETTINGS = {
+  {recipe = "find_names_and_docs_that_say_too_little", arg = "accepted=kava/accepted_terms.txt"},
+}
+
+const READS = arg("reads", "")
+if READS ~= "settings" then fail("kava lints: reads=settings is the one reading") end
+for s in SETTINGS do
+  print("SETTING\t" .. s.recipe .. "\t" .. HERE .. "\t" .. s.arg)
+end

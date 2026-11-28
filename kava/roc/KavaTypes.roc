@@ -20,8 +20,8 @@ import KavaTokens
 KavaTypes :: [].{
 	Shape := [
 		Number,
-		Int32,
-		Int64,
+		Whole32,
+		Whole64,
 		Text,
 		Boolean,
 		Big,
@@ -92,8 +92,8 @@ KavaTypes :: [].{
 	named_shape : Str -> KavaTypes.Shape
 	named_shape = |word| match word {
 		"number" => Number
-		"i32" => Int32
-		"i64" => Int64
+		"i32" => Whole32
+		"i64" => Whole64
 		"string" => Text
 		"boolean" => Boolean
 		"bigint" => Big
@@ -140,22 +140,31 @@ KavaTypes :: [].{
 	## `depth` naming an array's items apart from those of an array around
 	## it. The `$kava_is_*` functions are the checked build's own
 	## (KavaChecks.helpers).
-	check_of : KavaTypes.Shape, Str, U64 -> Str
-	check_of = |shape, subject, depth| match shape {
+	check_of : KavaTypes.Shape, Str -> Str
+	check_of = |shape, subject| KavaTypes.check_at_depth(shape, subject, 1)
+
+	## The check of a value `depth` arrays deep, its items named apart from
+	## those of the arrays around it.
+	check_at_depth : KavaTypes.Shape, Str, U64 -> Str
+	check_at_depth = |shape, subject, depth| match shape {
 		Number => "typeof ${subject} === \"number\""
-		Int32 => "$kava_is_i32(${subject})"
-		Int64 => "$kava_is_i64(${subject})"
+		Whole32 => "$kava_is_i32(${subject})"
+		Whole64 => "$kava_is_i64(${subject})"
 		Text => "typeof ${subject} === \"string\""
 		Boolean => "typeof ${subject} === \"boolean\""
 		Big => "typeof ${subject} === \"bigint\""
 		Items(inner) => {
 			item = "$kava_item_${depth.to_str()}"
-			"(Array.isArray(${subject}) && ${subject}.every((${item}) => ${KavaTypes.check_of(inner, item, depth + 1)}))"
+			"(Array.isArray(${subject}) && ${subject}.every((${item}) => ${KavaTypes.check_at_depth(inner, item, depth + 1)}))"
 		}
 		Record(fields) => {
 			names = fields.map(|(field_name, _)| "\"${field_name}\"")
 			checks = fields.map(
-				|(field_name, field)| KavaTypes.check_of(field, "${subject}.${field_name}", depth),
+				|(field_name, field)| KavaTypes.check_at_depth(
+					field,
+					"${subject}.${field_name}",
+					depth,
+				),
 			)
 			whole = ["$kava_is_record(${subject}, [${Str.join_with(names, ", ")}])"]
 			"(${Str.join_with(List.concat(whole, checks), " && ")})"
@@ -163,17 +172,15 @@ KavaTypes :: [].{
 		Instance(class_name) => "${subject} instanceof ${class_name}"
 	}
 
-	expect KavaTypes.check_of(Int32, "x", 1) == "$kava_is_i32(x)"
+	expect KavaTypes.check_of(Whole32, "x") == "$kava_is_i32(x)"
 
 	expect KavaTypes.check_of(
 		Items(Number),
 		"xs",
-		1,
 	) == "(Array.isArray(xs) && xs.every(($kava_item_1) => typeof $kava_item_1 === \"number\"))"
 
 	expect KavaTypes.check_of(
 		Record([("a", Text)]),
 		"r",
-		1,
 	) == "($kava_is_record(r, [\"a\"]) && typeof r.a === \"string\")"
 }

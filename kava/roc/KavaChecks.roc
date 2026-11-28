@@ -22,7 +22,7 @@ KavaChecks :: [].{
 
 	## A parameter: its name, or a pattern, which no check names; its type;
 	## and whether it is handed over (`own`) or lent (`lent`).
-	Param : {
+	Parameter : {
 		name : [Named(Str), Patterned],
 		shape : [Typed(KavaTypes.Shape, Str), Untyped],
 		hold : [Shared, Owned, Lent],
@@ -33,7 +33,7 @@ KavaChecks :: [].{
 	Old : { local : Str, code : Str }
 
 	Contract : {
-		params : List(KavaChecks.Param),
+		parameters : List(KavaChecks.Parameter),
 		result : [Typed(KavaTypes.Shape, Str, U64), Untyped],
 		required : List(KavaChecks.Clause),
 		ensured : List(KavaChecks.Clause),
@@ -46,8 +46,8 @@ KavaChecks :: [].{
 	message = |file, what, line| "kava: ${what} failed (${file}, line ${line.to_str()})"
 
 	## A text as a JavaScript string literal, in double quotes.
-	quoted : Str -> Str
-	quoted = |text| {
+	string_literal : Str -> Str
+	string_literal = |text| {
 		var $out = ['"']
 		for byte in text.to_utf8() {
 			$out = match byte {
@@ -57,7 +57,7 @@ KavaChecks :: [].{
 				_ => $out.append(byte)
 			}
 		}
-		Str.from_utf8($out.append('"')) ?? crash "KavaChecks.quoted: escapes keep whole characters"
+		Str.from_utf8($out.append('"')) ?? crash "KavaChecks.string_literal: escapes keep whole characters"
 	}
 
 	## The statement that fails with `what`'s message unless `test` holds.
@@ -67,21 +67,21 @@ KavaChecks :: [].{
 		test,
 		what,
 		line,
-	| "if (!(${test})) $kava_fail(${KavaChecks.quoted(KavaChecks.message(file, what, line))});"
+	| "if (!(${test})) $kava_fail(${KavaChecks.string_literal(KavaChecks.message(file, what, line))});"
 
 	## The checks at a function's entry, on one line, or "" for none.
 	entry_checks : Str, KavaChecks.Contract -> Str
 	entry_checks = |file, contract| {
 		var $parts = []
-		for param in contract.params {
-			match (param.name, param.shape) {
+		for parameter in contract.parameters {
+			match (parameter.name, parameter.shape) {
 				(Named(name), Typed(shape, text)) => {
 					$parts = $parts.append(
 						KavaChecks.guard(
 							file,
-							KavaTypes.check_of(shape, name, 1),
+							KavaTypes.check_of(shape, name),
 							"type ${name}: ${text}",
-							param.line,
+							parameter.line,
 						),
 					)
 				}
@@ -96,10 +96,10 @@ KavaChecks :: [].{
 		for old in contract.olds {
 			$parts = $parts.append("const ${old.local} = (${old.code});")
 		}
-		for param in contract.params {
-			match (param.name, param.hold) {
+		for parameter in contract.parameters {
+			match (parameter.name, parameter.hold) {
 				(Named(name), Lent) => {
-					said = KavaChecks.quoted("kava: lent ${name} failed: it was written (${file}, line ${param.line.to_str()})")
+					said = KavaChecks.string_literal("kava: lent ${name} failed: it was written (${file}, line ${parameter.line.to_str()})")
 					$parts = $parts.append("${name} = $kava_lend(${name}, ${said});")
 				}
 				_ => {}
@@ -116,7 +116,7 @@ KavaChecks :: [].{
 			Typed(shape, text, line) => [
 				KavaChecks.guard(
 					file,
-					KavaTypes.check_of(shape, "result", 1),
+					KavaTypes.check_of(shape, "result"),
 					"type result: ${text}",
 					line,
 				),
@@ -171,7 +171,7 @@ KavaChecks :: [].{
 		"\n",
 	)
 
-	expect KavaChecks.quoted("a \"b\" \\ c") == "\"a \\\"b\\\" \\\\ c\""
+	expect KavaChecks.string_literal("a \"b\" \\ c") == "\"a \\\"b\\\" \\\\ c\""
 
 	expect KavaChecks.guard(
 		"f.kava",

@@ -85,7 +85,7 @@ KavaRules :: [].{
 					)
 				}
 				KavaRules.unused_after(reader, met)?
-				KavaRules.renewed_in_loop(reader, met)?
+				KavaRules.renewal_each_pass(reader, met)?
 			}
 		}
 		Ok({})
@@ -150,19 +150,12 @@ KavaRules :: [].{
 
 	## Nothing, or a fault when the name is handed over inside a loop that
 	## neither declares it nor gives it a new value after the hand-over.
-	renewed_in_loop : KavaState.State, KavaState.Use -> Try({}, Lexer.Fault)
-	renewed_in_loop = |reader, handed| {
+	renewal_each_pass : KavaState.State, KavaState.Use -> Try({}, Lexer.Fault)
+	renewal_each_pass = |reader, handed| {
 		at = handed.index
-		around = reader.loops.keep_if(|loop| loop.first < at and at < loop.past)
-		innermost = around.sort_with(
-			|left, right| if left.first > right.first {
-				Before
-			} else if left.first < right.first {
-				After
-			} else {
-				Same
-			},
-		).first()
+		# A loop is recorded once its body is read, so of the loops around a
+		# place the innermost comes first.
+		innermost = reader.loops.keep_if(|loop| loop.first < at and at < loop.past).first()
 		match innermost {
 			Ok(loop) => {
 				in_function = reader.bodies.any(|body| body.first > loop.first and body.first <= at and at < body.past)

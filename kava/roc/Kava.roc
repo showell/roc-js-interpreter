@@ -40,12 +40,12 @@ main! = |arguments| {
 			Ok("strip"),
 			Ok(file),
 			Ok(src),
-		) => write_output!(file, src, Stripped)
+		) => write_output!(file, src, Strip)
 		(
 			Ok("checked"),
 			Ok(file),
 			Ok(src),
-		) => write_output!(file, src, Checked)
+		) => write_output!(file, src, Check)
 		_ => {
 			echo!("usage: kava strip|checked <file> \"<program>\"\n")
 			Err(Exit(2))
@@ -53,7 +53,7 @@ main! = |arguments| {
 	}
 }
 
-Mode : [Stripped, Checked]
+Mode : [Strip, Check]
 
 write_output! : Str, Str, Mode => Try({}, [Exit(I8)])
 write_output! = |file, src, mode| {
@@ -77,7 +77,7 @@ output_of = |file, text, mode| {
 	reader = KavaReader.program(src, tokens, file)?
 	KavaRules.ghosts_kept_apart(reader)?
 	KavaRules.handovers_held(reader)?
-	stripped = applied_or_fault(src, reader.strip)?
+	stripped = applied_or_fault(src, reader.strip_edits)?
 	match Parser.program_of(stripped, Core) {
 		Ok(_) => {}
 		Err(fault) => {
@@ -88,9 +88,9 @@ output_of = |file, text, mode| {
 		}
 	}
 	match mode {
-		Stripped => Ok(stripped)
-		Checked => {
-			edits = List.concat(reader.checked, KavaRules.live_reads(reader))
+		Strip => Ok(stripped)
+		Check => {
+			edits = List.concat(reader.checked_edits, KavaRules.live_reads(reader))
 			if edits.is_empty() {
 				Ok(text)
 			} else {
@@ -107,7 +107,7 @@ output_of = |file, text, mode| {
 }
 
 applied_or_fault : List(U8), List(Edits.Edit) -> Try(Str, Lexer.Fault)
-applied_or_fault = |src, edits| match Edits.applied(src, edits) {
+applied_or_fault = |src, edits| match Edits.text_with(src, edits) {
 	Ok(text) => Ok(text)
 	Err(Overlapping(at)) => Err({
 		why: "two of KavaScript's edits overlap at byte ${at.to_str()}, a fault of kava's own",

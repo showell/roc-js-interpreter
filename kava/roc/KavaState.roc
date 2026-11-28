@@ -56,7 +56,7 @@ KavaState :: [].{
 	ReturnSite : {
 		keyword_start : U64,
 		keyword_end : U64,
-		value : [Valued, Bare],
+		returned : [Valued, Bare],
 		ending : [Semicolon(U64), NoSemicolon(U64)],
 		next_token : U64,
 	}
@@ -67,8 +67,8 @@ KavaState :: [].{
 		at : U64,
 		file : Str,
 		code : KavaState.Code,
-		strip : List(Edits.Edit),
-		checked : List(Edits.Edit),
+		strip_edits : List(Edits.Edit),
+		checked_edits : List(Edits.Edit),
 		uses : List(KavaState.Use),
 		constants : List(Str),
 		# The names `ghost let` and `ghost const` bind.
@@ -83,15 +83,15 @@ KavaState :: [].{
 		carried : List({ text : Str, line : U64 }),
 	}
 
-	started : List(U8), List(KavaTokens.Spanned), Str -> KavaState.State
-	started = |src, tokens, file| {
+	start_of : List(U8), List(KavaTokens.Spanned), Str -> KavaState.State
+	start_of = |src, tokens, file| {
 		src: src,
 		tokens: tokens,
 		at: 0,
 		file: file,
 		code: Ordinary,
-		strip: [],
-		checked: [],
+		strip_edits: [],
+		checked_edits: [],
 		uses: [],
 		constants: [],
 		ghost_names: [],
@@ -168,16 +168,16 @@ KavaState :: [].{
 			Err(
 				KavaState.fault_here(
 					reader,
-					"expected `${text}`, found ${KavaState.spelled(reader, reader.at)}",
+					"expected `${text}`, found ${KavaState.spelling(reader, reader.at)}",
 				),
 			)
 		}
 
 	## A token as a message names it.
-	spelled : KavaState.State, U64 -> Str
-	spelled = |reader, index| match KavaState.token_at(reader, index).kind {
+	spelling : KavaState.State, U64 -> Str
+	spelling = |reader, index| match KavaState.token_at(reader, index).kind {
 		End => "the end of the program"
-		_ => "`${KavaState.rendered(reader, index, index + 1)}`"
+		_ => "`${KavaState.one_line(reader, index, index + 1)}`"
 	}
 
 	## The index past the bracket that closes the one at `index`.
@@ -211,8 +211,8 @@ KavaState :: [].{
 
 	## The tokens `first` up to `past` as one line: each token's own text, a
 	## space between two that had space or a line between them.
-	rendered : KavaState.State, U64, U64 -> Str
-	rendered = |reader, first, past| {
+	one_line : KavaState.State, U64, U64 -> Str
+	one_line = |reader, first, past| {
 		var $out = []
 		var $at = first
 		while $at < past {
@@ -226,7 +226,7 @@ KavaState :: [].{
 			)
 			$at = $at + 1
 		}
-		Str.from_utf8($out) ?? crash "KavaState.rendered: tokens hold whole characters"
+		Str.from_utf8($out) ?? crash "KavaState.one_line: tokens hold whole characters"
 	}
 
 	# ---- recording -------------------------------------------------------------
@@ -235,33 +235,33 @@ KavaState :: [].{
 	## are left out, since the ghost's own deletion covers them; inside a
 	## clause both are, since a clause's text is deleted and written again
 	## whole.
-	edited : KavaState.State, List(Edits.Edit), List(Edits.Edit) -> KavaState.State
-	edited = |reader, strip, checked| match reader.code {
+	with_edits : KavaState.State, List(Edits.Edit), List(Edits.Edit) -> KavaState.State
+	with_edits = |reader, strip_edits, checked_edits| match reader.code {
 		Ordinary => {
 			..reader,
-			strip: List.concat(reader.strip, strip),
-			checked: List.concat(reader.checked, checked),
+			strip_edits: List.concat(reader.strip_edits, strip_edits),
+			checked_edits: List.concat(reader.checked_edits, checked_edits),
 		}
-		Ghostly => { ..reader, checked: List.concat(reader.checked, checked) }
+		Ghostly => { ..reader, checked_edits: List.concat(reader.checked_edits, checked_edits) }
 		Clausal => reader
 	}
 
 	## The reader with the tokens `first` up to `past` deleted in both modes,
-	## with their spaces on `side`.
-	deleted_in_both : KavaState.State, U64, U64, Edits.Side -> KavaState.State
-	deleted_in_both = |reader, first, past, side| {
+	## with the spaces before them.
+	deleted_in_both : KavaState.State, U64, U64 -> KavaState.State
+	deleted_in_both = |reader, first, past| {
 		cut = Edits.deletion(
 			reader.src,
 			KavaState.token_at(reader, first).start,
 			KavaState.token_at(reader, past - 1).end,
-			side,
+			SpacesBefore,
 		)
-		KavaState.edited(reader, [cut], [cut])
+		KavaState.with_edits(reader, [cut], [cut])
 	}
 
 	## The reader having met the name at `index`, doing `role` with it.
-	used : KavaState.State, U64, Str, KavaState.Role -> KavaState.State
-	used = |reader, index, name, role| {
+	with_use : KavaState.State, U64, Str, KavaState.Role -> KavaState.State
+	with_use = |reader, index, name, role| {
 		here = KavaState.token_at(reader, index)
 		met = {
 			name: name,
@@ -275,6 +275,6 @@ KavaState :: [].{
 	}
 
 	## The reader reading `code`'s code from `reader`'s and back.
-	in_code : KavaState.State, KavaState.Code -> KavaState.State
-	in_code = |reader, code| { ..reader, code: code }
+	with_code : KavaState.State, KavaState.Code -> KavaState.State
+	with_code = |reader, code| { ..reader, code: code }
 }
