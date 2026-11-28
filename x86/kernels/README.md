@@ -301,6 +301,8 @@ Roc (102 instructions, plus two `roc_llvm_rc_decref_27` calls): its wyhash of th
 
 **The gap:** **a Map's method on a value known to be a Map still takes the generic dispatch**, by the method's name, with an array made for its arguments, so each lookup allocates. With a guard on the tag and the record's first word (0, a Map), a `get` could call the find with the key in a register: no array, no name, no garbage. The `% KEYS` by a `const` is already a magic multiply on our side, which is fine.
 
+**Closed (branch x86-mapfast, 2026-11-28):** the guard is in (x86/README.md, "Maps, Sets and iterators"). By the counter, the whole run went from 241.98 instructions a trip (master 3ad1066, after the lazy sweep) to 146.24, the loop's own from 62 to 58, and the allocations from 10,001,019 to 19. What is left is the find itself (`runtime_collection_find`, its probe, the hash and the index's check, about 75 a lookup) and the four spare registers saved around the call.
+
 ## concat: building a string
 
 `s = s + "ab"`, a thousand appends, 2,000 times.
