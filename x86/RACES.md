@@ -6,6 +6,17 @@ Each race has its own README, which says what it runs and how (x86/race for fib,
 
 **The method, for every row below:** the median of three runs, on a quiet box (a shared 2-core VM), each run timed from outside the program, from its start to its exit. Times are wall times. The box's load is its load average while the runs went.
 
+## 2026-11-28, 01:19 to 01:29, master e5babdd, load 0.35 to 1.2
+
+This run comes after three merged changes: lane 4 (FrameValues), the hashed Map and Set, and cheaper allocation. The compiled executables came from the dev build of js-x86 at e5babdd.
+
+| race | compiled | node | rocsat | compiled/node |
+|---|---|---|---|---|
+| SAT (race workload) | 57.32 s | 29.38 s | 22.73 s | 1.95 |
+| big daddy, 15,000 rounds | 39.13 s | 25.17 s | not raced | 1.56 |
+
+The SAT ratio was 2.29 in the run below. node and rocsat were faster here too, so part of the drop in seconds is a quieter box, and the ratio is the fairer comparison. Big daddy had no earlier full-size timing.
+
 ## 2026-11-27, 17:22 to 17:47, master 6949841, load about 1.0
 
 Master 6949841 is lane 3 of milestone 6 (guarded arrays and side exits in versioned loops), the head of master in that window by its log. The run's commit was not written down at the time, so this is inferred, not recorded.
